@@ -135,8 +135,3 @@ reference ellipsoid. A century later, his formula turns the transit of a planet 
 
 If you use `pizzetti`, please cite the accompanying paper (in preparation) and Mandel & Agol
 (2002). See `CITATION.cff`.
-
-## License
-
-GPL-3.0-or-later (see `LICENSE`). The exact limb solver is adapted from the Pandora exomoon code
-(Hippke & Heller 2022, GPL-3).
