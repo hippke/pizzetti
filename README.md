@@ -61,8 +61,8 @@ Ultra 5 226V). "Full" means that every call also recomputes the orbit, as in a f
 ## Installation
 
 ```bash
-pip install pizzetti            # once released; until then:
-pip install git+https://github.com/user/repo
+pip install pizzetti  # recommended
+pip install git+https://github.com/hippke/pizzetti  # latest dev build
 ```
 
 Requirements: Python ≥ 3.9, NumPy, numba. The first call compiles the kernels (a few seconds);
