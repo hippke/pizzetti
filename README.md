@@ -123,7 +123,7 @@ z_c = pizzetti.series_cut(0.1, "quadratic", [0.4, 0.25])   # series used for z <
 The full documentation, covering the method, the accuracy proofs and checks, the benchmarks and
 the API, is on [Read the Docs](https://pizzetti.readthedocs.io) and in `docs/`.
 
-## The name
+## The name *pizzetti*
 
 The series is the two-dimensional form of the mean-value expansion of **Paolo Pizzetti**
 (1860–1918). He gave the mean of a function over a sphere as a series of its iterated Laplacians,
