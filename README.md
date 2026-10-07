@@ -31,7 +31,7 @@ For an Earth-sized planet crossing a Sun-like star, the series covers **96–98 
 in-transit points (central transit: 98 %; averaged over impact parameters: 96 %). The few points that touch the stellar limb use an exact, vectorised Mandel & Agol solver
 (uniform, linear and quadratic laws) or a high-order Green's-theorem quadrature (other laws).
 
-## Why you can trust it
+## Proven correctness
 
 - **The error bound is proven, not estimated.** All terms of the series have the same sign, which
   gives a closed-form bound on the truncation error. The bound increases monotonically along the
