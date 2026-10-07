@@ -1,0 +1,5 @@
+sphinx>=7
+furo
+myst-parser>=2
+numpy
+numba

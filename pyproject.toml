@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pizzetti"
+version = "0.1.0"
+description = "Fast limb-darkened transit light curves with a rigorously bounded elementary series (batman-compatible)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Author One" }]
+keywords = ["exoplanets", "transits", "light curves", "limb darkening", "batman", "numba"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Intended Audience :: Science/Research",
+]
+dependencies = ["numpy>=1.22", "numba>=0.57"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "batman-package>=2.4", "mpmath>=1.2"]
+docs = ["sphinx>=7", "furo", "myst-parser>=2"]
+
+[project.urls]
+Homepage = "https://github.com/user/repo"
+Documentation = "https://pizzetti.readthedocs.io"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["perf: performance comparisons (timings; deselect with -m 'not perf')"]

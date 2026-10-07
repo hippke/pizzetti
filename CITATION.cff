@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying paper and the software."
+title: "pizzetti: fast limb-darkened transit light curves"
+authors:
+  - family-names: "One"
+    given-names: "Author"
+version: 0.1.0
+license: GPL-3.0-or-later
+repository-code: "https://github.com/user/repo"
+preferred-citation:
+  type: article
+  title: "A Fast Elementary Series to Calculate Limb-darkened Transit Flux"
+  authors:
+    - family-names: "One"
+      given-names: "Author"
+  year: 2026
+  journal: "in preparation"
