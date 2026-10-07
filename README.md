@@ -73,6 +73,7 @@ they are cached on disk afterwards.
 ```python
 import numpy as np
 import pizzetti
+import matplotlib.pyplot as plt
 
 params = pizzetti.TransitParams()
 params.t0 = 0.0          # time of inferior conjunction
@@ -88,6 +89,11 @@ params.limb_dark = "quadratic"
 t = np.linspace(-0.1, 0.1, 10_000)
 m = pizzetti.TransitModel(params, t)
 flux = m.light_curve(params)
+
+plt.plot(t, flux)
+plt.xlabel("Time from mid-transit (days)")
+plt.ylabel("Relative flux")
+plt.show()
 ```
 
 The low-level function works on separations directly:
