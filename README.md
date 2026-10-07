@@ -71,8 +71,8 @@ they are cached on disk afterwards.
 ## Usage
 
 ```python
-import numpy as np
 import pizzetti
+import numpy as np
 import matplotlib.pyplot as plt
 
 params = pizzetti.TransitParams()
