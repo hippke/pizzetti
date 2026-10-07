@@ -1,3 +1,6 @@
+![Logo](https://raw.githubusercontent.com/hippke/pizzetti/main/docs/logo.png)
+
+
 # pizzetti
 
 **Fast limb-darkened transit light curves, with an elementary series and a proven error bound.**
