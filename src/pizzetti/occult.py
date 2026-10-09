@@ -3,19 +3,26 @@
 * body entirely inside the stellar disk and z <= z_c: the interior series
   (rigorous bound <= ``series_tol`` on the flux error);
 * all other on-star samples: exact Mandel & Agol (2002) solution for the
-  uniform, linear and quadratic laws, Green's-theorem quadrature for the
-  other power laws.
+  uniform, linear and quadratic laws; for the other power laws, the
+  hypergeometric limb solution (_lens), compressed per light curve, or
+  Green's-theorem quadrature for short light curves and where the
+  hypergeometric expansion does not apply.
 """
 from math import pi
 
 import numpy as np
 from numba import njit
 
-from . import _exact, _general, _series
+from . import _exact, _general, _lens, _series
 from .laws import QUADRATIC_FAMILY, power_terms, quadratic_coefficients
 
 #: Default bound on the flux error of the interior series (absolute flux).
 SERIES_TOL = 1e-9
+#: Relative truncation tolerance of the hypergeometric limb solution.
+LIMB_TOL = 1e-16
+#: The per-light-curve hypergeometric compression (setup ~0.5 ms per exponent)
+#: is used when there are at least this many limb samples per exponent.
+FIT_MIN_SAMPLES = 700
 
 _A_HALF = _series.table(0.5, _series.M)
 
@@ -102,7 +109,7 @@ def _quadratic_flux(z, k, u1, u2, z_c, A_half):
 
 
 @njit(cache=True)
-def _general_flux(z, k, gams, cs, z_c, tables, gu, gw):
+def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
     """Power-law intensities: interior series for z <= z_c, Green's-theorem
     quadrature (limb) otherwise. Integer exponents 0 and 1 are folded into
     A0 + A1 z^2; the exponents {1/4, 1/2, 3/4} and a single arbitrary
@@ -149,11 +156,19 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw):
                 n_other = 2
     one_k = 1.0 + k
     ms = 0
+    ml = 0
     for i in range(n):
-        ms += 1 if abs(z[i]) <= z_c else 0
+        zi = abs(z[i])
+        if zi <= z_c:
+            ms += 1
+        elif zi < one_k:
+            ml += 1
     zb = np.empty(ms)
     idx = np.empty(ms, dtype=np.int64)
+    zl = np.empty(ml)
+    il = np.empty(ml, dtype=np.int64)
     j = 0
+    jl = 0
     for i in range(n):
         zi = abs(z[i])
         if zi <= z_c:
@@ -164,7 +179,22 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw):
             if k >= 1.0 and zi <= k - 1.0:
                 out[i] = 0.0
             else:
-                out[i] = 1.0 - _general.blocked_limb(zi, k, gams, cs, gu, gw) / total
+                zl[jl] = zi
+                il[jl] = i
+                jl += 1
+    ml = jl
+    # limb samples: hypergeometric solution, compressed per light curve, where
+    # it applies and pays off; Green's-theorem quadrature otherwise
+    bl = np.full(ml, np.nan)
+    if use_hyp and ml >= FIT_MIN_SAMPLES * nt and k < 0.5:
+        bounds, C, ok = _lens.fit(k, gams, ltabs, llens, z_c)
+        NL = _lens.fit_lengths(C, ok)
+        _lens.blocked_fit_vec(zl[:ml], k, gams, cs, bounds, C, ok, NL, bl)
+    for j in range(ml):
+        b = bl[j]
+        if np.isnan(b):
+            b = _general.blocked_limb(zl[j], k, gams, cs, gu, gw)
+        out[il[j]] = 1.0 - b / total
     if ms > 0:
         fs = np.empty(ms)
         if n_other <= 1:
@@ -197,7 +227,25 @@ def series_cut(rp, limb_dark, u, series_tol=SERIES_TOL):
     return _series.zcut(k, gams, np.abs(c), k * k / (2.0 * abs(norm)), float(series_tol))
 
 
-def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL):
+def limb_tables(gams):
+    """Hypergeometric coefficient tables for the limb solution (cached per exponent)."""
+    ts, ls = [], []
+    for g in gams:
+        key = float(g)
+        if key not in _LIMB_CACHE:
+            if len(_LIMB_CACHE) > 256:
+                _LIMB_CACHE.clear()
+            _LIMB_CACHE[key] = _lens.table(key)
+        t, l = _LIMB_CACHE[key]
+        ts.append(t)
+        ls.append(l)
+    return np.ascontiguousarray(ts), np.ascontiguousarray(ls)
+
+
+_LIMB_CACHE = {}
+
+
+def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="hypergeometric"):
     """Relative flux of a star occulted by an opaque disk.
 
     :param z: projected centre separations (stellar radii), array-like
@@ -205,6 +253,10 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL):
     :param u: limb-darkening coefficients (batman conventions)
     :param limb_dark: "uniform", "linear", "quadratic", "squareroot", "nonlinear" or "power2"
     :param series_tol: bound on the flux error of the interior series; 0 disables it
+    :param limb: "hypergeometric" (default) or "quadrature": method for the
+        samples beyond z_c with non-quadratic laws. The hypergeometric solution
+        falls back to quadrature where its expansion does not converge
+        (z <= p, or large radius ratios near second contact).
     :return: relative flux (ndarray)
     """
     z = np.ascontiguousarray(z, dtype=np.float64)
@@ -221,5 +273,9 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL):
         tables = np.empty((gams.size, _series.M + 1, _series.M + 1))
         for i, g in enumerate(gams):
             tables[i] = _series.table(float(g), _series.M)
-        f = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W)
+        if limb not in ("hypergeometric", "quadrature"):
+            raise ValueError('limb must be "hypergeometric" or "quadrature"')
+        ltabs, llens = limb_tables(gams)
+        f = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W,
+                          ltabs, llens, limb == "hypergeometric")
     return f.reshape(shape)
