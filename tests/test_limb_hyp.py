@@ -32,7 +32,7 @@ def limb_grid(k, law, u, n=6000):
 @pytest.mark.parametrize("k", [0.0092, 0.05, 0.1, 0.2])
 def test_hyp_against_mpmath(law, u, k):
     z = limb_grid(k, law, u)
-    f = occult(z, k, u, law)
+    f = occult(z, k, u, law, limb="fast")
     al, c = power_terms(law, u)
     rng = np.random.default_rng(0)
     pick = np.unique(np.concatenate([rng.choice(z.size, 12, replace=False),
@@ -47,10 +47,30 @@ def test_hyp_against_mpmath(law, u, k):
 
 
 @pytest.mark.parametrize("law,u", LAWS)
+@pytest.mark.parametrize("k", [0.0092, 0.05, 0.15, 0.2, 0.3])
+@pytest.mark.parametrize("tol", [1e-9, 1e-12])
+def test_proven_against_mpmath(law, u, k, tol):
+    """Proven mode: the flux error is at most series_tol where certified."""
+    z = limb_grid(k, law, u)
+    f, cert = occult(z, k, u, law, series_tol=tol, limb="proven", return_certified=True)
+    if k <= 0.15 or (k <= 0.2 and tol >= 1e-9):
+        assert cert.all()
+    al, c = power_terms(law, u)
+    rng = np.random.default_rng(1)
+    pick = np.unique(np.concatenate([rng.choice(z.size, 16, replace=False), np.arange(z.size - 6, z.size),
+                                     np.searchsorted(z, 1 - k) + np.arange(-4, 4)]))
+    pick = pick[(pick >= 0) & (pick < z.size)]
+    ref = np.array([flux_ref(z[i], k, al, c) for i in pick])
+    err = np.abs(f[pick] - ref)
+    assert np.max(err[cert[pick]], initial=0.0) <= tol
+    assert np.max(err, initial=0.0) <= max(tol, 3e-12)
+
+
+@pytest.mark.parametrize("law,u", LAWS)
 @pytest.mark.parametrize("k", [0.0092, 0.1, 0.3])
 def test_hyp_matches_quadrature(law, u, k):
     z = limb_grid(k, law, u)
-    f = occult(z, k, u, law, limb="hypergeometric")
+    f = occult(z, k, u, law, limb="fast")
     g = occult(z, k, u, law, limb="quadrature")
     assert np.max(np.abs(f - g)) < 1e-11
 
@@ -74,3 +94,16 @@ def test_universal_functions(g):
                 v = _lens._family(T, L, fam, j, x, ym, ly)
                 # j = 20 interior functions: mild cancellation (they enter the flux times x^20)
                 assert abs(v - ref) <= 5e-13 * abs(ref) + 1e-300
+
+
+def test_transitmodel_limb_option():
+    import pizzetti
+    prm = pizzetti.TransitParams()
+    prm.t0, prm.per, prm.rp, prm.a, prm.inc, prm.ecc, prm.w = 0.0, 3.0, 0.1, 10.0, 89.0, 0.0, 90.0
+    prm.limb_dark, prm.u = "power2", [0.6, 0.6]
+    t = np.linspace(-0.08, 0.08, 4001)
+    fa = pizzetti.TransitModel(prm, t).light_curve(prm)
+    fb = pizzetti.TransitModel(prm, t, limb="proven").light_curve(prm)
+    fc = pizzetti.TransitModel(prm, t, limb="quadrature").light_curve(prm)
+    assert np.max(np.abs(fa - fc)) < 1e-11
+    assert np.max(np.abs(fb - fc)) < 1e-9

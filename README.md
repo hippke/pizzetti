@@ -48,6 +48,11 @@ ratios up to ~0.2). Short light curves and larger occulters use a high-order Gre
 - **It is more accurate than batman.** For the power-2 and nonlinear laws batman's adaptive
   integration leaves errors of ~10⁻⁷ even at its tightest setting; `pizzetti` stays below 10⁻⁹.
   Kepler's equation is solved to 10⁻¹⁵ instead of 10⁻⁷.
+- **The limb can be proven too.** With `limb="proven"` the contact expansions are split into
+  pieces whose degrees are chosen so that their flux error is also proven to be below `series_tol`
+  (radius ratios up to ~0.2 at 10⁻⁹, ~0.15 at 10⁻¹²). The proof costs 10–100 ms of set-up per light
+  curve, so it is opt-in; `occult(..., return_certified=True)` reports which samples it covers.
+  The default (`limb="fast"`) uses the same expansions at fixed order with an estimated error of ~10⁻¹⁵.
 
 ## Speed against batman
 

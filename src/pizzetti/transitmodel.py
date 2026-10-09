@@ -58,7 +58,8 @@ class TransitModel(object):
     :param params: :class:`TransitParams`
     :param t: times (numpy array)
     :param max_err: accepted for compatibility (ppm). The interior series is
-        bounded by ``series_tol``; the limb quadrature is accurate to ~1e-10.
+        bounded by ``series_tol``; with ``limb="proven"`` so is the limb
+        solution where it applies (see :func:`pizzetti.occult`).
     :param nthreads: accepted for compatibility; pizzetti runs single-threaded
     :param fac: accepted for compatibility and ignored
     :param transittype: "primary" or "secondary"
@@ -66,6 +67,8 @@ class TransitModel(object):
     :param exp_time: exposure time (same units as ``t``)
     :param series_tol: rigorous bound on the flux error of the interior series
         (absolute flux, default 1e-9); 0 disables the series
+    :param limb: "fast" (default), "proven" or "quadrature": method for the
+        limb samples of non-quadratic laws (see :func:`pizzetti.occult`)
 
     Example::
 
@@ -74,7 +77,7 @@ class TransitModel(object):
     """
 
     def __init__(self, params, t, max_err=1.0, nthreads=1, fac=None, transittype="primary",
-                 supersample_factor=1, exp_time=0.0, series_tol=SERIES_TOL):
+                 supersample_factor=1, exp_time=0.0, series_tol=SERIES_TOL, limb="fast"):
         check_law(params.limb_dark, params.u)
         if transittype not in ("primary", "secondary"):
             raise ValueError('Allowed transit types are "primary" and "secondary".')
@@ -90,6 +93,7 @@ class TransitModel(object):
         self.fac = fac
         self.nthreads = 1
         self.series_tol = series_tol
+        self.limb = limb
         self.supersample_factor = int(supersample_factor)
         self.exp_time = exp_time
         if self.supersample_factor > 1:
@@ -135,7 +139,7 @@ class TransitModel(object):
         self._store(params)
         if self.transittype == 1:
             check_law(params.limb_dark, params.u)
-            lc = occult(self.ds, abs(params.rp), params.u, params.limb_dark, self.series_tol)
+            lc = occult(self.ds, abs(params.rp), params.u, params.limb_dark, self.series_tol, self.limb)
             if self.inverse:
                 lc = 2.0 - lc
         else:
@@ -158,8 +162,8 @@ class TransitModel(object):
         ``series_tol``."""
         from . import _general
         ds = np.linspace(0.0, 1.0 + self.rp, 2000)
-        f = occult(ds, self.rp, self.u, self.limb_dark, self.series_tol)
-        f0 = occult(ds, self.rp, self.u, self.limb_dark, 0.0)
+        f = occult(ds, self.rp, self.u, self.limb_dark, self.series_tol, self.limb)
+        f0 = occult(ds, self.rp, self.u, self.limb_dark, 0.0, "quadrature")
         err = np.max(np.abs(f - f0)) * 1e6
         if plot:
             import matplotlib.pyplot as plt

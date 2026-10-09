@@ -155,9 +155,11 @@ def _tail(c, umax):
 
 
 @njit(cache=True)
-def pieces(g, p, T, L, N, ymax_c):
+def pieces(g, p, T, L, N, ymax_c, Jfix=np.array([-1, -1, -1])):
     """Series for one exponent g: RA (N+1,), B (3, N+1), C (3, N+1) (regular,
-    log and power parts) and an estimate of the relative truncation error."""
+    log and power parts) and an estimate of the relative truncation error.
+    Jfix = (J_A, J_B, J_C) >= 0 fixes the number of j-terms per piece (used by
+    the proven mode, which bounds the j-remainder separately); -1: adaptive."""
     n = N + 1
     jm = min(T.shape[1] - 1, JC)
     one = np.zeros(n)
@@ -200,7 +202,8 @@ def pieces(g, p, T, L, N, ymax_c):
         contrib = 0.0
         scale = 1.0
         conv = False
-        for j in range(jm + 1):
+        jlim = jm if Jfix[1 + piece] < 0 else min(jm, Jfix[1 + piece])
+        for j in range(jlim + 1):
             if j >= 1:
                 _mul(xj, x, t1)
                 xj[:] = t1
@@ -212,7 +215,7 @@ def pieces(g, p, T, L, N, ymax_c):
             R += dR
             SL += dL
             SC += dC
-            if j >= 2:
+            if j >= 2 and Jfix[1 + piece] < 0:
                 contrib = _size(dR, umax) + _size(dL, umax) + _size(dC, umax)
                 scale = _size(R, umax) + _size(SL, umax) + _size(SC, umax)
                 if contrib <= 1e-18 * scale:
@@ -222,7 +225,7 @@ def pieces(g, p, T, L, N, ymax_c):
                         break
                 else:
                     small = 0
-        if not conv:
+        if not conv and Jfix[1 + piece] < 0:
             x0 = x[0]
             est = max(est, contrib / max(scale, 1e-300) * x0 / max(1.0 - x0, 1e-3))
         out = B if piece == 0 else C
@@ -241,7 +244,8 @@ def pieces(g, p, T, L, N, ymax_c):
     R = np.zeros(n)
     xj = one.copy()
     cj = np.empty(n)
-    for j in range(min(jm, N) + 1):
+    jA = min(jm, N) if Jfix[0] < 0 else min(jm, Jfix[0])
+    for j in range(jA + 1):
         if j == 0:
             cj[:] = one + q
         else:

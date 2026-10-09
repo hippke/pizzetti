@@ -14,7 +14,8 @@ from math import pi
 import numpy as np
 from numba import njit
 
-from . import _contact, _exact, _general, _lens, _series
+
+from . import _contact, _exact, _general, _lens, _proven, _series
 from .laws import QUADRATIC_FAMILY, power_terms, quadratic_coefficients
 
 #: Default bound on the flux error of the interior series (absolute flux).
@@ -110,15 +111,16 @@ def _quadratic_flux(z, k, u1, u2, z_c, A_half):
 
 
 @njit(cache=True)
-def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
+def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, mode, ltol):
     """Power-law intensities: interior series for z <= z_c, Green's-theorem
     quadrature (limb) otherwise. Integer exponents 0 and 1 are folded into
     A0 + A1 z^2; the exponents {1/4, 1/2, 3/4} and a single arbitrary
     exponent have unrolled vectorised kernels."""
     n = z.shape[0]
     out = np.ones(n)
+    cert = np.ones(n, dtype=np.bool_)
     if k <= 0.0:
-        return out
+        return out, cert
     nt = gams.shape[0]
     norm = 0.0
     for i in range(nt):
@@ -187,7 +189,17 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
     # limb samples: hypergeometric solution, compressed per light curve, where
     # it applies and pays off; Green's-theorem quadrature otherwise
     bl = np.full(ml, np.nan)
-    if use_hyp and ml >= FIT_MIN_SAMPLES * nt and k < 0.5:
+    if mode == 2 and ml > 0:
+        # proven: pieces with a proven flux bound <= ltol
+        if k < 0.5:
+            zb_, kinds_, s0s_, store_, degs_, okp, bnds_ = _proven.build(k, gams, cs, ltabs, llens, z_c, total, ltol)
+            # pieces whose bound could not be met are left to quadrature
+            for q in range(bnds_.shape[0]):
+                if not bnds_[q] < np.inf:
+                    zb_[q, 0] = np.nan
+                    zb_[q, 1] = np.nan
+            _proven.evaluate(zl[:ml], k, gams, zb_, kinds_, s0s_, store_, degs_, bl)
+    elif mode == 1 and ml >= FIT_MIN_SAMPLES * nt and k < 0.5:
         bounds, REG, SA, SB, SCc, mexp, est = _contact.build(k, gams, cs, ltabs, llens, z_c, _contact.NS)
         if est <= _contact.TOL:
             _contact.evaluate(zl[:ml], k, bounds, REG, SA, SB, SCc, mexp, bl)
@@ -195,6 +207,8 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
         b = bl[j]
         if np.isnan(b):
             b = _general.blocked_limb(zl[j], k, gams, cs, gu, gw)
+        if mode != 2 or np.isnan(bl[j]):
+            cert[il[j]] = False
         out[il[j]] = 1.0 - b / total
     if ms > 0:
         fs = np.empty(ms)
@@ -212,7 +226,7 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
             _series.series_general(zb, ms, gams, T, fs)
         for j in range(ms):
             out[idx[j]] = fs[j]
-    return out
+    return out, cert
 
 
 def series_cut(rp, limb_dark, u, series_tol=SERIES_TOL):
@@ -246,7 +260,7 @@ def limb_tables(gams):
 _LIMB_CACHE = {}
 
 
-def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="hypergeometric"):
+def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", return_certified=False):
     """Relative flux of a star occulted by an opaque disk.
 
     :param z: projected centre separations (stellar radii), array-like
@@ -254,11 +268,23 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="hyperge
     :param u: limb-darkening coefficients (batman conventions)
     :param limb_dark: "uniform", "linear", "quadratic", "squareroot", "nonlinear" or "power2"
     :param series_tol: bound on the flux error of the interior series; 0 disables it
-    :param limb: "hypergeometric" (default) or "quadrature": method for the
-        samples beyond z_c with non-quadratic laws. "hypergeometric" uses the
-        contact expansions and falls back to quadrature where they do not
-        reach the tolerance (large radius ratios) or do not apply (z <= p).
-    :return: relative flux (ndarray)
+    :param limb: method for the samples beyond z_c with non-quadratic laws:
+        "fast" (default): power series about first and second contact, of
+            fixed order, with coefficients computed once per light curve
+            (error ~1e-15 by an a posteriori estimate, not a proof). Used
+            for radius ratios up to ~0.2 when the light curve has enough
+            limb samples to amortise the set-up; quadrature otherwise.
+        "proven": the same expansions, split into pieces whose degrees are
+            chosen so that the flux error is proven to be at most
+            ``series_tol`` (the guarantee of the interior series). Costs
+            10-100 ms of set-up per light curve. Pieces whose bound cannot be
+            met (radius ratios above ~0.2, or ~0.15 for series_tol=1e-12)
+            fall back to quadrature (see ``return_certified``).
+        "quadrature": Green's-theorem quadrature (~1e-13).
+    :param return_certified: also return a boolean array, True where the
+        flux error is proven to be at most ``series_tol`` (interior series,
+        proven limb pieces, closed forms and out-of-transit samples)
+    :return: relative flux (ndarray), or (flux, certified) if requested
     """
     z = np.ascontiguousarray(z, dtype=np.float64)
     shape = z.shape
@@ -268,15 +294,23 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="hyperge
     if limb_dark in QUADRATIC_FAMILY:
         u1, u2 = quadratic_coefficients(limb_dark, u)
         f = _quadratic_flux(z, k, u1, u2, z_c, _A_HALF)
+        cert = np.ones(z.shape, dtype=bool)
     else:
         al, c = power_terms(limb_dark, u)
         gams = al / 2.0
         tables = np.empty((gams.size, _series.M + 1, _series.M + 1))
         for i, g in enumerate(gams):
             tables[i] = _series.table(float(g), _series.M)
-        if limb not in ("hypergeometric", "quadrature"):
-            raise ValueError('limb must be "hypergeometric" or "quadrature"')
+        modes = {"quadrature": 0, "fast": 1, "hypergeometric": 1, "proven": 2}
+        if limb not in modes:
+            raise ValueError('limb must be "proven", "fast" or "quadrature"')
+        mode = modes[limb]
+        ltol = float(series_tol) if series_tol > 0 else SERIES_TOL
+        if mode == 2 and z_c < 0:
+            mode = 1          # interior series disabled: nothing to match
         ltabs, llens = limb_tables(gams)
-        f = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W,
-                          ltabs, llens, limb == "hypergeometric")
+        f, cert = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W,
+                                     ltabs, llens, mode, ltol)
+    if return_certified:
+        return f.reshape(shape), cert.reshape(shape)
     return f.reshape(shape)
