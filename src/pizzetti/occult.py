@@ -4,25 +4,26 @@
   (rigorous bound <= ``series_tol`` on the flux error);
 * all other on-star samples: exact Mandel & Agol (2002) solution for the
   uniform, linear and quadratic laws; for the other power laws, the
-  hypergeometric limb solution (_lens), compressed per light curve, or
-  Green's-theorem quadrature for short light curves and where the
-  hypergeometric expansion does not apply.
+  contact expansions (_contact; power series about first and second
+  contact with coefficients computed once per light curve), or Green's-
+  theorem quadrature for short light curves and where the expansions do
+  not apply (radius ratios above about 0.25, or z <= p).
 """
 from math import pi
 
 import numpy as np
 from numba import njit
 
-from . import _exact, _general, _lens, _series
+from . import _contact, _exact, _general, _lens, _series
 from .laws import QUADRATIC_FAMILY, power_terms, quadratic_coefficients
 
 #: Default bound on the flux error of the interior series (absolute flux).
 SERIES_TOL = 1e-9
 #: Relative truncation tolerance of the hypergeometric limb solution.
 LIMB_TOL = 1e-16
-#: The per-light-curve hypergeometric compression (setup ~0.5 ms per exponent)
-#: is used when there are at least this many limb samples per exponent.
-FIT_MIN_SAMPLES = 700
+#: The contact expansions (set-up 0.1-1 ms per exponent and light curve) are
+#: used when there are at least this many limb samples per exponent.
+FIT_MIN_SAMPLES = 300
 
 _A_HALF = _series.table(0.5, _series.M)
 
@@ -187,9 +188,9 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, use_hyp):
     # it applies and pays off; Green's-theorem quadrature otherwise
     bl = np.full(ml, np.nan)
     if use_hyp and ml >= FIT_MIN_SAMPLES * nt and k < 0.5:
-        bounds, C, ok = _lens.fit(k, gams, ltabs, llens, z_c)
-        NL = _lens.fit_lengths(C, ok)
-        _lens.blocked_fit_vec(zl[:ml], k, gams, cs, bounds, C, ok, NL, bl)
+        bounds, REG, SA, SB, SCc, mexp, est = _contact.build(k, gams, cs, ltabs, llens, z_c, _contact.NS)
+        if est <= _contact.TOL:
+            _contact.evaluate(zl[:ml], k, bounds, REG, SA, SB, SCc, mexp, bl)
     for j in range(ml):
         b = bl[j]
         if np.isnan(b):
@@ -235,7 +236,7 @@ def limb_tables(gams):
         if key not in _LIMB_CACHE:
             if len(_LIMB_CACHE) > 256:
                 _LIMB_CACHE.clear()
-            _LIMB_CACHE[key] = _lens.table(key)
+            _LIMB_CACHE[key] = _lens.table(key, _contact.JC)
         t, l = _LIMB_CACHE[key]
         ts.append(t)
         ls.append(l)
@@ -254,9 +255,9 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="hyperge
     :param limb_dark: "uniform", "linear", "quadratic", "squareroot", "nonlinear" or "power2"
     :param series_tol: bound on the flux error of the interior series; 0 disables it
     :param limb: "hypergeometric" (default) or "quadrature": method for the
-        samples beyond z_c with non-quadratic laws. The hypergeometric solution
-        falls back to quadrature where its expansion does not converge
-        (z <= p, or large radius ratios near second contact).
+        samples beyond z_c with non-quadratic laws. "hypergeometric" uses the
+        contact expansions and falls back to quadrature where they do not
+        reach the tolerance (large radius ratios) or do not apply (z <= p).
     :return: relative flux (ndarray)
     """
     z = np.ascontiguousarray(z, dtype=np.float64)

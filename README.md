@@ -32,7 +32,9 @@ iterations and no special cases.
 
 For an Earth-sized planet crossing a Sun-like star, the series covers **96–98 %** of the
 in-transit points (central transit: 98 %; averaged over impact parameters: 96 %). The few points that touch the stellar limb use an exact, vectorised Mandel & Agol solver
-(uniform, linear and quadratic laws) or a high-order Green's-theorem quadrature (other laws).
+(uniform, linear and quadratic laws) or, for the other laws, power series about first and second contact with
+coefficients computed once per light curve (accurate to ~1e-15, 7-15x faster per sample than quadrature, radius
+ratios up to ~0.2). Short light curves and larger occulters use a high-order Green's-theorem quadrature.
 
 ## Proven correctness
 
