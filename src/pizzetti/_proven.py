@@ -44,6 +44,8 @@ KA = 0.25        # first-contact piece: k <= KA
 YB = 0.25        # second-contact pieces: y, y' <= YB
 NMO = 2          # outer middle pieces in k in [KA, 1 - YB]
 WMI = 0.07       # largest half-width of inner middle pieces
+WPAD = 1.0 + 1e-9   # piece half-widths are widened by this factor in the bounds
+SAFETY = 1.0 + 1e-6  # margin for rounding in the evaluation of the bounds
 
 
 # ======================================================== coefficient sequences
@@ -117,21 +119,29 @@ def _shift(seq, s0, nb):
 
 # ======================================================== majorant sums
 @njit(cache=True)
-def _gauss_maj(t0, a, b, c, rho, n0):
-    """sum_n |t_n| rho^n, t_{n+1} = t_n (n+a)(n+b)/((n+c)(n+1)): exact until the
-    closed-form ratio bound rbar(n) gives rbar rho < 1, then geometric."""
+def _rbar(n, a, b, c):
+    """Upper bound of |t_{n'+1}/t_{n'}| for all n' >= n (Lemma B2); valid when
+    n + a, n + b, n + c > 0."""
+    return 1.0 + max(0.0, a + b - c - 1.0) / (n + c) + abs(a * b - c) / ((n + c) * (n + 1.0))
+
+
+@njit(cache=True)
+def _gauss_maj(t0, a, b, c, rho, n0, nfrom):
+    """sum_{n >= nfrom} |t_n| rho^n, t_{n+1} = t_n (n+a)(n+b)/((n+c)(n+1)):
+    exact terms until the ratio bound rbar(n) gives rbar rho < 1, then a
+    geometric tail."""
     if t0 == 0.0:
         return 0.0
     s = 0.0
     t = abs(t0)
     w = 1.0
     n = 0
-    nmin = max(n0, int(abs(a) + abs(b) + abs(c)) + 4)
+    nmin = max(n0, nfrom, int(abs(a) + abs(b) + abs(c)) + 4)
     while n < 400000:
-        s += t * w
+        if n >= nfrom:
+            s += t * w
         if n >= nmin and n + a > 0 and n + b > 0 and n + c > 0:
-            rbar = 1.0 + max(0.0, a + b - c - 1.0) / (n + c) + abs(a * b - c) / ((n + c) * (n + 1.0))
-            sr = rbar * rho
+            sr = _rbar(n, a, b, c) * rho
             if sr < 0.999:
                 return s + t * w * sr / (1.0 - sr)
         t *= abs((n + a) * (n + b) / ((n + c) * (n + 1.0)))
@@ -143,27 +153,37 @@ def _gauss_maj(t0, a, b, c, rho, n0):
 
 
 @njit(cache=True)
-def table_maj(g, j, fam, slot, T, rho):
-    """sum_n |coef_n| rho^n of the series (fam, j, slot)."""
+def _phi(n, mi, a, b):
+    """Non-increasing bound of |psi_n| (Lemma B3)."""
+    t1 = abs(mi + a - 1.0) / (n + min(1.0, mi + a))
+    t2 = abs(b - 1.0) / (n + mi + min(1.0, b))
+    t3 = max(1.0 / (n + 1.0) + 1.0 / (n + mi + 1.0), 1.0 / (n + mi + a) + 1.0 / (n + mi + b))
+    return t1 + t2 + t3
+
+
+@njit(cache=True)
+def table_maj(g, j, fam, slot, T, rho, nfrom):
+    """sum_{n >= nfrom} |coef_n| rho^n of the series (fam, j, slot)."""
     a, b, c = _params(g, j, fam)
     m = c - a - b
     mi = np.floor(m + 0.5)
     t0 = T[fam, j, slot, 0]
     if slot == 0:
-        return _gauss_maj(t0, a, b, c, rho, 0)
+        return _gauss_maj(t0, a, b, c, rho, 0, nfrom)
     if abs(m - mi) > 1e-9:
         if slot == 1:
-            return _gauss_maj(t0, a, b, 1.0 - m, rho, int(m) + 2)
+            return _gauss_maj(t0, a, b, 1.0 - m, rho, int(m) + 2, nfrom)
         if slot == 2:
             return 0.0
-        return _gauss_maj(t0, c - a, c - b, 1.0 + m, rho, 0)
+        return _gauss_maj(t0, c - a, c - b, 1.0 + m, rho, 0, nfrom)
     mm = int(mi)
     if slot == 1:
         s = 0.0
         t = t0
         w = 1.0
         for i in range(mm):
-            s += abs(t) * w
+            if i >= nfrom:
+                s += abs(t) * w
             if i + 1 < mm:
                 t *= (i + a) * (i + b) / ((i + 1.0) * (i + 1.0 - mi))
                 w *= rho
@@ -171,23 +191,21 @@ def table_maj(g, j, fam, slot, T, rho):
     tl0 = T[fam, j, 2, 0]
     aa, bb, cc = a + mi, b + mi, mi + 1.0
     if slot == 2:
-        return _gauss_maj(tl0, aa, bb, cc, rho, 0)
-    # slot 3: |Bl_n psi_n|, psi_n bounded through ln(x) - 1/x <= psi(x) <= ln(x)
+        return _gauss_maj(tl0, aa, bb, cc, rho, 0, nfrom)
+    # slot 3: |Bl_n psi_n|; explicit terms with the bound _psi_abs, tail with
+    # the non-increasing bound _phi
     s = 0.0
     t = abs(tl0)
     w = 1.0
     n = 0
-    nmin = int(abs(aa) + abs(bb) + abs(cc)) + 4
+    nmin = max(nfrom, int(abs(aa) + abs(bb) + abs(cc)) + 4)
     while n < 400000:
-        ps = _psi_abs(n, mi, a, b)
-        s += t * w * ps
+        if n >= nfrom:
+            s += t * w * _psi_abs(n, mi, a, b)
         if n >= nmin:
-            rbar = 1.0 + max(0.0, aa + bb - cc - 1.0) / (n + cc) + abs(aa * bb - cc) / ((n + cc) * (n + 1.0))
-            sr = rbar * rho
+            sr = _rbar(n, aa, bb, cc) * rho
             if sr < 0.999:
-                # psi_n' <= ps + ln((n'+1)/(n+1)) <= ps + (n'-n)/(n+1)
-                tail = t * w * (ps * sr / (1.0 - sr) + sr / ((n + 1.0) * (1.0 - sr) ** 2))
-                return s + tail
+                return s + t * w * _phi(n + 1.0, mi, a, b) * sr / (1.0 - sr)
         t *= abs((n + aa) * (n + bb) / ((n + cc) * (n + 1.0)))
         w *= rho
         n += 1
@@ -242,9 +260,7 @@ def _elem(kind, p, u, s0, prev):
     else:
         kap = s0 + u
     V = p * p * (2.0 - kap) ** 2 + kap * kap * (1.0 - p * p)
-    sv = np.sqrt(V)
-    if sv.real * prev.real + sv.imag * prev.imag < 0.0:
-        sv = -sv
+    sv = np.sqrt(V)          # principal branch: Re V > 0 on the disk (_crude)
     z = (sv - p * (2.0 - kap)) / kap
     return z, 4.0 * p * z / kap, sv
 
@@ -289,6 +305,15 @@ def _crude(kind, p, s0, r):
     d = sqrt((cen - 2.0 * p * p) ** 2 + 4.0 * p * p * (1.0 - p * p))
     if r >= d:
         return -1.0, -1.0
+    # V = (kappa - 2p^2)^2 + h^2 with h^2 = 4p^2(1-p^2). Re V is harmonic, so its
+    # minimum over the disk is on the circle kappa = cen + r e^{it}:
+    # Re V = c^2 + h^2 - r^2 + 2 c r u + 2 r^2 u^2, u = cos t, c = cen - 2p^2.
+    # Re V > 0 makes the principal square root the analytic branch.
+    cc = cen - 2.0 * p * p
+    u = min(1.0, max(-1.0, -cc / (2.0 * r)))
+    remin = cc * cc + 4.0 * p * p * (1.0 - p * p) - r * r + 2.0 * cc * r * u + 2.0 * r * r * u * u
+    if remin <= 0.0:
+        return -1.0, -1.0
     vhi = (d + r) ** 2
     zc = (sqrt(vhi) + p * (2.0 + kmax)) / kmin
     return zc, 4.0 * p * zc / kmin
@@ -329,7 +354,7 @@ def _hval(g, j, T, k):
         c = g + 2.5 + j
         return np.exp(lgamma(0.5) + lgamma(g + 2.0 + j) - lgamma(c) + lgamma(c) + lgamma(c - 1.0)
                       - 2.0 * lgamma(c - 0.5))
-    return table_maj(g, j, 0, 0, T, k)
+    return table_maj(g, j, 0, 0, T, k, 0)
 
 
 @njit(cache=True)
@@ -356,9 +381,20 @@ def jbound(kind, g, p, J, slo, shi, T):
 
 
 @njit(cache=True)
+def _nmax_mid(kind, s0, nb):
+    """Number of terms of the series about 0 (kind 3: in k; kind 4: in y = 1 -
+    kappa) that are re-centred at s0 for the middle pieces."""
+    if kind == 3:
+        return int((nb + 60) / (1.0 - s0)) + 40
+    return int((nb + 60) / s0) + 40
+
+
+@njit(cache=True)
 def far_M(kind, g, p, s0, rho, J, T):
     """Upper bounds of |part| on |u| = rho. Kinds 0, 3, 4: one part (index 0);
-    kinds 1, 2: (R, SL, SC)."""
+    kinds 1, 2: (R, SL, SC). Kinds 3, 4: index 1 bounds |f - f~| on the circle,
+    f~ the function whose Taylor coefficients are computed from the series
+    about 0 truncated after _nmax_mid terms (Lemma B5)."""
     out = np.full(3, np.inf)
     Zm, Xm = elem_max(kind, p, s0, rho)
     if Zm < 0.0:
@@ -374,22 +410,32 @@ def far_M(kind, g, p, s0, rho, J, T):
         P = Xm ** (g + 1.0) / (2.0 * (g + 1.0))
     if kind == 4 and (s0 + rho >= 1.0 or rho > s0):
         return out
+    if kind == 3 and s0 + rho >= 1.0:
+        return out
     s = np.zeros(3)
     xj = 1.0
     rj = 1.0
+    nt = _nmax_mid(kind, s0, NB) + 1 if (kind == 3 or kind == 4) else 0
+    if kind == 4:
+        ry = 1.0 - s0 + rho                       # |y| <= ry < 1 on the circle
+        lnmax = max(abs(log(1.0 - s0 - rho)), abs(log(ry))) + 0.5 * pi
     for j in range(J + 1):
         cj = 1.0 + Q if j == 0 else Q * xj
         if kind == 0:
-            s[0] += cj * table_maj(g, j, 0, 0, T, rho)
+            s[0] += cj * table_maj(g, j, 0, 0, T, rho, 0)
         elif kind == 3:
-            s[0] += cj * table_maj(g, j, 0, 0, T, s0 + rho)
+            s[0] += cj * table_maj(g, j, 0, 0, T, s0 + rho, 0)
+            s[1] += cj * table_maj(g, j, 0, 0, T, s0 + rho, nt)
         elif kind == 4:
             s[0] += cj * pi
+            mj = g + 1.5 + j
+            s[1] += cj * (table_maj(g, j, 1, 1, T, ry, nt) + ry ** mj
+                          * (lnmax * table_maj(g, j, 1, 2, T, ry, nt) + table_maj(g, j, 1, 3, T, ry, nt)))
         else:
             fam = 0 if kind == 1 else 1
-            s[0] += cj * table_maj(g, j, fam, 1, T, rho)
-            s[1] += cj * rj * table_maj(g, j, fam, 2, T, rho)
-            s[2] += cj * rj * table_maj(g, j, fam, 3, T, rho)
+            s[0] += cj * table_maj(g, j, fam, 1, T, rho, 0)
+            s[1] += cj * rj * table_maj(g, j, fam, 2, T, rho, 0)
+            s[2] += cj * rj * table_maj(g, j, fam, 3, T, rho, 0)
         xj *= Xm
         rj *= rho
     for f in range(3):
@@ -450,8 +496,7 @@ def mid_coeffs(kind, g, p, s0, T, J, nb):
         else:
             cj = one + q
         if kind == 3:
-            nmax = int((nb + 60) / (1.0 - s0)) + 40
-            Fj = _shift(coef_seq(g, j, 0, 0, T, nmax), s0, nb)
+            Fj = _shift(coef_seq(g, j, 0, 0, T, _nmax_mid(3, s0, nb)), s0, nb)
         else:
             Fj = _g_shift(g, j, T, 1.0 - s0, nb)
         tot += _contact._mulr(cj, Fj)
@@ -465,7 +510,7 @@ def _g_shift(g, j, T, y0, nb):
     a, b, c = _params(g, j, 1)
     m = c - a - b
     n = nb + 1
-    nmax = int((nb + 60) / (1.0 - y0)) + 40
+    nmax = _nmax_mid(4, 1.0 - y0, nb)
     A = _shift(coef_seq(g, j, 1, 1, T, nmax), y0, nb)
     Bl = _shift(coef_seq(g, j, 1, 2, T, nmax), y0, nb)
     Bc = _shift(coef_seq(g, j, 1, 3, T, nmax), y0, nb)
@@ -495,7 +540,12 @@ def _best_far(kind, g, p, s0, w, J, T, rmax):
         rho = w + (rmax - w) * i / 9.0
         M = far_M(kind, g, p, s0, rho, J, T)
         r = w / rho
-        val = (M[0] + M[1] + M[2] if (kind == 1 or kind == 2) else M[0]) * r ** (NB + 1) / (1.0 - r)
+        if kind == 1 or kind == 2:
+            val = (M[0] + M[1] + M[2]) * r ** (NB + 1) / (1.0 - r)
+        elif kind == 3 or kind == 4:
+            val = (M[0] * r ** (NB + 1) + M[1]) / (1.0 - r)
+        else:
+            val = M[0] * r ** (NB + 1) / (1.0 - r)
         if val < best:
             best = val
             bestM = M
@@ -554,6 +604,7 @@ def _do_piece(kd, s0, lo_, hi_, p, gams, cs, tabs, lens, tau_abs, store_pc):
         w = hi_
     else:
         w = 1.0 - lo_
+    w *= WPAD          # cover samples assigned to the piece by rounded z-limits
     for N in range(2, NB + 1):
         err = jerr
         if kd == 3 or kd == 4:
@@ -565,6 +616,8 @@ def _do_piece(kd, s0, lo_, hi_, p, gams, cs, tabs, lens, tau_abs, store_pc):
             if rmin <= w:
                 return NB, np.inf
             err += _tail(store_pc[0, 0], w, N, Fs, rmin)
+            for i in range(nt):
+                err += abs(cs[i]) * Ms[i, 1] / (1.0 - w / rhos[i])
         elif kd == 0:
             for i in range(nt):
                 if rhos[i] <= w:
@@ -582,6 +635,7 @@ def _do_piece(kd, s0, lo_, hi_, p, gams, cs, tabs, lens, tau_abs, store_pc):
                 err += _lstar(mm, w) * _tail(store_pc[1 + i, 0], w, N, abs(cs[i]) * Ms[i, 1], rhos[i])
                 err += w ** mm * _tail(store_pc[1 + i, 1], w, N, abs(cs[i]) * Ms[i, 2], rhos[i])
             err += _tail(store_pc[0, 0], w, N, Fs, rmin)
+        err *= SAFETY
         if err <= tau_abs:
             return N, err
     return NB, np.inf
