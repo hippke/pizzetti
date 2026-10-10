@@ -1,0 +1,417 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem*{paperthm}{\paperthmname}
+\newcommand{\paperthmname}{}
+\newtheorem{tool}{Tool}
+\theoremstyle{remark}
+\newtheorem*{example}{Worked example}
+\newtheorem*{checkit}{Check it yourself}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\nb}[1]{\texttt{validation/#1}}
+
+\title{The pizzetti proofs, explained\\[4pt]\large Part 3: Crossing the stellar edge (Section 5.3 and Appendix C)}
+\author{Companion to the pizzetti paper (Sections 5.1, 5.3 and Appendix C)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent When the planet overlaps the edge of the star, the interior series of Part~1 no longer
+works. The paper then writes the blocked light as a sum of special functions, turns it into a few
+short polynomials (``pieces''), and proves an error bound for each piece (Theorem~3, proof in
+Appendix~C). This part explains that proof. Most steps need only first-year calculus. A few need
+facts from complex analysis, collected in Section~\ref{sec:tools} as five ``tools'', each with the
+reason it is true and a numerical illustration. With the tools in hand the proof is mainly careful
+bookkeeping: every quantity is bounded by something computable, and the pieces are added up.
+Every step is checked in \nb{04\_hypergeometric\_section5.ipynb} and
+\nb{05\_contact\_theorem3.ipynb}.
+\end{abstract}
+
+\tableofcontents
+
+%% ===================================================================
+\section{The plan in plain words}
+\label{sec:plan}
+
+During ingress and egress the planet covers part of the stellar edge. The blocked light
+$P_\gamma(z,p)=\int(1-r^2)^\gamma\,\dd A$ (over the covered part of the star) still depends only on
+$z$ and $p$, but now it has a ``kink'' at the moment the planet's edge touches the star's edge from
+inside (second contact), and the interior series cannot reach past it. The paper proceeds in three
+steps:
+\begin{enumerate}
+  \item \textbf{A formula} (Section~5.1): $P_\gamma$ is written as an infinite sum over $j$ of known
+        special functions (Gauss hypergeometric functions) of one variable. Keeping $J$ terms gives
+        $P_{\gamma,J}$. \emph{Error 1:} the terms after $J$.
+  \item \textbf{Pieces} (Section~5.3): the range of $z$ from first contact down to the cut $z_c$ of
+        the interior series is split into five to eight pieces. On each piece $P_{\gamma,J}$ is
+        replaced by a polynomial of low degree $N$ (with an explicit $y^{\gamma+3/2}$ and
+        logarithm factor at second contact). \emph{Error 2:} the polynomial terms after $N$.
+  \item \textbf{Bounds} (Appendix~C): error 1 is bounded by a geometric series (Lemma~2); error 2
+        by Cauchy's estimate (Lemma~6), which needs an upper bound $M$ for the size of the function
+        on a circle in the complex plane (Lemmas~3--5). The degree $N$ of each piece is the smallest
+        for which errors 1 and 2 together stay below the tolerance $\tau$.
+\end{enumerate}
+
+\begin{example}
+Throughout we use the power-2 law $I=1-0.6(1-\mu^{0.6})$, i.e.\ exponents $\gamma=0$ and $0.3$,
+with $p=0.1$ and $\tau=10^{-9}$. The interior series reaches $z_c=0.8203$. The limb region
+$0.8203<z<1.1$ is covered by six pieces:
+\begin{center}
+\begin{tabular}{llcc}
+\toprule
+piece & range of $z$ & degree $N$ & proven bound\\
+\midrule
+A, first contact & $1.0462$--$1.1000$ & 6 & $4.4\times10^{-10}$\\
+MO, middle (in $k$) & $0.9950$--$1.0462$ & 8 & $5.2\times10^{-10}$\\
+MO, middle (in $k$) & $0.9462$--$0.9950$ & 8 & $4.7\times10^{-10}$\\
+B, second contact, outside & $0.9000$--$0.9462$ & 7 & $5.9\times10^{-10}$\\
+C, second contact, inside & $0.8422$--$0.9000$ & 12 & $8.2\times10^{-10}$\\
+MI, middle (in $\kappa$) & $0.8203$--$0.8422$ & 4 & $2.6\times10^{-10}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+(Second contact is at $z=1-p=0.9$, first contact at $z=1+p=1.1$.)
+\end{example}
+
+%% ===================================================================
+\section{Five tools from complex analysis}
+\label{sec:tools}
+
+The polynomials are truncated power series. To bound what a truncated power series leaves out, it
+pays to let the variable be a complex number $u$. Nothing physical happens there; the complex plane
+is just where the cleanest bounds live. All five tools are standard (any textbook on complex
+analysis, e.g.\ the first chapters of Ahlfors or of Stein \& Shakarchi).
+
+\begin{tool}[A power series converges in a disk]
+A power series $f(u)=\sum_nf_nu^n$ converges inside the largest disk around $0$ that contains no
+``bad point'' of $f$ (a point where $f$ is infinite, or where a square root or logarithm has its
+branch point).
+\end{tool}
+Example: $1/(1-u)=1+u+u^2+\dots$ converges for $|u|<1$; the bad point is $u=1$. The same holds for
+$\sqrt{1-u}$ or $\ln(1-u)$. This is why each piece is kept small: its expansion point must be far
+from the bad points of the function, and then the coefficients fall off fast.
+
+\begin{tool}[Cauchy's estimate]
+If $f$ is given by its power series on and inside the circle $|u|=\rho$, and $|f(u)|\le M$ on that
+circle, then
+\[
+  |f_n|\le M\,\rho^{-n}\qquad\text{for every }n.
+\]
+\end{tool}
+\emph{Why.} Put $u=\rho e^{i\theta}$ into the series:
+$f(\rho e^{i\theta})=\sum_nf_n\rho^ne^{in\theta}$. This is a Fourier series in $\theta$, so its
+coefficients are averages over the circle,
+\[
+  f_n\rho^n=\frac{1}{2\pi}\int_0^{2\pi}f(\rho e^{i\theta})\,e^{-in\theta}\,\dd\theta ,
+\]
+and an average is never larger than the largest value: $|f_n|\rho^n\le M$.
+
+\emph{What it buys.} If we know $f$ is at most $M$ on a circle of radius $\rho$, then every
+coefficient is bounded, and the terms $f_nu^n$ with $|u|\le w<\rho$ are at most $M(w/\rho)^n$: a
+geometric series whose tail we can sum. Example: $f=1/(1-u)$ has $|f|\le10$ on $|u|=0.9$, so
+$|f_n|\le10\cdot0.9^{-n}$ (true value: $f_n=1$). Crude, but the factor $(w/\rho)^n$ makes it
+harmless after a few dozen terms.
+
+\begin{tool}[Square roots and powers of complex numbers]
+A non-zero complex number has two square roots. On a disk where a function $g$ has no zeros, one
+can choose $\sqrt g$ (and $g^a$ for any real $a$) so that it varies smoothly, matches the usual
+positive root on the real axis, and satisfies $|g^a|=|g|^a$. The \emph{principal} root (the one
+with positive real part) is such a choice wherever $\operatorname{Re}g>0$.
+\end{tool}
+The equality $|g^a|=|g|^a$ is what makes bounds easy: to bound $x^{\gamma+1}$ on a circle, bound
+$|x|$.
+
+\begin{tool}[Largest and smallest values lie on the boundary]
+For a function given by a power series, the largest value of $|f|$ over a closed disk is reached
+on its boundary circle. The real part of such a function takes its smallest and largest values on
+the boundary as well.
+\end{tool}
+\emph{Why (for the real part).} The real part $h$ of such a function has zero Laplacian. By the
+mean-value expansion of Part~2 with $\Delta h=0$, its average over any small circle equals its value
+at the centre. So $h$ cannot have a strict minimum inside the disk: the average around a minimum
+would be larger than the minimum itself.
+
+\begin{tool}[Bounding a hypergeometric series]
+The Gauss hypergeometric function is the power series ${}_2F_1(a,b;c;u)=\sum_nt_nu^n$ with $t_0=1$
+and term ratio
+\[
+  \frac{t_{n+1}}{t_n}=\frac{(n+a)(n+b)}{(n+c)(n+1)} .
+\]
+\begin{enumerate}
+  \item[(a)] $|{}_2F_1(u)|\le\sum_n|t_n|\,|u|^n$; if all $t_n>0$, this is ${}_2F_1(|u|)$.
+  \item[(b)] The term ratio tends to 1, and from some $n$ on it is at most an explicit number
+        $\bar r(n)$ that decreases with $n$ (Lemma~5a of the paper). Once $\bar r(n)\,|u|<1$, the
+        rest of the sum is smaller than a geometric series. So $\sum|t_n||u|^n$ can be computed
+        with a guaranteed upper bound: add terms one by one, then add the geometric tail.
+\end{enumerate}
+\end{tool}
+For (b), the algebra is one line: $(n+a)(n+b)-(n+c)(n+1)=n(a+b-c-1)+ab-c$, so the ratio is
+$1+\frac{n(a+b-c-1)+ab-c}{(n+c)(n+1)}$, and each part of the fraction can only shrink as $n$ grows.
+
+\medskip\noindent\textbf{One thing we take from the handbook.} Near argument 1, a hypergeometric
+function splits into a smooth part and a part with a non-integer power (and, for half-integer
+$\gamma$, a logarithm):
+\[
+  {}_2F_1(\dots;1-y)=A(y)+y^{m}\bigl[B_l(y)\ln y+B_c(y)\bigr],
+\]
+where $A$, $B_l$, $B_c$ are again power series with term-ratio rules. These ``connection formulae''
+are in every handbook (DLMF \S15.8); the coefficients are tabulated by pizzetti and checked against
+arbitrary-precision evaluations in its test suite. This is the only place where the proof uses a
+special-function identity without deriving it.
+
+%% ===================================================================
+\section{The formula: blocked light as a sum of Gauss functions (Section 5.1)}
+
+\paragraph{Starting point.} By Green's theorem (the 2D divergence theorem, as in Part~2) the blocked
+light can be written as an integral along the part of the planet's rim that lies on the star. With
+$s=r^2$ running from $a=(z-p)^2$ to $s_1$ (where $s_1=1$ while the planet crosses the edge and
+$s_1=(z+p)^2$ while it is inside),
+\[
+  P_\gamma=-\frac{1}{2(\gamma+1)}\int_a^{s_1}(1-s)^{\gamma+1}\Bigl[1+\frac{p^2-z^2}{s}\Bigr]
+  \frac{\dd s}{\sqrt{(s-a)(b-s)}},\qquad b=(z+p)^2
+\]
+(paper, Eq.~24). Notebook~4 checks this against the defining area integral to better than $10^{-23}$ of the stellar flux.
+
+\paragraph{Change of variable.} Write $x=1-(z-p)^2$ and $s=1-x(1-t)$. Then $s-a=xt$,
+$b-s=4zp(1-kt)$ with
+\[
+  k=\frac{x}{4zp}=\frac{1-(z-p)^2}{4zp},
+\]
+and $\dd s=x\,\dd t$. The variable $k$ runs from $0$ at first contact to $1$ at second contact;
+inside the disk we use $\kappa=1/k$ instead, which runs from 1 at second contact downwards.
+
+\paragraph{The troublesome $1/s$, expanded.} Since $1-s=x(1-t)$ and $0\le x(1-t)\le x<1$ (for
+$z>p$),
+\[
+  \frac1s=\frac{1}{1-x(1-t)}=\sum_{j\ge0}x^j(1-t)^j ,
+\]
+a geometric series. Integrating term by term, each term is an Euler integral, i.e.\ a Gauss
+function of the single variable $k$ (or $\kappa$):
+\[
+  H_j(k)=\int_0^1t^{-1/2}(1-t)^{\gamma+1+j}(1-kt)^{-1/2}\,\dd t,\qquad
+  G_j(\kappa)=\frac1\pi\int_0^1t^{-1/2}(1-t)^{-1/2}(1-\kappa t)^{\gamma+1+j}\,\dd t .
+\]
+The result (paper, Eqs.~26--27) is
+\[
+  P_\gamma=-\frac{x^{\gamma+1}\sqrt k}{2(\gamma+1)}\sum_{j\ge0}c_jH_j(k)\quad\text{(across the edge)},\qquad
+  P_\gamma=-\frac{\pi x^{\gamma+1}}{2(\gamma+1)}\sum_{j\ge0}c_jG_j(\kappa)\quad\text{(inside)},
+\]
+with $c_0=1+p^2-z^2$ and $c_j=(p^2-z^2)x^j$ for $j\ge1$.
+
+\paragraph{Lemma 2 (Error 1): the terms after $j=J$.} Look at the integrals defining $H_j$ and $G_j$.
+The integrands are positive, and raising $j$ by one multiplies them by $(1-t)$ or $(1-\kappa t)$,
+numbers between 0 and 1. So the integrals \emph{decrease} with $j$: $H_j\le H_{J+1}$ and
+$\pi G_j\le\pi G_{J+1}\le\pi$ for $j>J$. Since $|c_j|=|z^2-p^2|\,x^j$, the omitted terms are at
+most a geometric series in $x$:
+\[
+  |P_\gamma-P_{\gamma,J}|\le|\text{prefactor}|\cdot|z^2-p^2|\cdot H_{J+1}\cdot\frac{x^{J+1}}{1-x}
+  \quad\text{(and similarly inside, with $\pi$ for $H_{J+1}$)}.
+\]
+On a piece, each factor is largest at one end of the piece (they all move monotonically with $z$),
+which gives a single number for the whole piece (paper, Eq.~C10).
+
+\begin{example}
+For the first-contact piece A of our example, $J=7$ terms suffice to make error 1 at most
+$2.5\times10^{-11}$ of the stellar flux for the exponent $\gamma=0.3$.
+\end{example}
+
+\paragraph{Where this breaks down.} The geometric series converges like $x^J$, and
+$x=1-(z-p)^2$ approaches 1 when the planet's centre comes close to the stellar centre ($z\to p$).
+For large planets the pieces nearest to $z_c$ then need too many terms. That is why proven pieces
+exist only for $p\lesssim0.2$ (at $\tau=10^{-9}$); beyond, pizzetti falls back to numerical
+quadrature and says so.
+
+\begin{checkit}
+\nb{04\_hypergeometric\_section5.ipynb}: the rim integral and the $j$-series against the defining
+area integral (agreement better than $10^{-21}$), and Lemma~2 at single points: error/bound between
+0.25 and 0.9999, never above 1.
+\end{checkit}
+
+%% ===================================================================
+\section{The pieces (Sections 5.2--5.3)}
+
+\paragraph{Why pieces.} By Tool~1 a power series converges up to the nearest bad point. For the
+blocked light the bad points are the two contacts (where the flux is not smooth) and, inside the
+disk, $\kappa=0$. A single series over the whole limb would converge slowly or not at all. Short
+series around well-chosen centres converge fast.
+
+\paragraph{The five kinds of piece.}
+\begin{itemize}
+  \item \textbf{A (first contact, $k\le\tfrac14$)}: $P_{\gamma,J}=k^{\gamma+3/2}\times$(power series
+        in $k$). The factor $k^{\gamma+3/2}$ shows how the blocked light starts from zero.
+  \item \textbf{MO (two middle pieces, $\tfrac14\le k\le\tfrac34$)}: Taylor series about $k_0=\tfrac38$
+        and $\tfrac58$.
+  \item \textbf{B and C (second contact, $y=1-k\le\tfrac14$ outside, $y'=1-\kappa\le\tfrac14$ inside)}:
+        $P_{\gamma,J}=R(y)+y^{\gamma+3/2}\bigl[S_L(y)\ln y+S_C(y)\bigr]$, three power series. The
+        non-smooth part at second contact is written out explicitly; the three series are smooth.
+  \item \textbf{MI (middle pieces inside, in $\kappa$)}: Taylor series of half-width at most $0.07$,
+        from the C piece down to $z_c$.
+\end{itemize}
+Each piece needs the coefficients of its power series. They follow by multiplying and composing
+known series (for $z$ as a function of $k$, for $x$, for the Gauss functions); this is exact up to
+the order computed (64). On the middle pieces the series of the Gauss functions about $0$ are
+truncated after a few hundred terms before being re-centred; Section~\ref{sec:eta} accounts for
+that.
+
+%% ===================================================================
+\section{Bounding error 2: Lemma 6 (Cauchy's estimate with a correction)}
+
+On a piece with variable $u$, $|u|\le w$, write the smooth part as $f(u)=\sum_nf_nu^n$ and use the
+polynomial $\sum_{n\le N}f_nu^n$. What is left out is $\sum_{n>N}f_nu^n$. We split it:
+\begin{itemize}
+  \item terms $N<n\le64$: their coefficients are computed, so add up $|f_n|w^n$ directly;
+  \item terms $n>64$: Cauchy's estimate (Tool~2) on a circle of radius $\rho>w$ gives
+        $|f_n|w^n\le M(w/\rho)^n$, a geometric tail $M(w/\rho)^{65}/(1-w/\rho)$.
+\end{itemize}
+This is the paper's Eq.~(32)/(C15):
+\[
+  \Bigl|\sum_{n>N}f_nu^n\Bigr|\le\sum_{n=N+1}^{64}|f_n|w^n+M\frac{(w/\rho)^{65}}{1-w/\rho}.
+\]
+At the contacts, the factors $y^{\gamma+3/2}$ and $y^{\gamma+3/2}|\ln y|$ are replaced by their
+largest values on the piece (an elementary calculus exercise, Lemma~5d).
+
+\begin{example}
+Piece A, $\gamma=0.3$: the circle radius chosen is $\rho=0.87$ against $w=0.25$, and the bound on
+the circle is $M\approx0.2$ (in units of the stellar flux). The far tail is then
+$0.2\times(0.25/0.87)^{65}/(1-0.29)\approx10^{-36}$: utterly negligible. The bound of the piece is
+dominated by the computed terms $N<n\le64$ and by error 1; in total $4.4\times10^{-10}$, while the
+true error of the piece is $2.4\times10^{-10}$.
+\end{example}
+
+So the only hard part is a \emph{guaranteed} value of $M$, the size of $f$ on the circle. That is
+what Lemmas~3--5 provide.
+
+%% ===================================================================
+\section{Getting $M$: bounding the function on a circle (Lemmas 3--5)}
+
+$f$ is a product of simple factors: the prefactor ($x^{\gamma+1}$, $\sqrt k$), the $c_j$
+($1+p^2-z^2$ and $(p^2-z^2)x^j$), and the Gauss functions. We bound each on the circle and multiply.
+
+\paragraph{Lemma 3: $z$ and $x$ behave well on the disk.} As a function of $k$ the separation is
+$z=p(1-2k)+\sqrt{W}$ with $W=1-4p^2k(1-k)$ (paper, Eq.~28). Two things could go wrong on a complex
+disk: the square root could jump between its two values, and $z$ (hence $x$) could be zero, which
+would spoil the powers $x^{\gamma+1}$. Neither happens:
+\begin{itemize}
+  \item If $4p^2|k||1-k|<1$ on the disk, then $W$ lies within distance 1 of the number 1, so
+        $\operatorname{Re}W>0$, and the principal root is a smooth choice (Tool~3).
+  \item $z$ is never zero, because
+        $\bigl(\sqrt W+p(1-2k)\bigr)\bigl(\sqrt W-p(1-2k)\bigr)=W-p^2(1-2k)^2=1-p^2\ne0$.
+\end{itemize}
+Inside the disk, with $\kappa$, the same holds with $V=(\kappa-2p^2)^2+4p^2(1-p^2)$ in place of $W$.
+There the condition $\operatorname{Re}V>0$ is checked with Tool~4: $\operatorname{Re}V$ is the real
+part of a power series, so its minimum over the disk lies on the circle, where it is a quadratic in
+$\cos\theta$ whose minimum is elementary (paper, Eq.~C11). The code checks these conditions for every
+circle it uses and rejects the circle if they fail.
+
+\paragraph{Lemma 4: the size of $z$ and $x$ on the circle, from 1024 samples.} Evaluate $z$ at
+1024 equally spaced points of the circle and take the largest $|z|$. Between two samples $z$ can be
+a little larger. How much? By Cauchy's estimate on a slightly larger circle (radius $\rho_2$), the
+slope $|z'|$ on the circle is at most $C/(\rho_2-\rho)$, where $C$ is a crude upper bound of $|z|$
+on the larger disk (from the triangle inequality, e.g.\ $|z|\le p(1+2|k|)+\sqrt{1+4p^2|k||1-k|}$).
+Every point of the circle is within arc length $\pi\rho/1024$ of a sample, so
+\[
+  \max_{\text{circle}}|z|\le\max_{\text{samples}}|z|+\frac{\pi\rho}{1024}\cdot\frac{C}{\rho_2-\rho}.
+\]
+\emph{Example (piece A):} sampling gives $|z|\le1.3233$ and $|x|\le0.4631$ on the circle; the crude
+bounds on the larger disk are $1.363$ and $0.594$; the correction term is tiny.
+
+\paragraph{Lemma 5: the Gauss functions.} Three cases, all from Tool~5:
+\begin{itemize}
+  \item $H_j(k)$ has positive coefficients, so $|H_j(k)|\le H_j(|k|)$, a real number computed with a
+        guaranteed upper bound.
+  \item $|G_j(\kappa)|\le1$ when $|1-\kappa|\le1$: in its integral, $1-\kappa t$ lies on the straight
+        line between $1$ and $1-\kappa$, both of size at most 1, and the weight averages to 1.
+  \item At second contact, each of $A$, $B_l$, $B_c$ is bounded by the sum of the sizes of its
+        terms, with a geometric tail. For half-integer $\gamma$ the $B_c$ coefficients contain the
+        digamma function $\psi$; the elementary inequality $\ln x-1/x\le\psi(x)\le\ln x$ (for
+        $x\ge\tfrac16$, from Binet's formula) bounds them by a decreasing function of $n$
+        (Lemma~5b and the paragraph after it).
+\end{itemize}
+Multiplying the bounds of all factors and summing over $j\le J$ gives $M$ (paper, Eq.~C13 and the
+proof of Theorem~3).
+
+%% ===================================================================
+\section{The middle pieces: one more correction}
+\label{sec:eta}
+
+On the middle pieces the coefficients are obtained by taking the series of each Gauss function
+about $k=0$ (or $y=0$), cutting it after a few hundred terms, and re-centring it at the middle of the
+piece. Re-centring a polynomial is exact, so what we compute are the exact coefficients of a
+slightly different function $\tilde f$, with the Gauss functions replaced by their truncations. The
+difference $e=f-\tilde f$ is the truncated tail, which Tool~5 bounds on the circle by a number
+$\eta$. Lemma~6 then adds $\eta/(1-w/\rho)$ to the error (paper, Eq.~C16). In practice this term is
+far below the tolerance; the point is that it is accounted for rather than assumed small.
+
+%% ===================================================================
+\section{Putting it together: Theorem 3}
+
+\renewcommand{\paperthmname}{Theorem 3 (as in the paper, in words)}
+\begin{paperthm}
+For $p<\tfrac12$, on every piece whose disk conditions (Lemma~3) hold, the difference between the
+blocked light $P_\gamma$ and the piece's polynomial approximation is at most error~1 (Lemma~2) plus
+error~2 (Lemma~6 with $M$ from Lemmas~3--5). The flux error is the sum of these over the exponents
+of the limb-darkening law, weighted by $|c_i|$ and divided by the stellar flux.
+\end{paperthm}
+
+\paragraph{The chain of reasoning, in one table.}
+\begin{center}
+\begin{tabular}{p{4.6cm}p{5.4cm}p{3.6cm}}
+\toprule
+Step & Why it holds & Checked in\\
+\midrule
+Blocked light as a sum over $j$ & Green's theorem; geometric series; Euler integral & notebook 4\\
+Error 1 (terms after $J$) & integrands shrink with $j$; geometric series & notebook 4 (Lemma 2)\\
+Polynomial of the piece & exact series arithmetic to order 64 & notebook 5$^*$\\
+Error 2, orders $N+1$ to 64 & coefficients computed & notebook 5$^*$\\
+Error 2, orders above 64 & Cauchy's estimate (Tool 2) & notebook 5$^*$\\
+$M$: geometry factors & Lemma 3 (Tools 3, 4), Lemma 4 (sampling) & notebook 5$^*$\\
+$M$: Gauss functions & Lemma 5 (Tool 5, Euler integral, digamma) & notebook 5$^*$\\
+Middle pieces & truncation term $\eta$ & notebook 5$^*$\\
+\bottomrule
+\end{tabular}
+\par\smallskip\footnotesize $^*$ Through the final bound of each piece, not lemma by lemma.
+\end{center}
+
+\begin{checkit}
+\nb{05\_contact\_theorem3.ipynb} evaluates every certified piece on its own, at points spread over
+its range including both ends, and compares with the defining area integral. In the full run
+(183 pieces, five laws, $p$ from 0.0092 to 0.2, $\tau=10^{-9}$ and $10^{-12}$) no error exceeded
+its bound; the largest ratio was 0.98. The bounds are therefore close to the true errors, which
+also shows they are not wildly pessimistic.
+\end{checkit}
+
+%% ===================================================================
+\section{What the proof does not cover}
+
+\begin{itemize}
+  \item \textbf{Rounding.} The bounds are theorems about exact arithmetic. The code evaluates them
+        in double precision and multiplies them by $1+10^{-6}$; rounding in the coefficients and in
+        the evaluation of the polynomials is at the level of $10^{-16}$ of the stellar flux. A
+        bound that is certified down to the last bit would need interval arithmetic.
+  \item \textbf{Large planets.} For $p\gtrsim0.2$ (at $\tau=10^{-9}$) some pieces cannot be
+        certified (error 1 converges too slowly near $z=p$); those samples are computed by
+        quadrature, and pizzetti reports which samples are covered by the proof.
+  \item \textbf{The connection formulae} of the Gauss functions are taken from the handbook (DLMF
+        \S15.8) and tested numerically, not re-derived.
+\end{itemize}
+
+%% ===================================================================
+\section{Summary}
+
+Crossing the stellar edge, the blocked light is a sum of Gauss functions of one variable. Cutting
+that sum after $J$ terms costs at most a geometric series, because the terms shrink. Each of a few
+pieces then turns the sum into a short polynomial. What that polynomial leaves out is bounded by
+computing the first 64 coefficients and bounding the rest with Cauchy's estimate: the coefficients
+of a function are averages over a circle, so they cannot exceed the function's largest value there.
+Finding that largest value is the technical core: the geometry is smooth on the circle (Lemma~3),
+its size is pinned down by sampling plus a slope bound (Lemma~4), and the Gauss functions are
+bounded by their series or integrals (Lemma~5). None of these steps is deep; there are just many of
+them, and each is checked numerically.
+
+\end{document}

@@ -1,0 +1,318 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{tikz}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem*{paperthm}{\paperthmname}
+\newcommand{\paperthmname}{}
+\theoremstyle{remark}
+\newtheorem*{example}{Worked example}
+\newtheorem*{checkit}{Check it yourself}
+\newcommand{\avg}[1]{\left\langle #1 \right\rangle}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\nb}[1]{\texttt{validation/#1}}
+
+\title{The pizzetti proofs, explained\\[4pt]\large Part 2: The mean-value expansion and Appendix B}
+\author{Companion to the pizzetti paper (Section 4.2 and Appendix B, including B.1)}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Part 1 grouped the series by powers of $\varepsilon$. Here the same series is regrouped
+by powers of the planet's size $p$. This connects it to a 1909 formula by Pizzetti for the
+average of a function over a disk, and to the small-planet and qpower2 approximations used in
+practice. We then prove the two error bounds of Appendix~B, going through the proof of
+Appendix~B.1 line by line. The tools are Taylor expansion, the Laplacian, Gauss's divergence
+theorem in two dimensions (familiar from electrostatics), and one theorem about power series
+(Abel's). Every formula is checked in \nb{03\_meanvalue\_appendixB.ipynb}.
+\end{abstract}
+
+\tableofcontents
+
+%% ===================================================================
+\section{The idea: average of a function over a small disk}
+
+Take any smooth function $f(x,y)$ and average it over a disk of radius $p$ centred at a point $c$.
+If $p$ is small, the average is close to $f(c)$. How close? Expand $f$ around $c$ in a Taylor
+series. Terms of odd order (like $x$, $x^3$, $xy^2$) average to zero by symmetry: for every point
+of the disk the mirror point gives the opposite value. Terms of second order give
+$\avg{x^2}=\avg{y^2}=p^2/4$ and $\avg{xy}=0$, so the second-order part of the Taylor series averages
+to
+\[
+  \tfrac12 f_{xx}\avg{x^2}+\tfrac12 f_{yy}\avg{y^2}=\frac{p^2}{8}\,(f_{xx}+f_{yy})=\frac{p^2}{8}\,\Delta f(c),
+\]
+with the Laplacian $\Delta f=f_{xx}+f_{yy}$. Continuing to all orders gives the
+\emph{mean-value expansion}
+\begin{equation}
+  \avg{f}=\sum_{n=0}^\infty\frac{(p^2/4)^n}{n!\,(n+1)!}\,\Delta^nf(c)
+  =f(c)+\frac{p^2}{8}\Delta f(c)+\frac{p^4}{192}\Delta^2f(c)+\dots
+  \label{eq:mv}
+\end{equation}
+($\Delta^n$ is the Laplacian applied $n$ times). Only Laplacians appear because averaging over a
+disk does not prefer any direction, and the Laplacian is the only second-order operation without
+a preferred direction. The formula is the area version of a formula Pizzetti (1909) gave for
+averages over spheres; Section~\ref{sec:proof} proves it, with an exact remainder.
+
+\begin{example}
+For $f=x^2+y^2$ and $c=0$: the disk average of $r^2$ is $p^2/2$, and \eqref{eq:mv} gives
+$0+\frac{p^2}{8}\cdot4=p^2/2$, since $\Delta(x^2+y^2)=4$ and all higher Laplacians vanish.
+\end{example}
+
+%% ===================================================================
+\section{Applied to a star: the familiar approximations}
+
+For the star, $f=(1-r^2)^\gamma$, the intensity term $\mu^{2\gamma}$, and $c$ is the planet's
+centre at distance $z$. The first term of \eqref{eq:mv}, $f(c)=(1-z^2)^\gamma$, is the
+\emph{small-planet approximation}: the brightness at the planet's centre times its area. The first
+two terms, $I+\frac{p^2}{8}\Delta I$, are exactly the qpower2 approximation of Maxted \& Gill
+(2019) for the power-2 law, and the first-order Rossiter--McLaughlin formula of Ohta et al.\ (2005).
+So these known approximations are the beginning of one series, and the paper's polynomial is the
+same series, summed further.
+
+\paragraph{Computing the Laplacians.} For a function of $r$ alone, the Laplacian in the plane is
+$f''+f'/r$. For a power of $w=1-r^2$ this gives (paper, Eq.~22)
+\begin{equation}
+  \Delta\,w^{s}=4s(s-1)\,w^{s-2}-4s^2\,w^{s-1}.
+  \label{eq:lap}
+\end{equation}
+\emph{Derivation:} $\frac{\dd}{\dd r}w^s=-2rs\,w^{s-1}$ and
+$\frac{\dd^2}{\dd r^2}w^s=4r^2s(s-1)w^{s-2}-2s\,w^{s-1}$; add $\frac1r\frac{\dd}{\dd r}w^s=-2s\,w^{s-1}$
+and use $r^2=1-w$. Applying \eqref{eq:lap} repeatedly produces every $\Delta^nf$ as a short sum of
+powers of $w$. For $\gamma=\tfrac12$ the first four terms of \eqref{eq:mv} become the paper's
+Eq.~(23):
+\[
+  D_{1/2}=\sqrt{w}\Big[1-\frac{p^2}{8}(v+v^2)+\frac{p^4}{192}(v^2+6v^3-15v^4)
+  -\frac{p^6}{1024}(v^3+15v^4-105v^5+105v^6)+\dots\Big],\quad v=\frac1w .
+\]
+
+\paragraph{Why this is the same series as in Part 1.} Part 1 wrote $D_\gamma$ as a sum over
+powers of $\varepsilon$. Each term there is a polynomial in $p^2$ and $z^2$. Collecting all terms
+with the same power $p^{2n}$ gives a term $T_n$ (paper, Eq.~20). Both series are power series in
+$p^2$ for the same quantity, and a power series has only one set of coefficients. So $T_n$
+\emph{must} equal the $n$-th term of \eqref{eq:mv}. (Regrouping is allowed because the series of
+Part 1 converges absolutely.)
+
+\begin{example}
+For $\gamma=\tfrac12$, $p=0.1$, $z=0.5$: $T_0=0.866025$, $T_1=-3.37\times10^{-3}$,
+$T_2=-1.42\times10^{-5}$, $T_3=-1.67\times10^{-7}$. All terms after the first are negative, like
+the terms of Part 1. (They are sums of Part 1's terms, which all have one sign for $0<\gamma<1$.)
+\end{example}
+
+\begin{checkit}
+\nb{03\_meanvalue\_appendixB.ipynb}, cells 3a--3b: \eqref{eq:lap} and the $\gamma=\tfrac12$
+expansion are verified symbolically (sympy computes the Laplacians from scratch), and $T_n$ agrees
+with the $n$-th mean-value term to 40 digits for several $\gamma$.
+\end{checkit}
+
+%% ===================================================================
+\section{Appendix B.1, step by step: the mean-value expansion with remainder}
+\label{sec:proof}
+
+We now prove \eqref{eq:mv} again, this time keeping track of what is left over when we stop after
+$N$ terms. The argument has four steps.
+
+\subsection*{Step 1: Circle averages and Gauss's law}
+
+Let $m_f(\rho)$ be the average of $f$ over the \emph{circle} of radius $\rho$ around $c$. How does
+it change with $\rho$? Its derivative is the average of the outward slope $\partial f/\partial\rho$
+over the circle. The integral of the outward slope around the circle is the \emph{flux} of the
+gradient $\nabla f$ through the circle, and by the divergence theorem (Gauss's law in two
+dimensions) that flux equals the integral of $\nabla\cdot\nabla f=\Delta f$ over the enclosed disk:
+\[
+  2\pi\rho\,m_f'(\rho)=\oint\frac{\partial f}{\partial\rho}\,\dd\ell
+  =\int_{\text{disk of radius }\rho}\Delta f\,\dd A
+  =2\pi\int_0^\rho s\,m_{\Delta f}(s)\,\dd s .
+\]
+In the last step the disk is cut into thin rings of radius $s$ and circumference $2\pi s$, on each
+of which the average of $\Delta f$ is $m_{\Delta f}(s)$. In words: \emph{the circle average grows at
+a rate set by the average Laplacian inside it}, just as the electric field through a circle is set
+by the enclosed charge.
+
+\subsection*{Step 2: Integrate once}
+
+Divide by $2\pi\rho$, integrate from $0$ to $\rho$, and use $m_f(0)=f(c)$:
+\[
+  m_f(\rho)=f(c)+\int_0^\rho\frac{1}{r}\int_0^r s\,m_{\Delta f}(s)\,\dd s\,\dd r .
+\]
+Swap the two integrals (the region is $0\le s\le r\le\rho$; for fixed $s$, $r$ runs from $s$ to
+$\rho$, and $\int_s^\rho\dd r/r=\ln(\rho/s)$):
+\begin{equation}
+  m_f(\rho)=f(c)+\int_0^\rho s\ln\frac{\rho}{s}\;m_{\Delta f}(s)\,\dd s
+  =f(c)+(\mathcal T m_{\Delta f})(\rho).
+  \label{eq:T}
+\end{equation}
+We call the integral operation $\mathcal T$. Two properties matter:
+\begin{itemize}
+  \item its weight $s\ln(\rho/s)$ is \emph{never negative} for $0\le s\le\rho$;
+  \item it maps powers to powers, $\mathcal T[\rho^{2j}]=\rho^{2j+2}/(2j+2)^2$;
+        to see this, substitute $s=\rho u$ and use
+        $\int_0^1u^{2j+1}\ln(1/u)\,\dd u=1/(2j+2)^2$.
+\end{itemize}
+
+\subsection*{Step 3: Repeat}
+
+Equation \eqref{eq:T} holds for any smooth function, so apply it to $\Delta f$ inside the integral:
+$m_{\Delta f}=\Delta f(c)+\mathcal T m_{\Delta^2f}$. Substituting, and using
+$\mathcal T[1]=\rho^2/4$,
+\[
+  m_f(\rho)=f(c)+\frac{\rho^2}{4}\Delta f(c)+\mathcal T^2m_{\Delta^2f}(\rho).
+\]
+Repeating $N+1$ times gives
+\begin{equation}
+  m_f(\rho)=\sum_{j=0}^{N}\frac{\rho^{2j}}{4^j(j!)^2}\,\Delta^jf(c)
+  +\underbrace{\mathcal T^{N+1}m_{\Delta^{N+1}f}(\rho)}_{\text{remainder}} .
+  \label{eq:circle}
+\end{equation}
+The coefficients follow from the power rule: $\mathcal T$ applied $j$ times to $1$ gives
+$\rho^{2j}/(2^2\cdot4^2\cdots(2j)^2)=\rho^{2j}/(4^j(j!)^2)$.
+
+\subsection*{Step 4: From circles to the disk, and the size of the remainder}
+
+The disk average is the circle averages weighted by circumference:
+$\avg{f}=\frac{2}{p^2}\int_0^p\rho\,m_f(\rho)\,\dd\rho$. Applied to the terms of \eqref{eq:circle},
+$\frac{2}{p^2}\int_0^p\rho\cdot\rho^{2j}\,\dd\rho=\frac{p^{2j}}{j+1}$, which turns
+$\frac{1}{4^j(j!)^2}$ into $\frac{1}{4^j\,j!\,(j+1)!}$: exactly the coefficients of \eqref{eq:mv}.
+
+The remainder is built from $m_{\Delta^{N+1}f}$ by repeated application of $\mathcal T$ (weights
+$\ge0$) and the final disk average (weights $\ge0$). So it is a \emph{weighted average with
+non-negative weights} of the circle averages of $\Delta^{N+1}f$:
+\[
+  \text{remainder}=\int_0^pK(s)\,m_{\Delta^{N+1}f}(s)\,\dd s,\qquad K(s)\ge0 .
+\]
+Two consequences:
+\begin{enumerate}
+  \item The total weight $\int K$ is what the remainder would be if $\Delta^{N+1}f$ were the
+        constant 1. Then the next term of the series is the whole remainder, so
+        $\int K=(p^2/4)^{N+1}/((N+1)!\,(N+2)!)$.
+  \item Each circle average lies between the smallest and largest value of $\Delta^{N+1}f$ on the
+        disk, and so does any weighted average of them. Hence there is a point $\xi$ of the disk
+        with
+\end{enumerate}
+\begin{equation}
+  \avg{f}-\sum_{n=0}^{N}\frac{(p^2/4)^n}{n!(n+1)!}\Delta^nf(c)
+  =\frac{(p^2/4)^{N+1}}{(N+1)!\,(N+2)!}\,\Delta^{N+1}f(\xi).
+  \label{eq:lagrange}
+\end{equation}
+This is the analogue of the Lagrange remainder of a Taylor series: the next term, evaluated at an
+unknown point instead of the centre.
+
+%% ===================================================================
+\section{Proposition 1: a two-sided bound}
+
+\renewcommand{\paperthmname}{Proposition 1 (as in the paper)}
+\begin{paperthm}
+For $f=(1-r^2)^\gamma$ with $0<\gamma<1$, all $\Delta^nf$ with $n\ge1$ are negative and their size
+increases with $r$. The remainder of the mean-value expansion after $N$ terms therefore lies between
+the right-hand side of \eqref{eq:lagrange} evaluated at $r=\max(0,z-p)$ and at $r=z+p$.
+\end{paperthm}
+
+\paragraph{Why all Laplacians are negative.} Write $f$ as a power series in $r^2$:
+$f=\sum_m\beta_mr^{2m}$ with the binomial coefficients $\beta_m$ of Part 1, all negative for
+$m\ge1$ when $0<\gamma<1$. In the plane, $\Delta r^{k}=k^2r^{k-2}$, so
+$\Delta^nr^{2m}=4^n\bigl(m!/(m-n)!\bigr)^2r^{2(m-n)}$ (positive). Hence
+\[
+  \Delta^nf=\sum_{m\ge n}\beta_m\,4^n\Bigl(\frac{m!}{(m-n)!}\Bigr)^2r^{2(m-n)}
+\]
+is a power series in $r^2$ with only negative coefficients (for $n\ge1$). Such a function is
+negative, and its size grows with $r$.
+
+\paragraph{Where on the disk.} The unknown point $\xi$ lies somewhere on the planet's disk. The
+smallest distance from the stellar centre on that disk is $z-p$ if the planet does not cover the
+centre ($z\ge p$), and $0$ if it does ($z<p$); the largest is $z+p$. Since $|\Delta^{N+1}f|$
+increases with $r$, the remainder lies between its values at these two radii.
+
+\paragraph{A correction found by the checks.} An earlier draft of the paper wrote $|z-p|$ for the
+smallest radius. For $z<p$ that is wrong: the disk then contains the stellar centre, where $r=0$.
+At $z=0$ the two ends of the old bound coincide, and the true remainder is not equal to that
+single value. The validation notebook found this, and the paper now has $\max(0,z-p)$.
+
+\begin{example}
+$\gamma=\tfrac12$, $p=0.1$, $z=0.5$:
+\[
+\begin{array}{c|ccc}
+ N & \text{lower end} & \text{true remainder} & \text{upper end}\\\hline
+ 0 & -4.00\times10^{-3} & -3.38\times10^{-3} & -2.99\times10^{-3}\\
+ 1 & -2.67\times10^{-5} & -1.43\times10^{-5} & -8.87\times10^{-6}\\
+ 2 & -5.03\times10^{-7} & -1.70\times10^{-7} & -7.13\times10^{-8}
+\end{array}
+\]
+And at $z=0$, $N=1$: the true remainder is $-4.182\times10^{-6}$; the corrected bound gives
+$[-4.359,\,-4.167]\times10^{-6}$ (contains it); the old one gave the single value
+$-4.359\times10^{-6}$ (does not).
+\end{example}
+
+\paragraph{Limitation.} The lower end uses the largest radius $z+p$, where $\Delta^{N+1}f$ is
+largest. Near the stellar edge it blows up, roughly like $(p/(1-z-p))^{2N+2}$: for $N=2$ the bound
+spans $[-5\times10^{-7},-7\times10^{-8}]$ at $z=0.5$ but $[-5.1,\,-1\times10^{-5}]$ at $z=0.88$
+($p=0.1$). Proposition~1 is therefore useful only away from the edge. Proposition~2 fixes this for
+the quadratic law.
+
+%% ===================================================================
+\section{Proposition 2: a bound valid up to the edge (Abel)}
+
+\renewcommand{\paperthmname}{Proposition 2 (as in the paper)}
+\begin{paperthm}
+For $\gamma=\tfrac12$, $t=p^2$, $t_1=(1-z)^2$ and $0\le p\le1-z$,
+\[
+  0\le S^{\rm P}_N(z,p)-D_{1/2}(z,p)\le\Bigl(\frac{p}{1-z}\Bigr)^{2N+2}
+  \Bigl[S^{\rm P}_N(z,1-z)-D_{1/2}(z,1-z)\Bigr],
+\]
+where $S^{\rm P}_N=\sum_{n\le N}T_n$, and $D_{1/2}(z,1-z)$, the average over the planet just
+touching the edge from inside, has the elementary formula of the paper's Eq.~(B4).
+\end{paperthm}
+
+The idea: view $D_{1/2}$ at fixed $z$ as a power series in $t=p^2$,
+$D_{1/2}=\sum_nd_nt^n$ (so $T_n=d_nt^n$). The largest planet that fits is the one touching the
+edge, $t=t_1$. If we knew the error at $t_1$, we could scale it down to smaller planets. Four small
+steps:
+
+\begin{enumerate}
+  \item \emph{All $d_n$ with $n\ge1$ are negative} (the $T_n$ are, see above). So the remainder
+        $D-S^{\rm P}_N=\sum_{n>N}d_nt^n$ is negative: $S^{\rm P}_N\ge D$ for every $t<t_1$.
+        That is the left inequality.
+  \item \emph{The series still converges at the edge, $t=t_1$.} The partial sums at $t_1$ decrease
+        as $N$ grows (we keep adding negative terms). They cannot fall below $D(z,1-z)$: for
+        $t<t_1$ we have $S^{\rm P}_N\ge D$, and letting $t\to t_1$ keeps the inequality because
+        both sides are continuous. A decreasing sequence that is bounded below converges.
+  \item \emph{And it converges to the right value.} Abel's theorem says: if a power series converges
+        at the end point of its interval, its sum there is the limit of its values inside. So
+        $\sum_nd_nt_1^n=D(z,1-z)$, and the error at the edge is
+        $\sum_{n>N}|d_n|t_1^n=S^{\rm P}_N(z,1-z)-D(z,1-z)$.
+  \item \emph{Scale down.} For $t<t_1$ and $n>N$, $t^n=t_1^n\,(t/t_1)^n\le t_1^n\,(t/t_1)^{N+1}$.
+        Summing, $\sum_{n>N}|d_n|t^n\le(t/t_1)^{N+1}\sum_{n>N}|d_n|t_1^n$, and
+        $(t/t_1)^{N+1}=(p/(1-z))^{2N+2}$. That is the right inequality.
+\end{enumerate}
+
+\begin{example}
+$\gamma=\tfrac12$, $p=0.1$, $z=0.5$: the true errors $S^{\rm P}_N-D$ are $3.38\times10^{-3}$,
+$1.43\times10^{-5}$ and $1.70\times10^{-7}$ for $N=0,1,2$; the Abel bounds are
+$3.94\times10^{-3}$, $2.30\times10^{-5}$ and $3.54\times10^{-7}$. The tangent-disk formula gives
+$D_{1/2}(0.5,0.5)=0.767449091228817$, the same as the defining integral to all digits shown.
+\end{example}
+
+\begin{checkit}
+\nb{03\_meanvalue\_appendixB.ipynb}, cells 3c--3e: the tangent-disk formula against the defining
+integral (agreement $10^{-36}$); Proposition~1 with both the corrected and the old smallest radius
+(only the old one fails, and only for $z<p$); Proposition~2 with no violations.
+\end{checkit}
+
+%% ===================================================================
+\section{Summary}
+
+Regrouping the series of Part 1 by powers of the planet size gives Pizzetti's mean-value expansion,
+whose first one and two terms are the small-planet and qpower2 approximations. Appendix~B.1 proves
+the expansion with an exact remainder using one physical idea, Gauss's law for the gradient of $f$,
+and the fact that averages with non-negative weights stay between the minimum and maximum.
+Proposition~1 turns this into a two-sided bound that works away from the stellar edge;
+Proposition~2 uses the sign of the coefficients and Abel's theorem to obtain a bound that works up
+to the edge. Neither is used by the pizzetti code, which relies on Theorem~2 (Part 1); they explain
+how the known approximations fit in and how accurate they are.
+
+\medskip\noindent\textbf{Next:} Part 3, the phases in which the planet crosses the stellar edge
+(Sections 5.1 and 5.3 and Appendix C).
+
+\end{document}
