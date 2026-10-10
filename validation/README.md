@@ -6,16 +6,18 @@ and of the pizzetti code**:
 
 - the **definition** of the flux deficit, the area integral of the intensity over the
   occulted part of the star, evaluated by numerical quadrature (`refcheck.py`), and
-- **Eric Agol's code** for the quadratic law (`exoplanet-core`; Agol, Luger &
-  Foreman-Mackey 2020).
+- two implementations of the quadratic-law solution of Agol, Luger & Foreman-Mackey
+  (2020, AJ 159, 123): `exoplanet-core` (D. Foreman-Mackey), and, optionally, Eric Agol's own
+  IDL version in [Limbdark.jl](https://github.com/rodluger/Limbdark.jl), run with the free GNU
+  Data Language.
 
 The paper's formulas are transcribed into `refcheck.py` from the text of the paper, not
 taken from pizzetti. Each notebook stops with an error if a check fails.
 
 | Notebook | What it checks | Run time |
 |---|---|---|
-| `01_reference` | The reference itself: double vs. arbitrary precision, exact cases, Agol's code | ~35 s |
-| `02_series_theorem2` | Polynomial form, Eq. (S3), **Theorem 2** (bound, sign, monotonicity), **Corollary 1** (cut) with Agol's code as judge | ~60 s |
+| `01_reference` | The reference itself: double vs. arbitrary precision, exact cases, exoplanet-core, Agol's IDL code | ~35 s |
+| `02_series_theorem2` | Polynomial form, Eq. (S3), **Theorem 2** (bound, sign, monotonicity), **Corollary 1** (cut) with exoplanet-core as judge | ~60 s |
 | `03_meanvalue_appendixB` | Eqs. (lap), (lowmu), (Tn) symbolically, Eq. (contact), **Propositions 1 and 2**, Eq. (dDdz) | ~35 s |
 | `04_hypergeometric_section5` | Eqs. (P1d), (ingress), (interiorhyp), **Lemma 2** | ~55 s |
 | `05_contact_theorem3` | **Theorem 3** piece by piece, and complete light curves in the fast and proven modes | ~10 s |
@@ -32,12 +34,17 @@ The full grids were run once while preparing the paper:
 - Complete light curves: every certified sample within the tolerance.
 
 Requirements: `numpy`, `mpmath`, `sympy`, `jupyter`, `pizzetti`, and optionally
-`exoplanet-core` (the cells that use it are skipped if it is missing).
+`exoplanet-core`; for cell 1d also `gdl` (GNU Data Language) and clones of Limbdark.jl and
+EXOFASTv2, given by the environment variables `LIMBDARK` and `EXOFAST`. Cells whose optional
+dependencies are missing are skipped.
 
 ```bash
 pip install pizzetti mpmath sympy jupyter exoplanet-core
 jupyter nbconvert --to notebook --execute --inplace validation/*.ipynb
 ```
 
-Note: for `b` exactly one floating-point step below `r`, exoplanet-core 0.4.0 returns a
-flux that is off by 1. Notebooks 1 and 2 skip `|z - p| < 1e-12` for this reason.
+Notes on the external codes, at `z` within one floating-point step of `p`:
+- exoplanet-core 0.4.0 returns a flux with an error of order unity for `b` exactly one step
+  below `r`. Notebooks 1 and 2 skip `|z - p| < 1e-12` for this reason.
+- The IDL routine takes its `z = p` branch, which uses EXOFAST's polynomial approximation of
+  the elliptic integrals (`ellke`, accurate to ~1e-8). Cell 1d reports these points separately.
