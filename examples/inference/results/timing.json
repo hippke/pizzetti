@@ -1,0 +1,30 @@
+{
+ "tess": {
+  "batman": {
+   "call_ms": 0.1333061400009683,
+   "max_model_error": 9.839867143313086e-09
+  },
+  "pizzetti": {
+   "call_ms": 0.055750654998973914,
+   "max_model_error": 7.307937588407754e-10
+  },
+  "n_points": 1316,
+  "n_in_transit": 658
+ },
+ "kepler": {
+  "batman": {
+   "call_ms": 1.1119701274992622,
+   "max_model_error": 1.957301510424614e-06
+  },
+  "pizzetti": {
+   "call_ms": 0.7656240124993019,
+   "max_model_error": 5.274392034237962e-10
+  },
+  "batman, max_err=0.01 ppm": {
+   "call_ms": 6.0053603150004164,
+   "max_model_error": 4.295421962563495e-08
+  },
+  "n_points": 10380,
+  "n_in_transit": 6870
+ }
+}

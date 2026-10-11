@@ -125,6 +125,20 @@ z_c = pizzetti.series_cut(0.1, "quadratic", [0.4, 0.25])   # series used for z <
 - Not supported: the `logarithmic`, `exponential` and `custom` laws. They are not sums of powers
   of μ, so `pizzetti` raises `NotImplementedError` for them.
 
+## Examples and inference
+
+[`examples/`](examples/) has notebooks that fit synthetic TESS- and Kepler-like light curves with emcee,
+once with batman and once with pizzetti (same likelihood, starting points and random numbers). The posteriors
+agree within their Monte Carlo noise; the likelihood evaluations are 2.4x (quadratic law, hot Jupiter) and
+1.4x (power-2 law, super-Earth) faster, and pizzetti's model error over the posterior is below 1e-9, against
+9e-9 and 1.9e-6 for batman. See [`examples/inference`](examples/inference) for the full runs.
+
+## Julia
+
+[`julia/`](julia/) contains **Pizzetti.jl**, a Julia implementation of the same methods with
+ForwardDiff support (exact derivatives of the flux from the paper's Section 5.4), BigFloat evaluation,
+rigorous interval enclosures, and Limbdark.jl's `transit_poly` interface.
+
 ## Documentation
 
 The full documentation, covering the method, the accuracy proofs and checks, the benchmarks and
