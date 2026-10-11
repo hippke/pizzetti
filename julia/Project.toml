@@ -1,0 +1,40 @@
+name = "Pizzetti"
+uuid = "b93e7ce5-cd71-4d0d-acfc-8eb26a2e78a3"
+authors = ["Michael Hippke", "Eric Agol"]
+version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
+
+[weakdeps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+IntervalArithmetic = "d1acc4aa-44c8-5952-acd4-ba5d80a2a253"
+
+[extensions]
+PizzettiForwardDiffExt = "ForwardDiff"
+PizzettiIntervalArithmeticExt = "IntervalArithmetic"
+
+[compat]
+LinearAlgebra = "1"
+Aqua = "0.8"
+HypergeometricFunctions = "0.3"
+JSON = "0.21, 1"
+QuadGK = "2"
+Test = "1"
+ForwardDiff = "0.10, 1"
+IntervalArithmetic = "0.22, 1"
+SpecialFunctions = "2"
+julia = "1.10"
+
+[extras]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+HypergeometricFunctions = "34004b35-14d8-5ef3-9330-4cdb6864b03a"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+IntervalArithmetic = "d1acc4aa-44c8-5952-acd4-ba5d80a2a253"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "Aqua", "ForwardDiff", "HypergeometricFunctions", "IntervalArithmetic", "JSON", "QuadGK"]
