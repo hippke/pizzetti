@@ -54,3 +54,20 @@ end
 # gives 0, i.e. x^g underflows for the g ≥ 1 used there), exp(g log x) otherwise
 @inline _powq(x::Float64, g::Float64) = x < 1e-300 ? 0.0 : _vpow(x, g)
 @inline _powq(x, g) = exp(g * log(x))
+
+# sin(2π u) for a phase u in turns, branch-free polynomial (fdlibm kernels on [-π/4, π/4]),
+# error ~1e-16 independent of |u| because the phase is reduced in turns
+@inline function _sin_turns(u::Float64)
+    f = u - floor(u + 0.5)
+    q = floor(4.0 * f + 0.5)
+    r = 2π * (f - 0.25 * q)
+    z = r * r
+    s = r + r * z * @_horner(z, -1.66666666666666324348e-01, 8.33333333332248946124e-03, -1.98412698298579493134e-04,
+                             2.75573137070700676789e-06, -2.50507602534068634195e-08, 1.58969099521155010221e-10)
+    c = 1.0 - 0.5 * z + z * z * @_horner(z, 4.16666666666666019037e-02, -1.38888888888741095749e-03,
+                                         2.48015872894767294178e-05, -2.75573143513906633035e-07,
+                                         2.08757232129817482790e-09, -1.13596475577881948265e-11)
+    k = q - 4.0 * floor(0.25 * q)               # q mod 4 as a float (0, 1, 2, 3)
+    v = ifelse((k == 1.0) | (k == 3.0), c, s)
+    return ifelse(k >= 2.0, -v, v)
+end

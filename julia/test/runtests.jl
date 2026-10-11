@@ -6,6 +6,7 @@ using JSON
 using QuadGK
 using HypergeometricFunctions: _₂F₁
 using Aqua
+using Random: Xoshiro
 
 const TESTDATA = joinpath(@__DIR__, "..", "..", "testdata")
 
@@ -20,5 +21,6 @@ const TESTDATA = joinpath(@__DIR__, "..", "..", "testdata")
     include("test_generic.jl")
     include("test_orbit.jl")
     include("test_compat.jl")
+    include("test_kernels.jl")
     include("test_aqua.jl")
 end

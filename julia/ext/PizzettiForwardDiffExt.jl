@@ -28,6 +28,17 @@ function _dP_dγ(z, p, γ)
     return (4D2 - D1) / 3
 end
 
+# ∂P/∂z, ∂P/∂p inside the disk (Eq. dPin) with cached hypergeometric coefficients
+function _interior_derivatives(d::Pizzetti.DTerm, z::Float64, p::Float64)
+    zmp = z - p
+    x = (1 - zmp) * (1 + zmp)
+    κ = z > 0 ? min(4z * p / x, 1.0) : 0.0
+    F1 = d.F1(κ)
+    F2 = d.F2(κ)
+    pre = 2π * p * (d.γ == 0 ? 1.0 : exp(d.γ * log(x)))
+    return pre * (F2 - F1), pre * F1
+end
+
 # Interior: the value is the series (proven accuracy); the partial derivatives are the
 # exact ones of Section 5.4 (the derivative of the truncated series is not bounded by
 # Theorem 2 and is accurate only to ~1e-7 at the cut for series_tol = 1e-9).
@@ -46,14 +57,14 @@ function Pizzetti._series_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,F
         γD = convert(S, o.γ[i])
         cD = convert(S, o.c[i])
         γv = value(γD)
-        a, ad = dt[i]
+        d = dt[i]
         wg = γv == 0 ? 1.0 : exp(γv * lw)
-        Ps = Pizzetti._horner_v(a, v)
+        Ps = Pizzetti._horner_v(d.a, v)
         Pv = wg * Ps
-        Pz, Pp = blocked_derivatives(zv, pv, γv)
+        Pz, Pp = _interior_derivatives(d, zv, pv)
         ∂ = Pz * partials(zD) + Pp * partials(pD)
         if !all(iszero, partials(γD))
-            ∂ += wg * (lw * Ps + Pizzetti._horner_v(ad, v)) * partials(γD)
+            ∂ += wg * (lw * Ps + Pizzetti._horner_v(d.ad, v)) * partials(γD)
         end
         num += cD * S(Pv, ∂)
         den += cD * π / (γD + 1)
@@ -69,19 +80,30 @@ function Pizzetti._limb_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,Flo
     pv = value(pD)
     num = zero(S)
     den = zero(S)
+    dt = Pizzetti._dterms(o)
+    P01 = pv < 1 ? Pizzetti._P01(zv, pv) : (NaN, NaN)
     for i in eachindex(o.γ)
         γD = convert(S, o.γ[i])
         cD = convert(S, o.c[i])
         γv = value(γD)
-        Pv = blocked_quadrature(zv, pv, [γv], [1.0], quad_rules([γv]))
+        d = dt[i]
+        # value: closed form (γ = 0, 1), contact expansion, or quadrature
+        Pv = γv == 0 && pv < 1 ? P01[1] : γv == 1 && pv < 1 ? P01[2] :
+             isempty(d.ce) ? NaN : d.ce[1](zv)
+        isnan(Pv) && (Pv = blocked_quadrature(zv, pv, (γv,), (1.0,), d.rules))
         Pz, Pp = blocked_derivatives(zv, pv, γv)
         ∂ = Pz * partials(zD) + Pp * partials(pD)
         if !all(iszero, partials(γD))
-            Pγ = _dP_dγ(zv, pv, γv)
+            Pγ = NaN
+            if length(d.ce) == 5
+                Pp1, Pm1, Pp2, Pm2 = d.ce[2](zv), d.ce[3](zv), d.ce[4](zv), d.ce[5](zv)
+                h = d.hγ
+                Pγ = (4 * (Pp2 - Pm2) / h - (Pp1 - Pm1) / 2h) / 3
+            end
+            isnan(Pγ) && (Pγ = _dP_dγ(zv, pv, γv))
             ∂ += Pγ * partials(γD)
         end
-        P = S(Pv, ∂)
-        num += cD * P
+        num += cD * S(Pv, ∂)
         den += cD * π / (γD + 1)
     end
     return 1 - num / den

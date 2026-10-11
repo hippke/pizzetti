@@ -218,6 +218,8 @@ struct ContactExpansion
     SC::Array{Float64,3}
     m::Vector{Float64}
     est::Float64
+    c0::Float64                  # coefficients of the integer exponents 0 and 1 (closed form)
+    c1::Float64
 end
 
 function contact_build(p::Float64, γ::Vector{Float64}, c::Vector{Float64}, tabs::Vector{LensTable{Float64}},
@@ -252,7 +254,19 @@ function contact_build(p::Float64, γ::Vector{Float64}, c::Vector{Float64}, tabs
         SC[i, 2, :] .= ci .* view(Cp, 3, :)
         ms[i] = g + 1.5
     end
-    ContactExpansion(p, bounds, REG, SA, SB, SC, ms, est)
+    ContactExpansion(p, bounds, REG, SA, SB, SC, ms, est, 0.0, 0.0)
+end
+
+# blocked integrals of the integer exponents 0 and 1 in closed form (Mandel & Agol 2002):
+# P_0 = π λ_e (the blocked area), P_1 = π (λ_e - η_d)
+function _P01(z, p)
+    if z + p <= 1
+        lex = p * p
+        edx = p * p / 2 * (p * p + 2z * z)
+    else
+        lex, edx = _limb_terms(z, p)
+    end
+    return π * lex, π * (lex - edx)
 end
 
 @inline function _hornerv(c::AbstractVector, x)
@@ -287,6 +301,15 @@ end
 Blocked flux `Σ c_i P_γi(z)` for a sample inside one of the three pieces; NaN elsewhere.
 """
 function (ce::ContactExpansion)(zj::Float64)
+    r = _contact_eval(ce, zj)
+    if !isnan(r) && (ce.c0 != 0 || ce.c1 != 0)
+        P0, P1 = _P01(zj, ce.p)
+        r += ce.c0 * P0 + ce.c1 * P1
+    end
+    r
+end
+
+function _contact_eval(ce::ContactExpansion, zj::Float64)
     p = ce.p
     bd = ce.bounds
     nt = length(ce.m)

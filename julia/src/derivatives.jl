@@ -18,6 +18,23 @@
 
 _beta(a, b) = exp(loggamma(a) + loggamma(b) - loggamma(a + b))
 
+# ₂F₁(-γ, ½; 1; κ) and ₂F₁(-γ, 3/2; 2; κ): for Float64 from cached coefficients
+const _F12_CACHE = Dict{Float64,NTuple{2,HypCache}}()
+const _F12_LOCK = ReentrantLock()
+
+function _interior_F12(γ::Float64, κ::Float64)
+    h1, h2 = lock(_F12_LOCK) do
+        length(_F12_CACHE) > 1024 && empty!(_F12_CACHE)
+        get!(() -> (HypCache(-γ, 0.5, 1.0), HypCache(-γ, 1.5, 2.0)), _F12_CACHE, γ)
+    end
+    return h1(κ), h2(κ)
+end
+function _interior_F12(γ, κ)
+    T = typeof(κ)
+    half = one(T) / 2
+    return hyp2f1_unit(-γ, half, one(T), κ), hyp2f1_unit(-γ, 3half, 2one(T), κ)
+end
+
 """
     blocked_flux(z, p, γ; series_tol = 1e-9, limb = :auto)
 
@@ -49,8 +66,7 @@ function blocked_derivatives(z, p, γ)
     if z + p <= 1
         κ = z > 0 ? 4z * p / x : zero(T)
         κ = min(κ, one(T))
-        F1 = hyp2f1_unit(-γ, half, one(T), κ)
-        F2 = hyp2f1_unit(-γ, 3half, 2one(T), κ)
+        F1, F2 = _interior_F12(γ, κ)
         pre = 2T(π) * p * xg
         return (pre * (F2 - F1), pre * F1)
     end
@@ -76,6 +92,7 @@ function flux_gradient(z, p, law::LimbDarkening; series_tol = SERIES_TOL)
     T = float(promote_type(typeof(z), typeof(p), eltype(c)))
     γ = T.(α) ./ 2
     F = occult(z, p, law; series_tol = series_tol, limb = :fast)
+    Fx = occult(z, p, law; series_tol = 0, limb = :quadrature)          # exact to ~1e-16, for ∂F/∂c
     tot = sum(c[i] * T(π) / (γ[i] + 1) for i in eachindex(c))
     dz = zero(T)
     dp = zero(T)
@@ -84,8 +101,8 @@ function flux_gradient(z, p, law::LimbDarkening; series_tol = SERIES_TOL)
         Pz, Pp = blocked_derivatives(z, p, γ[i])
         dz -= c[i] * Pz / tot
         dp -= c[i] * Pp / tot
-        Pi = blocked_flux(z, p, γ[i]; series_tol = series_tol, limb = :fast)
-        dc[i] = -(Pi - (1 - F) * T(π) / (γ[i] + 1)) / tot
+        Pi = blocked_flux(z, p, γ[i]; series_tol = 0, limb = :quadrature)     # exact to ~1e-16
+        dc[i] = -(Pi - (1 - Fx) * T(π) / (γ[i] + 1)) / tot
     end
     return F, (abs(z) == z ? dz : -dz), dp, dc
 end

@@ -188,3 +188,37 @@ function hyp2f1_unit(a, b, c, x)
     end
     return r
 end
+
+"""
+    HypCache(a, b, c; n = 60)
+
+₂F₁(a, b; c; x) on 0 ≤ x ≤ 1 (c - a - b > 0) from precomputed coefficients: the Taylor
+series for x ≤ ½ and the connection form A(y) + y^m (ln y Bl(y) + Bc(y)), y = 1 - x, beyond;
+60 terms give 2^-60 on both halves. Float64.
+"""
+struct HypCache
+    T::NTuple{60,Float64}
+    A::NTuple{60,Float64}
+    Bl::NTuple{60,Float64}
+    Bc::NTuple{60,Float64}
+    m::Float64
+end
+
+function HypCache(a::Float64, b::Float64, c::Float64)
+    n = 60
+    Ty = zeros(n); A = zeros(n); Bl = zeros(n); Bc = zeros(n)
+    _taylor!(Ty, a, b, c)
+    _connection!(A, Bl, Bc, a, b, c)
+    HypCache(Tuple(Ty), Tuple(A), Tuple(Bl), Tuple(Bc), c - a - b)
+end
+
+@inline function (h::HypCache)(x::Float64)
+    x <= 0.5 && return evalpoly(x, h.T)
+    y = 1.0 - x
+    r = evalpoly(y, h.A)
+    if y > 0
+        ly = log(y)
+        r += exp(h.m * ly) * (ly * evalpoly(y, h.Bl) + evalpoly(y, h.Bc))
+    end
+    r
+end

@@ -1,7 +1,10 @@
 # Occultation flux: interior series where it is proven accurate, exact or
 # hypergeometric/quadrature solutions near and across the limb.
 
-const FIT_MIN_SAMPLES = 300
+# :auto uses the contact expansions when there are at least this many limb samples per
+# j-term of their set-up (set-up ~5.5 µs per exponent and j-term, quadrature ~0.65 µs per
+# exponent and sample)
+const CONTACT_BREAK_EVEN = 8.5
 
 const _LENS_CACHE = Dict{Float64,LensTable{Float64}}()
 const _LENS_LOCK = ReentrantLock()
@@ -29,6 +32,17 @@ function lens_tables(γ::Vector{Float64}, jm::Int)
     end
 end
 
+struct DTerm
+    γ::Float64
+    a::Vector{Float64}
+    ad::Vector{Float64}
+    F1::HypCache                 # ₂F₁(-γ, ½; 1; ·)
+    F2::HypCache                 # ₂F₁(-γ, 3/2; 2; ·)
+    rules::QuadRules{Float64}
+    ce::Vector{ContactExpansion} # limb: P_γ, and P at γ ± h, γ ± h/2 (empty: quadrature)
+    hγ::Float64
+end
+
 """
     Occultor(p, law; series_tol = 1e-9, limb = :auto, nlimb = 0)
 
@@ -41,8 +55,9 @@ Precomputed light-curve solution for radius ratio `p` and limb-darkening `law`
   family (uniform, linear, quadratic, polynomial of degree ≤ 2); otherwise
   - `limb = :fast`: contact expansions (Section 5.2; ~1e-15, a posteriori estimate),
   - `limb = :quadrature`: Green's-theorem quadrature (~1e-13),
-  - `limb = :auto` (default): `:fast` when there are at least 300 limb samples per
-    exponent (`nlimb`) to amortise its set-up, `:quadrature` otherwise.
+  - `limb = :auto` (default): `:fast` when there are enough limb samples (`nlimb`, or
+    counted from `samples`) to amortise its set-up (about 8.5 per j-term of the
+    hypergeometric tables: 270 for p = 0.02, 820 for p = 0.1), `:quadrature` otherwise.
   The contact expansions are used for `p < 0.5` and Float64 only.
 
 All parts are generic in the number type: dual numbers (ForwardDiff), BigFloat
@@ -68,10 +83,11 @@ struct Occultor{T<:Real,L<:LimbDarkening,F<:AbstractFloat}
     proven::ProvenLimb
     rules::QuadRules{F}
     limb::Symbol
-    dterms::Base.RefValue{Vector{NTuple{2,Vector{Float64}}}}
+    dterms::Base.RefValue{Vector{DTerm}}
+    nlimb::Int
 end
 
-const _NO_CONTACT = ContactExpansion(0.0, zeros(3, 2), zeros(2, 1), zeros(0, 1), zeros(0, 2, 1), zeros(0, 2, 1), Float64[], Inf)
+const _NO_CONTACT = ContactExpansion(0.0, zeros(3, 2), zeros(2, 1), zeros(0, 1), zeros(0, 2, 1), zeros(0, 2, 1), Float64[], Inf, 0.0, 0.0)
 const _NO_PROVEN = ProvenLimb(0.0, Float64[], zeros(0, 2), Int[], Float64[], zeros(0, 1, 3, 1), Int[], Float64[])
 
 function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Symbol = :auto, nlimb::Integer = 0,
@@ -128,30 +144,35 @@ function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Sy
     end
     usecontact = false
     contact = _NO_CONTACT
-    nt = count(i -> !_isconst(γ[i], 0) && !_isconst(γ[i], 1), eachindex(γ)) + 1
     useproven = false
     proven = _NO_PROVEN
     mode = limb
     mode == :proven && zc < 0 && (mode = :fast)      # interior series disabled: nothing to match
+    jl = T === Float64 && p < 0.5 ? limb_jmax(Float64(p), zc) : CONTACT_JC
     if !quad && T === Float64 && p < 0.5 && (mode == :fast || mode == :proven ||
-                                            (mode == :auto && nlimb >= FIT_MIN_SAMPLES * nt))
-        tabs = lens_tables(γ, limb_jmax(p, zc))
+                                            (mode == :auto && nlimb >= CONTACT_BREAK_EVEN * jl))
         if mode == :proven
+            tabs = lens_tables(γ, jl)
             τ = series_tol > 0 ? Float64(series_tol) : SERIES_TOL
             proven = proven_build(p, γ, c, tabs, zc, total, τ)
             useproven = true
         else
-            ce = contact_build(p, γ, c, tabs, zc)
+            # exponents 0 and 1 in closed form, the others by the expansions
+            ib = [i for i in eachindex(γ) if !(γ[i] == 0 || γ[i] == 1)]
+            tabs = lens_tables(γ[ib], jl)
+            ce = contact_build(p, γ[ib], c[ib], tabs, zc)
             if ce.est <= CONTACT_TOL
+                c0 = sum((c[i] for i in eachindex(γ) if γ[i] == 0); init = 0.0)
+                c1 = sum((c[i] for i in eachindex(γ) if γ[i] == 1); init = 0.0)
                 usecontact = true
-                contact = ce
+                contact = ContactExpansion(ce.p, ce.bounds, ce.REG, ce.SA, ce.SB, ce.SC, ce.m, ce.est, c0, c1)
             end
         end
     end
     rules = quad_rules(γ, _float(T))
-    dterms = Ref(NTuple{2,Vector{Float64}}[])          # filled on demand (dual numbers)
+    dterms = Ref(DTerm[])                               # filled on demand (dual numbers)
     Occultor{T,typeof(law),_float(T)}(p, law, γ, c, total, zc, quad, u1, u2, A0, A1, sγ, sa, usecontact, contact,
-                                      useproven, proven, rules, limb, dterms)
+                                      useproven, proven, rules, limb, dterms, nlimb)
 end
 
 @inline function _wpow(w, g)
@@ -208,18 +229,34 @@ function (o::Occultor{T})(z::Real) where {T}
     return _limb_eval(o, z, S)
 end
 
-# per-term series of P_γ = π p² D_γ and of ∂P_γ/∂γ (complex step), order 31, for the
-# exact derivatives of the ForwardDiff extension; computed once per Occultor
+# Per-term data for the exact derivatives of the ForwardDiff extension, computed once per
+# Occultor on first use: the series of P_γ = π p² D_γ and of ∂P_γ/∂γ (complex step) to
+# order 31, the Taylor coefficients of ₂F₁(-γ, ½; 1; κ) and ₂F₁(-γ, 3/2; 2; κ), and the
+# single-term quadrature rule.
 const DTERM_M = 31
+
 function _dterms(o::Occultor)
     if isempty(o.dterms[])
         pv = Float64(_val(o.p))
-        v = NTuple{2,Vector{Float64}}[]
+        jl = pv < 0.5 ? limb_jmax(pv, o.zc) : CONTACT_JC
+        usece = pv < 0.5 && o.nlimb >= CONTACT_BREAK_EVEN * jl
+        v = DTerm[]
         for g in o.γ
             gv = Float64(_val(g))
             h = 1e-30
             ac = series_coeffs(series_table(complex(gv, h), DTERM_M), pv, π * pv^2)
-            push!(v, (real.(ac), imag.(ac) ./ h))
+            ce = ContactExpansion[]
+            hγ = 1e-3 * max(1.0, abs(gv))
+            if usece && !(gv == 0 || gv == 1)
+                gs = _isconst(g, gv) ? (gv,) : (gv, gv + hγ, gv - hγ, gv + hγ / 2, gv - hγ / 2)
+                for gg in gs
+                    e = contact_build(pv, [gg], [1.0], lens_tables([gg], jl), o.zc)
+                    e.est <= CONTACT_TOL || (empty!(ce); break)
+                    push!(ce, e)
+                end
+            end
+            push!(v, DTerm(gv, real.(ac), imag.(ac) ./ h, HypCache(-gv, 0.5, 1.0), HypCache(-gv, 1.5, 2.0),
+                           quad_rules([gv]), ce, hγ))
         end
         o.dterms[] = v
     end
@@ -262,6 +299,15 @@ function occult(z::AbstractArray, p::Real, law::LimbDarkening; series_tol = SERI
     evaluate!(out, o, z)
 end
 occult(z::Real, p::Real, law::LimbDarkening; kw...) = Occultor(p, law; kw...)(z)
+
+# single Float64 samples of the quadratic family: the closed form directly (no set-up)
+function occult(z::Float64, p::Float64, law::Union{Uniform,Linear{Float64},Quadratic{Float64}}; kw...)
+    zz = abs(z)
+    pp = abs(p)
+    (isempty(kw) && abs(zz - (1 - pp)) > 1e-9) || return Occultor(p, law; kw...)(z)
+    u1, u2 = quadratic_coefficients(law)
+    return quadratic_flux(zz, pp, u1, u2)
+end
 
 """
     occult!(out, z, p, law; series_tol = 1e-9, limb = :auto)

@@ -97,6 +97,25 @@ function rsky(t::Real, P::TransitParams)
 end
 rsky(t::AbstractArray, P::TransitParams) = rsky.(t, Ref(P))
 
+# Float64, circular orbit: branch-free loop that the compiler vectorises
+function rsky(t::AbstractArray{Float64}, P::TransitParams{Float64})
+    P.ecc >= 1e-5 && return rsky.(t, Ref(P))
+    out = similar(t)
+    inc = P.inc * π / 180
+    ω = P.w * π / 180
+    si = sin(inc)
+    tp = P.t0 - P.per * (π / 2 - ω) / 2π
+    ip = 1 / P.per
+    wt = ω / 2π
+    a = P.a
+    @inbounds @simd for i in eachindex(t)
+        ss = _sin_turns((t[i] - tp) * ip + wt) * si
+        d = a * sqrt(max(1.0 - ss * ss, 0.0))
+        out[i] = ifelse(ss <= 0.0, 100.0, d)
+    end
+    out
+end
+
 eltype_params(::TransitParams{T,L}) where {T,L} = promote_type(T, _lawtype(L))
 _lawtype(::Type{<:LimbDarkening}) = Float64
 _lawtype(::Type{<:Linear{T}}) where {T} = T

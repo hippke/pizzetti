@@ -1,0 +1,11 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Limbdark = "01eff828-7024-11e9-3df0-8b77921d67e3"
+Pizzetti = "b93e7ce5-cd71-4d0d-acfc-8eb26a2e78a3"
+Transits = "2e59a628-7bac-4d38-8059-3a73ba0928ab"
+
+[sources]
+Limbdark = {rev = "master", url = "https://github.com/rodluger/Limbdark.jl"}
+Pizzetti = {path = ".."}

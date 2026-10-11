@@ -122,10 +122,14 @@ end
 
 const _GJ_CACHE = Dict{Float64,Tuple{Vector{Float64},Vector{Float64}}}()
 const _GJ_LOCK = ReentrantLock()
+const _GJ_CACHE_X = Dict{Tuple{Float64,Int,Int},Any}()      # other precisions
 
 function quad_rules(γ::AbstractVector, ::Type{F} = Float64) where {F<:AbstractFloat}
     n = _nnodes(F)
-    gu, gw = F === Float64 ? (GL_U, GL_W) : gauss_legendre(n, F)
+    gu, gw = F === Float64 ? (GL_U, GL_W) :
+             lock(_GJ_LOCK) do
+                 get!(() -> gauss_legendre(n, F), _GJ_CACHE_X, (NaN, precision(F), n))
+             end::Tuple{Vector{F},Vector{F}}
     ju = Vector{F}[]
     jw = Vector{F}[]
     for g in γ
@@ -139,7 +143,11 @@ function quad_rules(γ::AbstractVector, ::Type{F} = Float64) where {F<:AbstractF
             end
             push!(ju, r[1]); push!(jw, r[2])
         else
-            r = gauss_jacobi01(n, F(gv) + 1, F)
+            key = (Float64(gv), precision(F), n)
+            r = lock(_GJ_LOCK) do
+                length(_GJ_CACHE_X) > 256 && empty!(_GJ_CACHE_X)
+                get!(() -> gauss_jacobi01(n, F(gv) + 1, F), _GJ_CACHE_X, key)
+            end::Tuple{Vector{F},Vector{F}}
             push!(ju, r[1]); push!(jw, r[2])
         end
     end
@@ -159,8 +167,8 @@ integrand is split into a regular part (Gauss-Legendre) and `(t - t0)^(γ+1)` ti
 analytic function (Gauss-Jacobi with that weight), so that every segment converges
 geometrically, for every exponent.
 """
-function blocked_quadrature(z, p, γ::AbstractVector, c::AbstractVector,
-                            rules = quad_rules(γ, _float(promote_type(typeof(float(z)), typeof(float(p)), eltype(γ), eltype(c)))))
+function blocked_quadrature(z, p, γ::Union{AbstractVector,Tuple}, c::Union{AbstractVector,Tuple},
+                            rules = quad_rules(collect(γ), _float(promote_type(typeof(float(z)), typeof(float(p)), eltype(γ), eltype(c)))))
     T = promote_type(typeof(float(z)), typeof(float(p)), eltype(γ), eltype(c))
     gu, gw = rules.gu, rules.gw
     nt = length(γ)
