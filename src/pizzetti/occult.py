@@ -199,7 +199,7 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, mode, ltol)
                     zb_[q, 0] = np.nan
                     zb_[q, 1] = np.nan
             _proven.evaluate(zl[:ml], k, gams, zb_, kinds_, s0s_, store_, degs_, bl)
-    elif mode == 1 and ml >= FIT_MIN_SAMPLES * nt and k < 0.5:
+    elif mode == 1 and ml >= FIT_MIN_SAMPLES * nt and k < 0.5 and ltabs.shape[2] > 1:
         bounds, REG, SA, SB, SCc, mexp, est = _contact.build(k, gams, cs, ltabs, llens, z_c, _contact.NS)
         if est <= _contact.TOL:
             _contact.evaluate(zl[:ml], k, bounds, REG, SA, SB, SCc, mexp, bl)
@@ -242,18 +242,37 @@ def series_cut(rp, limb_dark, u, series_tol=SERIES_TOL):
     return _series.zcut(k, gams, np.abs(c), k * k / (2.0 * abs(norm)), float(series_tol))
 
 
-def limb_tables(gams):
-    """Hypergeometric coefficient tables for the limb solution (cached per exponent)."""
+def limb_jmax(k, z_c):
+    """Number of j-terms the limb tables need for radius ratio k when the limb
+    solution starts at z_c: the j-series converges like x^j with
+    x <= 1 - (z_c - k)^2; the margin covers the prefactors. Fewer terms than
+    needed are safe (the contact build then reports non-convergence and the
+    samples go to quadrature), so this only controls cost."""
+    zl = max(z_c, 0.0) - k
+    if zl <= 0.0:
+        return _contact.JC
+    xm = 1.0 - zl * zl
+    J = int(np.ceil(1.3 * np.log(2.0 ** -60 * (1.0 - xm)) / np.log(xm))) + 8
+    return int(min(_contact.JC, max(_contact.NS, 16 * ((J + 15) // 16))))
+
+
+def limb_tables(gams, jmax=None):
+    """Hypergeometric coefficient tables for the limb solution, j = 0..jmax
+    (cached per exponent; a cached table with more terms is reused)."""
+    if jmax is None:
+        jmax = _contact.JC
     ts, ls = [], []
     for g in gams:
         key = float(g)
-        if key not in _LIMB_CACHE:
+        hit = _LIMB_CACHE.get(key)
+        if hit is None or hit[0].shape[1] - 1 < jmax:
             if len(_LIMB_CACHE) > 256:
                 _LIMB_CACHE.clear()
-            _LIMB_CACHE[key] = _lens.table(key, _contact.JC)
-        t, l = _LIMB_CACHE[key]
-        ts.append(t)
-        ls.append(l)
+            hit = _lens.table(key, jmax)
+            _LIMB_CACHE[key] = hit
+        t, l = hit
+        ts.append(t[:, :jmax + 1])
+        ls.append(l[:, :jmax + 1])
     return np.ascontiguousarray(ts), np.ascontiguousarray(ls)
 
 
@@ -308,7 +327,14 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
         ltol = float(series_tol) if series_tol > 0 else SERIES_TOL
         if mode == 2 and z_c < 0:
             mode = 1          # interior series disabled: nothing to match
-        ltabs, llens = limb_tables(gams)
+        # limb tables only when the limb solution will be used
+        az = np.abs(z)
+        n_limb = int(np.count_nonzero((az > z_c) & (az < 1.0 + k)))
+        if mode == 2 or (mode == 1 and k < 0.5 and n_limb >= FIT_MIN_SAMPLES * gams.size):
+            ltabs, llens = limb_tables(gams, limb_jmax(k, z_c))
+        else:
+            ltabs = np.zeros((gams.size, 2, 1, 4, _lens.NC))
+            llens = np.zeros((gams.size, 2, 1, 4), dtype=np.int64)
         f, cert = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W,
                                      ltabs, llens, mode, ltol)
     if return_certified:
