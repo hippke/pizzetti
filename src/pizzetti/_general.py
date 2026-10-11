@@ -11,22 +11,97 @@ of the stellar disk:
   * occultor arc inside the star, points (z + p cos t, p sin t),
     cos t < c = (1 - z^2 - p^2) / (2 z p):
     2 p int_{t0}^{pi} (F(r)/r^2) (p + z cos t) dt,  t0 = arccos(c).
-The arc integral uses composite Gauss-Legendre quadrature on segments that
-grow geometrically away from the nearest singularity of (1 - r^2)^(g+1)
-(at t = -t0, or at +-i sqrt(y_min/(z p)) for an interior disk); the first
-segment uses t = t0 + L u^2 to remove the (t - t0)^(g+1) endpoint behaviour.
+The arc integral uses composite Gauss rules on segments that grow
+geometrically away from the nearest singularity of (1 - r^2)^(g+1) (at
+t = -t0, or at +-i sqrt(y_min/(z p)) for an interior disk). On the limb, the
+first segment starts at the branch point t0, where the integrand is a regular
+function plus (t - t0)^(g+1) times another regular function: the first part
+is integrated by Gauss-Legendre, the second by Gauss-Jacobi with the weight
+(t - t0)^(g+1), so every segment converges geometrically, for every exponent
+(~1e-16 against the independent references in testdata/).
 """
-from math import pi
+from math import lgamma, pi
 
 import numpy as np
 from numba import njit
 
-#: Gauss-Legendre nodes per segment of the limb arc integral (geometric
-#: segments towards the nearest singularity).
+#: Gauss-Legendre (and Gauss-Jacobi) nodes per segment of the limb arc integral
+#: (geometric segments towards the nearest singularity).
 N_NODES = 12
 _X, _W = np.polynomial.legendre.leggauss(N_NODES)
 GL_U = 0.5 * (_X + 1.0)
 GL_W = 0.5 * _W
+
+
+@njit(cache=True)
+def _jacobi_p(n, a, b, x):
+    """P_n^(a,b)(x) and P_(n-1)^(a,b)(x) by the three-term recurrence."""
+    if n == 0:
+        return 1.0, 0.0
+    p0 = 1.0
+    p1 = 0.5 * ((a + b + 2.0) * x + (a - b))
+    for k in range(1, n):
+        c1 = 2.0 * (k + 1) * (k + a + b + 1) * (2 * k + a + b)
+        c2 = (2 * k + a + b + 1) * ((2 * k + a + b + 2) * (2 * k + a + b) * x + a * a - b * b)
+        c3 = 2.0 * (k + a) * (k + b) * (2 * k + a + b + 2)
+        p0, p1 = p1, (c2 * p1 - c3 * p0) / c1
+    return p1, p0
+
+
+@njit(cache=True)
+def gauss_jacobi01(n, beta):
+    """Gauss-Jacobi rule on [0, 1] for the weight u^beta: int_0^1 u^beta f(u) du
+    = sum w_i f(u_i) for polynomials f of degree < 2n. Golub-Welsch for the
+    nodes, refined by Newton's method; weights from the Christoffel formula."""
+    a = 0.0
+    b = beta
+    A = np.zeros((n, n))
+    for k in range(n):
+        A[k, k] = (b - a) / (a + b + 2.0) if k == 0 else (b * b - a * a) / ((2 * k + a + b) * (2 * k + a + b + 2))
+    for k in range(1, n):
+        e = np.sqrt(4.0 * k * (k + a) * (k + b) * (k + a + b)
+                    / ((2 * k + a + b) ** 2 * (2 * k + a + b + 1) * (2 * k + a + b - 1)))
+        A[k - 1, k] = e
+        A[k, k - 1] = e
+    x = np.linalg.eigvalsh(A)
+    u = np.empty(n)
+    w = np.empty(n)
+    lc = lgamma(n + a + 1.0) + lgamma(n + b + 1.0) - lgamma(n + a + b + 1.0) - lgamma(n + 1.0) + (a + b + 1.0) * np.log(2.0)
+    for i in range(n):
+        xi = x[i]
+        dP = 1.0
+        for it in range(6):
+            P, Pm = _jacobi_p(n, a, b, xi)
+            dP = (n * ((a - b) - (2 * n + a + b) * xi) * P + 2 * (n + a) * (n + b) * Pm) / ((2 * n + a + b) * (1 - xi * xi))
+            xi -= P / dP
+        P, Pm = _jacobi_p(n, a, b, xi)
+        dP = (n * ((a - b) - (2 * n + a + b) * xi) * P + 2 * (n + a) * (n + b) * Pm) / ((2 * n + a + b) * (1 - xi * xi))
+        u[i] = 0.5 * (xi + 1.0)
+        w[i] = np.exp(lc) / ((1 - xi * xi) * dP * dP) * 2.0 ** (-(b + 1.0))
+    return u, w
+
+
+_GJ_CACHE = {}
+
+
+def quad_rules(gams):
+    """Gauss-Jacobi rules (nt, N_NODES) for the first segment, one per exponent
+    (weight u^(g+1)); rows of integer exponents are unused (flag 0)."""
+    nt = len(gams)
+    ju = np.zeros((nt, N_NODES))
+    jw = np.zeros((nt, N_NODES))
+    has = np.zeros(nt, dtype=np.int64)
+    for i, g in enumerate(gams):
+        g = float(g)
+        if g == np.floor(g):
+            continue
+        if g not in _GJ_CACHE:
+            if len(_GJ_CACHE) > 1024:
+                _GJ_CACHE.clear()
+            _GJ_CACHE[g] = gauss_jacobi01(N_NODES, g + 1.0)
+        ju[i], jw[i] = _GJ_CACHE[g]
+        has[i] = 1
+    return ju, jw, has
 
 
 @njit(cache=True, fastmath=False)
@@ -53,16 +128,31 @@ def _acos_acc(x, om, op):
 
 
 @njit(cache=True, fastmath=False)
-def blocked_limb(z, p, gams, cs, gu, gw):
+def _hv(gi, y, r2, ly, l1x, sy, qy):
+    if gi == 0.0:
+        return 0.5
+    if gi == 1.0:
+        return 0.25 * (1.0 + y)
+    if r2 < 1e-8:
+        return 0.5 * (1.0 - 0.5 * gi * r2)
+    if r2 < 0.05:
+        return -np.expm1((gi + 1.0) * l1x) / (2.0 * (gi + 1.0) * r2)
+    if gi == 0.5:
+        return (1.0 - y * sy) / (3.0 * r2)
+    if gi == 0.25:
+        return (1.0 - y * qy) / (2.5 * r2)
+    if gi == 0.75:
+        return (1.0 - y * sy * qy) / (3.5 * r2)
+    return (1.0 - np.exp((gi + 1.0) * ly)) / (2.0 * (gi + 1.0) * r2)
+
+
+@njit(cache=True, fastmath=False)
+def blocked_limb(z, p, gams, cs, gu, gw, ju, jw, has):
     """sum_i c_i * (blocked flux of (1 - r^2)^{g_i}) for an occultor that
-    touches or crosses the limb (or covers the star)."""
+    touches or crosses the limb (or covers the star). ju, jw, has: the
+    Gauss-Jacobi rules of quad_rules(gams)."""
     nt = gams.shape[0]
     tot = 0.0
-    need_log = False
-    for i in range(nt):
-        gi = gams[i]
-        if not (gi == 0.0 or gi == 1.0 or gi == 0.5 or gi == 0.25 or gi == 0.75):
-            need_log = True
     # stellar-limb arc inside the occultor. cos(theta_s) = (1 + z^2 - p^2)/(2z),
     # 1 - cos = (z-1+p)(1-z+p)/(2z), 1 + cos = (1-p+z)(1+z+p)/(2z); the
     # cancelling sums are ordered so that they are exact (Sterbenz), and the
@@ -80,7 +170,7 @@ def blocked_limb(z, p, gams, cs, gu, gw):
         th = pi if p >= 1.0 else 0.0
     if th > 0.0:
         for i in range(nt):
-            tot += cs[i] * 2.0 * th * 0.5 / (gams[i] + 1.0)
+            tot += cs[i] * th / (gams[i] + 1.0)
     # occultor arc inside the star: cos t < c = (1 - z^2 - p^2) / (2 z p),
     # 1 - c = (z-1+p)(z+p+1)/(2zp), 1 + c = (1-z+p)(1-p+z)/(2zp)
     if z > 0.0 and p > 0.0:
@@ -91,71 +181,76 @@ def blocked_limb(z, p, gams, cs, gu, gw):
         omc = 0.0 if p < 1.0 else 2.0
         opc = 2.0 if p < 1.0 else 0.0
         arc = p < 1.0
-    if arc:
-        if omc <= 0.0:
-            t0 = 0.0
-        else:
-            t0 = _acos_acc(1.0 - omc if omc < opc else opc - 1.0, omc, opc)
-        zp = z * p
-        omz2p2 = ((1.0 - z) - p) * (1.0 + z + p) + 2.0 * zp   # 1 - z^2 - p^2
-        # length scale of the nearest singularity of (1 - r^2)^(g+1) in t:
-        # the second zero at -t0 (limb), or +-i sqrt(y_min / (z p)) (interior)
-        if t0 > 0.0:
-            scale = t0
-        else:
-            ymin = ((1.0 - z) - p) * (1.0 + z + p)
-            scale = np.sqrt(max(ymin, 0.0) / max(zp, 1e-300)) if zp > 0.0 else pi
-        scale = min(max(scale, 1e-12), pi - t0)
-        a = t0
-        b = t0 + scale
-        first = True
-        for _ in range(64):
-            L = b - a
-            for n in range(gu.shape[0]):
-                u = gu[n]
-                if first:      # t = t0 + L u^2: removes the (t - t0)^(g+1) endpoint
-                    t = a + L * u * u
-                    jac = 2.0 * L * u * gw[n]
-                else:
-                    t = a + L * u
-                    jac = L * gw[n]
+    if not arc:
+        return tot
+    if omc <= 0.0:
+        t0 = 0.0
+    else:
+        t0 = _acos_acc(1.0 - omc if omc < opc else opc - 1.0, omc, opc)
+    zp = z * p
+    omz2p2 = ((1.0 - z) - p) * (1.0 + z + p) + 2.0 * zp   # 1 - z^2 - p^2
+    limb = t0 > 0.0
+    if limb:
+        # first segment up to the mirror branch point -t0, away from t = pi (r -> 0 if z = p)
+        scale = min(t0, 0.5 * (pi - t0))
+    else:
+        ymin = ((1.0 - z) - p) * (1.0 + z + p)
+        scale = np.sqrt(max(ymin, 0.0) / max(zp, 1e-300)) if zp > 0.0 else pi
+    scale = min(max(scale, 1e-12), pi - t0)
+    st0 = np.sin(t0)
+    ct0 = np.cos(t0)
+    a = t0
+    b = t0 + scale
+    first = limb
+    for _ in range(200):
+        L = b - a
+        for n in range(gu.shape[0]):
+            t = a + L * gu[n]
+            jac = L * gw[n]
+            if limb:
+                h = 0.5 * (t - t0)
+                sh = np.sin(h)
+                ch = np.cos(h)
+                y = 4.0 * zp * (sh * ct0 + ch * st0) * sh          # 1 - r^2, accurate near t0
+                ct = (1.0 - 2.0 * sh * sh) * ct0 - 2.0 * sh * ch * st0
+            else:
                 ct = np.cos(t)
-                # 1 - r^2 = 2 z p (cos t0 - cos t); cos t0 = 1 - omc from its accurate form
-                if t0 > 0.0:
-                    y = 2.0 * zp * ((1.0 - ct) - omc)
+                y = omz2p2 - 2.0 * zp * ct
+            y = min(max(y, 0.0), 1.0)
+            r2 = max(1.0 - y, 0.0) if y > 0.5 else min(max(z * z + p * p + 2.0 * zp * ct, 0.0), 1.0)
+            geo = 2.0 * p * (p + z * ct) * jac
+            sy = np.sqrt(y)
+            qy = np.sqrt(sy)
+            ly = np.log(y) if y > 0.0 else -745.0
+            l1x = np.log1p(-r2) if r2 < 0.05 else 0.0
+            for i in range(nt):
+                if first and has[i] == 1:
+                    tot += cs[i] * geo / (2.0 * (gams[i] + 1.0) * r2)            # regular part
                 else:
-                    y = omz2p2 - 2.0 * zp * ct
-                y = min(max(y, 0.0), 1.0)
-                r2 = max(1.0 - y, 0.0) if y > 0.5 else min(max(z * z + p * p + 2.0 * zp * ct, 0.0), 1.0)
-                geo = 2.0 * p * (p + z * ct) * jac
-                sy = np.sqrt(y)
-                qy = np.sqrt(sy)
-                ly = np.log(y) if (y > 0.0 and need_log) else -745.0
-                l1x = np.log1p(-r2) if r2 < 0.05 else 0.0
-                for i in range(nt):
-                    gi = gams[i]
-                    if gi == 0.0:
-                        hv = 0.5
-                    elif gi == 1.0:
-                        hv = 0.25 * (1.0 + y)
-                    elif r2 < 1e-8:
-                        hv = 0.5 * (1.0 - 0.5 * gi * r2)
-                    elif r2 < 0.05:
-                        hv = -np.expm1((gi + 1.0) * l1x) / (2.0 * (gi + 1.0) * r2)
-                    elif gi == 0.5:
-                        hv = (1.0 - y * sy) / (3.0 * r2)
-                    elif gi == 0.25:
-                        hv = (1.0 - y * qy) / (2.5 * r2)
-                    elif gi == 0.75:
-                        hv = (1.0 - y * sy * qy) / (3.5 * r2)
-                    else:
-                        hv = (1.0 - np.exp((gi + 1.0) * ly)) / (2.0 * (gi + 1.0) * r2)
-                    tot += cs[i] * hv * geo
-            if b >= pi:
-                break
-            first = False
-            a = b
-            b = min(t0 + 3.0 * (b - t0), pi)
-            if pi - b < 0.25 * (b - a):
-                b = pi
+                    tot += cs[i] * _hv(gams[i], y, r2, ly, l1x, sy, qy) * geo
+        if first:
+            # singular parts: -(t - t0)^(g+1) phi(t), phi = (y/(t-t0))^(g+1) (p + z cos t) 2p / (2(g+1) r^2)
+            for i in range(nt):
+                if has[i] == 0:
+                    continue
+                g = gams[i]
+                s = 0.0
+                for n in range(ju.shape[1]):
+                    d = L * ju[i, n]
+                    sh = np.sin(0.5 * d)
+                    ch = np.cos(0.5 * d)
+                    ct = (1.0 - 2.0 * sh * sh) * ct0 - 2.0 * sh * ch * st0
+                    sinc = 1.0 if d == 0.0 else 2.0 * sh / d
+                    yd = 2.0 * zp * (sh * ct0 + ch * st0) * sinc
+                    y = yd * d
+                    r2 = max(1.0 - y, 0.0) if y > 0.5 else min(max(z * z + p * p + 2.0 * zp * ct, 0.0), 1.0)
+                    s += jw[i, n] * np.exp((g + 1.0) * np.log(yd)) * 2.0 * p * (p + z * ct) / (2.0 * (g + 1.0) * r2)
+                tot -= cs[i] * s * np.exp((g + 2.0) * np.log(L))
+        if b >= pi:
+            break
+        first = False
+        a = b
+        b = min(t0 + 3.0 * (b - t0), pi)
+        if pi - b < 0.25 * (b - a):
+            b = pi
     return tot

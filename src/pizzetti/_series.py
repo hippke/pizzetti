@@ -162,15 +162,53 @@ def series_quarter(zb, m, aq, ah, a3q, A0, A1, out):
         out[j] = A0 + A1 * z2 - q * _h12(aq, v) - s * _h12(ah, v) - s * q * _h12(a3q, v)
 
 
+_LN2_HI = 6.93147180369123816490e-01
+_LN2_LO = 1.90821492927058770002e-10
+_INV_LN2 = 1.4426950408889634
+_SHIFT = 6.755399441055744e15            # 1.5 * 2^52
+_TWO52 = 4.503599627370496e15            # 2^52
+
+
+@njit(cache=True, fastmath=False, inline="always")
+def _vlog(x):
+    """log(x) for normal x > 0, branch-free (vectorises); a few ulp."""
+    b = np.float64(x).view(np.uint64)
+    ebits = (b >> np.uint64(52)) & np.uint64(0x7ff)
+    m = np.uint64((b & np.uint64(0x000fffffffffffff)) | np.uint64(0x3ff0000000000000)).view(np.float64)
+    big = m > 1.4142135623730951
+    m = 0.5 * m if big else m
+    e = np.uint64(ebits | np.uint64(0x4330000000000000)).view(np.float64) - (_TWO52 + 1023.0)
+    e = e + 1.0 if big else e
+    t = (m - 1.0) / (m + 1.0)
+    t2 = t * t
+    s = 2.0 + t2 * (2 / 3 + t2 * (2 / 5 + t2 * (2 / 7 + t2 * (2 / 9 + t2 * (2 / 11 + t2 * (
+        2 / 13 + t2 * (2 / 15 + t2 * (2 / 17 + t2 * (2 / 19 + t2 * (2 / 21 + t2 * (2 / 23)))))))))))
+    return e * _LN2_HI + (e * _LN2_LO + t * s)
+
+
+@njit(cache=True, fastmath=False, inline="always")
+def _vexp(y):
+    """exp(y) for -700 < y <= 1, branch-free (vectorises); ~1 ulp."""
+    y = y if y > -700.0 else -700.0
+    kd = y * _INV_LN2 + _SHIFT
+    k = kd - _SHIFT
+    r = (y - k * _LN2_HI) - k * _LN2_LO
+    p = 1.0 + r * (1.0 + r * (1 / 2 + r * (1 / 6 + r * (1 / 24 + r * (1 / 120 + r * (1 / 720 + r * (
+        1 / 5040 + r * (1 / 40320 + r * (1 / 362880 + r * (1 / 3628800 + r * (1 / 39916800 + r * (
+            1 / 479001600 + r * (1 / 6227020800 + r * (1 / 87178291200))))))))))))))
+    sc = np.uint64((np.float64(kd).view(np.uint64) + np.uint64(1023)) << np.uint64(52)).view(np.float64)
+    return p * sc
+
+
 @njit(cache=True, fastmath=True, error_model="numpy")
 def series_pow(zb, m, a, g, A0, A1, out):
     """out[j] = A0 + A1 z^2 - w^g P(v) for zb[:m] (one arbitrary exponent:
-    power-2 law)."""
+    power-2 law). w^g by the branch-free log and exp above."""
     for j in range(m):
         z2 = zb[j] * zb[j]
         w = 1.0 - z2
         v = 1.0 / w
-        out[j] = A0 + A1 * z2 - np.exp(g * np.log(w)) * _h12(a, v)
+        out[j] = A0 + A1 * z2 - _vexp(g * _vlog(w)) * _h12(a, v)
 
 
 @njit(cache=True, fastmath=True)

@@ -27,10 +27,12 @@ truncation error is estimated from the last terms and from the convergence of
 the j-series; light curves whose estimate exceeds the tolerance fall back to
 quadrature.
 """
+from math import pi
+
 import numpy as np
 from numba import njit
 
-from . import _lens
+from . import _exact, _lens
 
 #: order of the contact series (polynomial degree)
 NS = 32
@@ -333,9 +335,22 @@ def _pw(x, sx, qx, lx, e):
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")
-def evaluate(z, p, bounds, REG, SA, SB, SCc, ms, out):
+def p01(z, p):
+    """Blocked integrals of the exponents 0 and 1 in closed form (Mandel & Agol
+    2002): P_0 = pi lambda_e (the blocked area), P_1 = pi (lambda_e - eta_d)."""
+    if z + p <= 1.0:
+        lex = p * p
+        edx = 0.5 * p * p * (p * p + 2.0 * z * z)
+    else:
+        lex, edx = _exact.limb_terms(z, p)
+    return pi * lex, pi * (lex - edx)
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def evaluate(z, p, bounds, REG, SA, SB, SCc, ms, out, c0=0.0, c1=0.0):
     """out[j] = blocked flux sum_i c_i P_{g_i}(z[j]) for samples inside the
-    three pieces; NaN elsewhere."""
+    three pieces; NaN elsewhere. c0, c1: coefficients of the exponents 0 and 1,
+    which are added in closed form (the pieces then carry only the others)."""
     nt = ms.shape[0]
     for j in range(z.shape[0]):
         zj = z[j]
@@ -371,4 +386,7 @@ def evaluate(z, p, bounds, REG, SA, SB, SCc, ms, out):
                 qy = np.sqrt(sy)
                 for i in range(nt):
                     r += _pw(y, sy, qy, ly, ms[i]) * (ly * _horner(SCc[i, 0], y) + _horner(SCc[i, 1], y))
+        if (c0 != 0.0 or c1 != 0.0) and not np.isnan(r):
+            P0, P1 = p01(zj, p)
+            r += c0 * P0 + c1 * P1
         out[j] = r

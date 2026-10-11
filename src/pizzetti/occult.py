@@ -22,9 +22,11 @@ from .laws import QUADRATIC_FAMILY, power_terms, quadratic_coefficients
 SERIES_TOL = 1e-9
 #: Relative truncation tolerance of the hypergeometric limb solution.
 LIMB_TOL = 1e-16
-#: The contact expansions (set-up 0.1-1 ms per exponent and light curve) are
-#: used when there are at least this many limb samples per exponent.
-FIT_MIN_SAMPLES = 300
+#: The contact expansions are used (limb="fast") when there are at least this many
+#: limb samples per j-term of their set-up (tables and coefficients, ~10 us per
+#: non-integer exponent and j-term, against ~1 us per exponent and sample for the
+#: quadrature; measured break-even 150 samples for p = 0.02, 280 for p = 0.1).
+CONTACT_BREAK_EVEN = 4.5
 
 _A_HALF = _series.table(0.5, _series.M)
 
@@ -111,7 +113,7 @@ def _quadratic_flux(z, k, u1, u2, z_c, A_half):
 
 
 @njit(cache=True)
-def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, mode, ltol):
+def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ju, jw, has, ltabs, llens, cgams, ccs, c01, mode, ltol):
     """Power-law intensities: interior series for z <= z_c, Green's-theorem
     quadrature (limb) otherwise. Integer exponents 0 and 1 are folded into
     A0 + A1 z^2; the exponents {1/4, 1/2, 3/4} and a single arbitrary
@@ -199,14 +201,15 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ltabs, llens, mode, ltol)
                     zb_[q, 0] = np.nan
                     zb_[q, 1] = np.nan
             _proven.evaluate(zl[:ml], k, gams, zb_, kinds_, s0s_, store_, degs_, bl)
-    elif mode == 1 and ml >= FIT_MIN_SAMPLES * nt and k < 0.5 and ltabs.shape[2] > 1:
-        bounds, REG, SA, SB, SCc, mexp, est = _contact.build(k, gams, cs, ltabs, llens, z_c, _contact.NS)
+    elif mode == 1 and k < 0.5 and ltabs.shape[2] > 1:
+        # exponents 0 and 1 in closed form (c01), the others (cgams, ccs) by the expansions
+        bounds, REG, SA, SB, SCc, mexp, est = _contact.build(k, cgams, ccs, ltabs, llens, z_c, _contact.NS)
         if est <= _contact.TOL:
-            _contact.evaluate(zl[:ml], k, bounds, REG, SA, SB, SCc, mexp, bl)
+            _contact.evaluate(zl[:ml], k, bounds, REG, SA, SB, SCc, mexp, bl, c01[0], c01[1])
     for j in range(ml):
         b = bl[j]
         if np.isnan(b):
-            b = _general.blocked_limb(zl[j], k, gams, cs, gu, gw)
+            b = _general.blocked_limb(zl[j], k, gams, cs, gu, gw, ju, jw, has)
         if mode != 2 or np.isnan(bl[j]):
             cert[il[j]] = False
         out[il[j]] = 1.0 - b / total
@@ -291,15 +294,18 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
         "fast" (default): power series about first and second contact, of
             fixed order, with coefficients computed once per light curve
             (error ~1e-15 by an a posteriori estimate, not a proof). Used
-            for radius ratios up to ~0.2 when the light curve has enough
-            limb samples to amortise the set-up; quadrature otherwise.
+            for radius ratios below 0.5 when the light curve has enough
+            limb samples to amortise the set-up (about 4.5 per j-term of the
+            hypergeometric tables: ~150 for p = 0.02, ~430 for p = 0.1);
+            quadrature otherwise. The exponents 0 and 1 are added in closed form.
         "proven": the same expansions, split into pieces whose degrees are
             chosen so that the flux error is proven to be at most
             ``series_tol`` (the guarantee of the interior series). Costs
             10-100 ms of set-up per light curve. Pieces whose bound cannot be
             met (radius ratios above ~0.2, or ~0.15 for series_tol=1e-12)
             fall back to quadrature (see ``return_certified``).
-        "quadrature": Green's-theorem quadrature (~1e-13).
+        "quadrature": Green's-theorem quadrature with a Gauss-Jacobi first
+            segment (~1e-16 for every exponent and radius ratio).
     :param return_certified: also return a boolean array, True where the
         flux error is proven to be at most ``series_tol`` (interior series,
         proven limb pieces, closed forms and out-of-transit samples)
@@ -327,16 +333,28 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
         ltol = float(series_tol) if series_tol > 0 else SERIES_TOL
         if mode == 2 and z_c < 0:
             mode = 1          # interior series disabled: nothing to match
-        # limb tables only when the limb solution will be used
+        # limb tables only when the limb solution will be used: always for the proven
+        # pieces; for the contact expansions when there are enough limb samples
         az = np.abs(z)
         n_limb = int(np.count_nonzero((az > z_c) & (az < 1.0 + k)))
-        if mode == 2 or (mode == 1 and k < 0.5 and n_limb >= FIT_MIN_SAMPLES * gams.size):
-            ltabs, llens = limb_tables(gams, limb_jmax(k, z_c))
+        jl = limb_jmax(k, z_c) if k < 0.5 else _contact.JC
+        integer = (gams == 0.0) | (gams == 1.0)
+        c01 = np.array([np.sum(c[gams == 0.0]), np.sum(c[gams == 1.0])])
+        cgams, ccs = gams, c
+        if mode == 2 and k < 0.5:
+            ltabs, llens = limb_tables(gams, jl)
+        elif mode == 1 and k < 0.5 and n_limb >= CONTACT_BREAK_EVEN * jl:
+            cgams, ccs = np.ascontiguousarray(gams[~integer]), np.ascontiguousarray(c[~integer])
+            ltabs, llens = limb_tables(cgams, jl)
+            if cgams.size == 0:
+                ltabs = np.zeros((0, 2, jl + 1, 4, _lens.NC))
+                llens = np.zeros((0, 2, jl + 1, 4), dtype=np.int64)
         else:
             ltabs = np.zeros((gams.size, 2, 1, 4, _lens.NC))
             llens = np.zeros((gams.size, 2, 1, 4), dtype=np.int64)
-        f, cert = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W,
-                                     ltabs, llens, mode, ltol)
+        ju, jw, has = _general.quad_rules(gams)
+        f, cert = _general_flux(z, k, gams, c, z_c, tables, _general.GL_U, _general.GL_W, ju, jw, has,
+                                ltabs, llens, cgams, ccs, c01, mode, ltol)
     if return_certified:
         return f.reshape(shape), cert.reshape(shape)
     return f.reshape(shape)
