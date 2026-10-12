@@ -55,6 +55,29 @@ Gauss–Jacobi rule for the endpoint singularity at the limb (~1e-16).
   curve, so it is opt-in; `occult(..., return_certified=True)` reports which samples it covers.
   The default (`limb="fast"`) uses the same expansions at fixed order with an estimated error of ~10⁻¹⁵.
 
+## Inference
+
+Same posterior, less time. Two synthetic data sets were fitted with emcee, once with batman and once
+with pizzetti, with identical likelihoods, starting positions and random numbers
+([examples/inference](examples/inference), paper Section 6.4):
+
+| | hot Jupiter, TESS 2-min, quadratic law | super-Earth, Kepler 1-min, power-2 law |
+|---|---|---|
+| largest difference of the posterior medians | 0.08 σ | 0.04 σ |
+| model error over the posterior, batman / pizzetti | 9 × 10⁻⁹ / 7 × 10⁻¹⁰ | 1.9 × 10⁻⁶ / 5 × 10⁻¹⁰ |
+| one likelihood evaluation, batman / pizzetti | 0.104 / 0.040 ms (**2.6×**) | 0.82 / 0.48 ms (**1.7×**) |
+| 2000-step emcee run, batman / pizzetti | 8.4 / 3.6 s | 51 / 27 s |
+
+The posteriors agree within their Monte Carlo noise. To come close to pizzetti's accuracy for the
+power-2 law, batman needs `max_err=0.01`, at 4.6 ms per evaluation (still off by 4 × 10⁻⁸). The
+Julia version computes the gradient of either likelihood with respect to all seven parameters in
+about ten likelihood evaluations ([julia/](julia)).
+
+Notebooks: [drop-in replacement in an emcee fit](examples/01_batman_dropin_emcee.ipynb),
+[power-2 super-Earth](examples/02_power2_superearth.ipynb).
+
+![corner plots](examples/inference/results/corner_kepler_paper.png)
+
 ## Speed against batman
 
 Single thread, 10⁵ points, about 30 % of them in transit (`benchmarks/benchmark.py`, Intel Xeon
