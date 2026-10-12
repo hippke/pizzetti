@@ -24,7 +24,8 @@ from numba import njit
 # fixed Bulirsch steps of the vectorised pass; non-converged lanes fall back
 ELL_BATCH_ITERATIONS = 5
 # floor of the complementary modulus (kc = 0 only at internal tangency)
-KC_MIN = 1e-150
+KC_MIN = 1.4901161193847656e-08   # sqrt(eps): at contact the K and Pi terms diverge like
+# ln(1/kc) and cancel; a tinier floor only amplifies rounding (2e-13 at z + p = 1 +- 1 ulp)
 # smallest |z - k| (z == k exactly is moved by one ulp)
 Z_K_MIN = 1e-150
 

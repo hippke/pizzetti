@@ -259,23 +259,28 @@ def limb_jmax(k, z_c):
     return int(min(_contact.JC, max(_contact.NS, 16 * ((J + 15) // 16))))
 
 
-def limb_tables(gams, jmax=None):
-    """Hypergeometric coefficient tables for the limb solution, j = 0..jmax
-    (cached per exponent; a cached table with more terms is reused)."""
+def limb_tables(gams, jmax=None, nc=_lens.NC):
+    """Hypergeometric coefficient tables for the limb solution, j = 0..jmax, nc
+    coefficients per series (cached per exponent; a cached table with at least as
+    many terms is reused without copying when it has exactly the requested size)."""
     if jmax is None:
         jmax = _contact.JC
     ts, ls = [], []
     for g in gams:
         key = float(g)
         hit = _LIMB_CACHE.get(key)
-        if hit is None or hit[0].shape[1] - 1 < jmax:
+        if hit is None or hit[0].shape[1] - 1 < jmax or hit[0].shape[3] < nc:
             if len(_LIMB_CACHE) > 256:
                 _LIMB_CACHE.clear()
-            hit = _lens.table(key, jmax)
+            hit = _lens.table(key, jmax, nc)
             _LIMB_CACHE[key] = hit
         t, l = hit
-        ts.append(t[:, :jmax + 1])
-        ls.append(l[:, :jmax + 1])
+        if t.shape[1] - 1 != jmax or t.shape[3] != nc:
+            t, l = t[:, :jmax + 1, :, :nc], l[:, :jmax + 1]
+        ts.append(t)
+        ls.append(l)
+    if len(ts) == 1:
+        return np.ascontiguousarray(ts[0][np.newaxis]), np.ascontiguousarray(ls[0][np.newaxis])
     return np.ascontiguousarray(ts), np.ascontiguousarray(ls)
 
 
@@ -301,7 +306,7 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
         "proven": the same expansions, split into pieces whose degrees are
             chosen so that the flux error is proven to be at most
             ``series_tol`` (the guarantee of the interior series). Costs
-            10-100 ms of set-up per light curve. Pieces whose bound cannot be
+            5-60 ms of set-up per light curve. Pieces whose bound cannot be
             met (radius ratios above ~0.2, or ~0.15 for series_tol=1e-12)
             fall back to quadrature (see ``return_certified``).
         "quadrature": Green's-theorem quadrature with a Gauss-Jacobi first
@@ -345,9 +350,10 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
             ltabs, llens = limb_tables(gams, jl)
         elif mode == 1 and k < 0.5 and n_limb >= CONTACT_BREAK_EVEN * jl:
             cgams, ccs = np.ascontiguousarray(gams[~integer]), np.ascontiguousarray(c[~integer])
-            ltabs, llens = limb_tables(cgams, jl)
+            # the fixed-order expansions use the first NS + 1 coefficients of each series
+            ltabs, llens = limb_tables(cgams, jl, _contact.NS + 1)
             if cgams.size == 0:
-                ltabs = np.zeros((0, 2, jl + 1, 4, _lens.NC))
+                ltabs = np.zeros((0, 2, jl + 1, 4, _contact.NS + 1))
                 llens = np.zeros((0, 2, jl + 1, 4), dtype=np.int64)
         else:
             ltabs = np.zeros((gams.size, 2, 1, 4, _lens.NC))

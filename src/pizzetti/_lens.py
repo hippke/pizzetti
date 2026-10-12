@@ -161,12 +161,12 @@ def _length(co, xmax):
 
 
 @njit(cache=True)
-def table(g, jmax=JMAX):
-    """Coefficient table for one exponent g: T of shape (2 families, jmax+1, 4, NC)
+def table(g, jmax=JMAX, nc=NC):
+    """Coefficient table for one exponent g: T of shape (2 families, jmax+1, 4, nc)
     and the used lengths L (same leading shape). Slot 0: Taylor in the
     argument; slots 1-3: A, Bl, Bc of the connection form. The limb-crossing
     family is scaled by B(1/2, g+2+j), the interior one by pi."""
-    T = np.zeros((2, jmax + 1, 4, NC))
+    T = np.zeros((2, jmax + 1, 4, nc))
     L = np.zeros((2, jmax + 1, 4), dtype=np.int64)
     for j in range(jmax + 1):
         for fam in range(2):

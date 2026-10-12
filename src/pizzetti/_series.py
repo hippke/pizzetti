@@ -188,15 +188,17 @@ def _vlog(x):
 
 @njit(cache=True, fastmath=False, inline="always")
 def _vexp(y):
-    """exp(y) for -700 < y <= 1, branch-free (vectorises); ~1 ulp."""
+    """exp(y) for -700 < y <= 1, branch-free (vectorises); ~1 ulp. Safe under
+    fastmath (inlined into fastmath loops): the integer part is taken by rint,
+    not by the add-and-subtract trick (x + 1.5*2^52) - 1.5*2^52, which fastmath
+    may simplify to x."""
     y = y if y > -700.0 else -700.0
-    kd = y * _INV_LN2 + _SHIFT
-    k = kd - _SHIFT
+    k = np.rint(y * _INV_LN2)
     r = (y - k * _LN2_HI) - k * _LN2_LO
     p = 1.0 + r * (1.0 + r * (1 / 2 + r * (1 / 6 + r * (1 / 24 + r * (1 / 120 + r * (1 / 720 + r * (
         1 / 5040 + r * (1 / 40320 + r * (1 / 362880 + r * (1 / 3628800 + r * (1 / 39916800 + r * (
             1 / 479001600 + r * (1 / 6227020800 + r * (1 / 87178291200))))))))))))))
-    sc = np.uint64((np.float64(kd).view(np.uint64) + np.uint64(1023)) << np.uint64(52)).view(np.float64)
+    sc = np.int64((np.int64(k) + np.int64(1023)) << np.int64(52)).view(np.float64)
     return p * sc
 
 
