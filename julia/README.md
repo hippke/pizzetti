@@ -180,7 +180,7 @@ sample at every call):
 |---|---|---|
 | likelihood (orbit, light curve, χ²) | 0.039 ms | 0.41 ms |
 | gradient, 7 parameters (ForwardDiff) | 0.40 ms | 4.1 ms |
-| for comparison: Python pizzetti / batman | 0.040 / 0.104 ms | 0.48 / 0.82 ms |
+| for comparison: Python pizzetti / batman | 0.024 / 0.107 ms | 0.48 / 0.83 ms |
 
 Against Limbdark.jl (quadratic law, p = 0.1, 10 000 samples): a light curve costs 0.13 ms
 (Limbdark.jl 0.48 ms with its work structure re-used); a light curve with the gradient

@@ -132,15 +132,15 @@
  ],
  "steps_identical": 846,
  "model_diff": {
-  "batman": 9.127347766479943e-09,
+  "batman": 9.127347877502245e-09,
   "pizzetti": 7.235270160776963e-10,
-  "between": 9.127347766479943e-09
+  "between": 9.127347877502245e-09
  },
  "timing": {
   "batman_call_ms": 0.11928749995604448,
-  "pizzetti_call_ms": 0.04310399981477531,
+  "pizzetti_call_ms": 0.020146999986536684,
   "batman_wall_s": 99.45659713300006,
-  "pizzetti_wall_s": 34.43747246100065,
+  "pizzetti_wall_s": 23.43914830799997,
   "n_points": 1316,
   "nsteps": 20000,
   "nwalkers": 32

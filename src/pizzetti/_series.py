@@ -75,11 +75,20 @@ def coeffs(A, p, scale):
     return a
 
 
+def _gtable(MM):
+    """G(MM + 1, l) for even l (index l // 2)."""
+    m1 = MM + 1
+    return np.array([_G(m1, l) for l in range(0, m1 + 1, 2)])
+
+
+#: G(M + 1, l) of the default order, precomputed (the bound is evaluated many times
+#: per light curve while the cut is searched)
+_GTAB = _gtable(M)
+
+
 @njit(cache=True)
-def bound(z, p, g, MM):
-    """Rigorous bound B_M(z, p; g) on |S_M - D_g| (MM odd, MM + 1 > g).
-    Written as e^(M+1) sum_l G (lam/2)^l (1-lam)^(M+1-l), lam = 2z/(2z+p), so
-    that no power over- or underflows. Returns 0 for integer g <= MM."""
+def _bound_g(z, p, g, MM, Gt):
+    """B_M with the coefficients G(M + 1, l) given (Gt[l // 2])."""
     m1 = MM + 1
     bm = abs(beta(g, m1))
     if bm == 0.0:
@@ -89,40 +98,91 @@ def bound(z, p, g, MM):
     if not (e < 1.0):
         return 1e300
     lam = 2.0 * z / (2.0 * z + p)
+    h = 0.5 * lam
+    q = 1.0 - lam
+    # sum_l G (lam/2)^l (1-lam)^(M+1-l) by Horner in (h/q)^2, scaled by q^(M+1);
+    # direct powers where q is tiny (z -> 0 is lam = 0, q = 1: no issue; q -> 0 only for p -> 0)
     s = 0.0
-    for l in range(0, m1 + 1, 2):
-        s += _G(m1, l) * (0.5 * lam) ** l * (1.0 - lam) ** (m1 - l)
+    if q > 1e-3:
+        r = (h / q) ** 2
+        for i in range(Gt.shape[0] - 1, -1, -1):
+            s = s * r + Gt[i]
+        s *= q ** m1
+    else:
+        for i in range(Gt.shape[0]):
+            l = 2 * i
+            s += Gt[i] * h ** l * q ** (m1 - l)
     return w ** g * bm * e ** m1 * s / (1.0 - e)
 
 
 @njit(cache=True)
-def flux_bound(z, p, gams, cabs, scale):
+def bound(z, p, g, MM):
+    """Rigorous bound B_M(z, p; g) on |S_M - D_g| (MM odd, MM + 1 > g).
+    Written as e^(M+1) sum_l G (lam/2)^l (1-lam)^(M+1-l), lam = 2z/(2z+p), so
+    that no power over- or underflows. Returns 0 for integer g <= MM."""
+    m1 = MM + 1
+    Gt = np.empty(m1 // 2 + 1)
+    for l in range(0, m1 + 1, 2):
+        Gt[l // 2] = _G(m1, l)
+    return _bound_g(z, p, g, MM, Gt)
+
+
+@njit(cache=True)
+def flux_bound(z, p, gams, cabs, scale, Gt):
     """Bound on the flux error of the truncated series: scale * sum_i |c_i| B_M(g_i)."""
     t = 0.0
     for i in range(gams.shape[0]):
         if cabs[i] != 0.0:
-            t += cabs[i] * bound(z, p, gams[i], M)
+            t += cabs[i] * _bound_g(z, p, gams[i], M, Gt)
     return scale * t
 
 
 @njit(cache=True)
-def zcut(p, gams, cabs, scale, tol):
-    """Largest z in [0, 1 - p) with flux_bound(z) <= tol (bisection; the bound
-    increases with z). Returns -1 if not even z = 0 qualifies."""
+def zcut(p, gams, cabs, scale, tol, Gt):
+    """Largest z in [0, 1 - p) with flux_bound(z) <= tol, to ~1e-13 in z. The bound
+    increases with z and log(bound) is smooth, so the root of log(bound/tol) is
+    bracketed and found by regula falsi (Illinois); the lower end of the bracket
+    always satisfies the bound, and it is returned once the bound there is within
+    1e-9 (relative) of the tolerance. About 10 evaluations of the bound instead of
+    60 bisection steps. Returns -1 if not even z = 0 qualifies."""
     if not (p > 0.0 and p < 1.0 and tol > 0.0):
         return -1.0
-    if flux_bound(0.0, p, gams, cabs, scale) > tol:
+    f0 = flux_bound(0.0, p, gams, cabs, scale, Gt)
+    if f0 > tol:
         return -1.0
     lo = 0.0
-    hi = 1.0 - p
-    if flux_bound(hi * (1.0 - 1e-15), p, gams, cabs, scale) <= tol:
-        return hi * (1.0 - 1e-15)
-    for _ in range(60):
-        mid = 0.5 * (lo + hi)
-        if flux_bound(mid, p, gams, cabs, scale) <= tol:
-            lo = mid
+    hi = (1.0 - p) * (1.0 - 1e-15)
+    fh = flux_bound(hi, p, gams, cabs, scale, Gt)
+    if fh <= tol:
+        return hi
+    ltol = np.log(tol)
+    if f0 <= 0.0:
+        # only integer exponents (exact series): the bound is 0 everywhere
+        return hi
+    flo = np.log(f0) - ltol            # < 0 (or 0)
+    fhi = np.log(fh) - ltol if fh < 1e300 else 700.0
+    side = 0
+    for _ in range(200):
+        # done when the bracket is tight, or when the bound at lo is within 1e-9
+        # (relative) of the tolerance: lo is then the cut for all practical purposes
+        if hi - lo <= 1e-13 * hi or flo >= -1e-9:
+            break
+        z = (lo * fhi - hi * flo) / (fhi - flo)
+        d = hi - lo
+        if not (lo + 1e-12 * d < z < hi - 1e-12 * d):
+            z = 0.5 * (lo + hi)
+        fb = flux_bound(z, p, gams, cabs, scale, Gt)
+        fz = np.log(fb) - ltol if (fb > 0.0 and fb < 1e300) else (700.0 if fb >= 1e300 else -700.0)
+        if fb <= tol:                      # the decision on the bound itself, not on its log
+            lo, flo = z, min(fz, 0.0)
+            if side == -1:
+                fhi *= 0.5
+            side = -1
         else:
-            hi = mid
+            hi, fhi = z, max(fz, 1e-300)
+            if side == 1:
+                flo *= 0.5
+            side = 1
     return lo
 
 

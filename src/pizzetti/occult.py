@@ -16,7 +16,7 @@ from numba import njit
 
 
 from . import _contact, _exact, _general, _lens, _proven, _series
-from .laws import QUADRATIC_FAMILY, power_terms, quadratic_coefficients
+from .laws import QUADRATIC_FAMILY, check_law, power_terms, quadratic_coefficients
 
 #: Default bound on the flux error of the interior series (absolute flux).
 SERIES_TOL = 1e-9
@@ -110,6 +110,12 @@ def _quadratic_flux(z, k, u1, u2, z_c, A_half):
                 f = _exact.exact_point(zb[j], k, c1, c2, u2, omega)
             out[idx[j]] = f
     return out
+
+
+@njit(cache=True)
+def _quadratic_flux_cut(z, k, u1, u2, tol, A_half, Gt, qg):
+    """_quadratic_flux with the cut computed in the same compiled call."""
+    return _quadratic_flux(z, k, u1, u2, _quadratic_cut(k, u1, u2, tol, Gt, qg), A_half)
 
 
 @njit(cache=True)
@@ -232,17 +238,56 @@ def _general_flux(z, k, gams, cs, z_c, tables, gu, gw, ju, jw, has, ltabs, llens
     return out, cert
 
 
+@njit(cache=True)
+def _cut_terms(k, gams, cs, tol, Gt):
+    """z_c for I = sum c_i mu^(2 g_i) (one compiled call: normalisation and bound search)."""
+    norm = 0.0
+    for i in range(gams.shape[0]):
+        norm += cs[i] / (2.0 * gams[i] + 2.0)
+    if not (k > 0.0 and k < 1.0 and tol > 0.0 and norm != 0.0):
+        return -1.0
+    return _series.zcut(k, gams, np.abs(cs), k * k / (2.0 * abs(norm)), tol, Gt)
+
+
+_QGAMS = np.array([0.0, 0.5, 1.0])
+_SERIES_CACHE = {}
+
+
+def series_tables(gams):
+    """Coefficient tables A[j, q] of the interior series, one per exponent (cached)."""
+    out = np.empty((len(gams), _series.M + 1, _series.M + 1))
+    for i, g in enumerate(gams):
+        key = float(g)
+        t = _SERIES_CACHE.get(key)
+        if t is None:
+            if len(_SERIES_CACHE) > 1024:
+                _SERIES_CACHE.clear()
+            t = _series.table(key, _series.M)
+            _SERIES_CACHE[key] = t
+        out[i] = t
+    return out
+
+
+@njit(cache=True)
+def _quadratic_cut(k, u1, u2, tol, Gt, qg):
+    """z_c of the quadratic law I = 1 - u1 (1 - mu) - u2 (1 - mu)^2."""
+    cs = np.empty(3)
+    cs[0] = 1.0 - u1 - u2
+    cs[1] = u1 + 2.0 * u2
+    cs[2] = -u2
+    return _cut_terms(k, qg, cs, tol, Gt)
+
+
 def series_cut(rp, limb_dark, u, series_tol=SERIES_TOL):
     """Cut z_c: the interior series is used for z <= z_c, where its flux error
     is rigorously bounded by ``series_tol``. Returns -1 if the series is not
     used (e.g. large radius ratios or ``series_tol <= 0``)."""
     k = abs(float(rp))
+    if limb_dark in QUADRATIC_FAMILY:
+        u1, u2 = quadratic_coefficients(limb_dark, check_law(limb_dark, u))
+        return _quadratic_cut(k, u1, u2, float(series_tol), _series._GTAB, _QGAMS)
     al, c = power_terms(limb_dark, u)
-    gams = al / 2.0
-    norm = np.sum(c / (al + 2.0))
-    if k <= 0 or k >= 1 or series_tol <= 0 or norm == 0:
-        return -1.0
-    return _series.zcut(k, gams, np.abs(c), k * k / (2.0 * abs(norm)), float(series_tol))
+    return _cut_terms(k, al / 2.0, c, float(series_tol), _series._GTAB)
 
 
 def limb_jmax(k, z_c):
@@ -320,17 +365,15 @@ def occult(z, rp, u, limb_dark="quadratic", series_tol=SERIES_TOL, limb="fast", 
     shape = z.shape
     z = z.ravel()
     k = abs(float(rp))
-    z_c = series_cut(k, limb_dark, u, series_tol)
     if limb_dark in QUADRATIC_FAMILY:
-        u1, u2 = quadratic_coefficients(limb_dark, u)
-        f = _quadratic_flux(z, k, u1, u2, z_c, _A_HALF)
-        cert = np.ones(z.shape, dtype=bool)
+        u1, u2 = quadratic_coefficients(limb_dark, check_law(limb_dark, u))
+        f = _quadratic_flux_cut(z, k, u1, u2, float(series_tol), _A_HALF, _series._GTAB, _QGAMS)
+        cert = np.ones(z.shape, dtype=bool) if return_certified else None
     else:
         al, c = power_terms(limb_dark, u)
         gams = al / 2.0
-        tables = np.empty((gams.size, _series.M + 1, _series.M + 1))
-        for i, g in enumerate(gams):
-            tables[i] = _series.table(float(g), _series.M)
+        z_c = _cut_terms(k, gams, c, float(series_tol), _series._GTAB)
+        tables = series_tables(gams)
         modes = {"quadrature": 0, "fast": 1, "hypergeometric": 1, "proven": 2}
         if limb not in modes:
             raise ValueError('limb must be "proven", "fast" or "quadrature"')

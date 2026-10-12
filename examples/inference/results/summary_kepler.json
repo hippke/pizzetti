@@ -138,9 +138,9 @@
  },
  "timing": {
   "batman_call_ms": 1.1282600000868115,
-  "pizzetti_call_ms": 0.33080050002354255,
+  "pizzetti_call_ms": 0.25540450002381476,
   "batman_wall_s": 727.2296233020002,
-  "pizzetti_wall_s": 345.063086957,
+  "pizzetti_wall_s": 283.442947892,
   "n_points": 10380,
   "nsteps": 20000,
   "nwalkers": 32

@@ -30,10 +30,10 @@ python benchmark_wall.py         # wall-clock time of 2000-step runs
 | chains step-by-step identical for | 846 steps | 6 steps |
 | largest model error over the posterior, batman | 9e-9 | 1.9e-6 |
 | largest model error over the posterior, pizzetti | 7e-10 | 5e-10 |
-| likelihood evaluation, batman | 0.104 ms | 0.82 ms |
-| likelihood evaluation, pizzetti | 0.040 ms (2.6x) | 0.48 ms (1.7x) |
-| likelihood evaluation, batman with `max_err=0.01` | — | 4.6 ms (error still 4e-8) |
-| 2000-step emcee run, batman / pizzetti | 8.4 s / 3.6 s | 51 s / 27 s |
+| likelihood evaluation, batman | 0.107 ms | 0.83 ms |
+| likelihood evaluation, pizzetti | 0.024 ms (4.4x) | 0.48 ms (1.7x) |
+| likelihood evaluation, batman with `max_err=0.01` | — | 4.7 ms (error still 4e-8) |
+| 2000-step emcee run, batman / pizzetti | 8.5 s / 2.5 s | 52 s / 28 s |
 | likelihood / gradient (7 parameters), Pizzetti.jl | 0.039 / 0.40 ms | 0.41 / 4.1 ms |
 
 MCSE: Monte Carlo standard error of the difference of the medians, from the integrated autocorrelation

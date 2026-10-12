@@ -65,11 +65,11 @@ with pizzetti, with identical likelihoods, starting positions and random numbers
 |---|---|---|
 | largest difference of the posterior medians | 0.08 σ | 0.04 σ |
 | model error over the posterior, batman / pizzetti | 9 × 10⁻⁹ / 7 × 10⁻¹⁰ | 1.9 × 10⁻⁶ / 5 × 10⁻¹⁰ |
-| one likelihood evaluation, batman / pizzetti | 0.104 / 0.040 ms (**2.6×**) | 0.82 / 0.48 ms (**1.7×**) |
-| 2000-step emcee run, batman / pizzetti | 8.4 / 3.6 s | 51 / 27 s |
+| one likelihood evaluation, batman / pizzetti | 0.107 / 0.024 ms (**4.4×**) | 0.83 / 0.48 ms (**1.7×**) |
+| 2000-step emcee run, batman / pizzetti | 8.5 / 2.5 s | 52 / 28 s |
 
 The posteriors agree within their Monte Carlo noise. To come close to pizzetti's accuracy for the
-power-2 law, batman needs `max_err=0.01`, at 4.6 ms per evaluation (still off by 4 × 10⁻⁸). The
+power-2 law, batman needs `max_err=0.01`, at 4.7 ms per evaluation (still off by 4 × 10⁻⁸). The
 Julia version computes the gradient of either likelihood with respect to all seven parameters in
 about ten likelihood evaluations ([julia/](julia)).
 
@@ -85,15 +85,15 @@ Single thread, 10⁵ points, about 30 % of them in transit (`benchmarks/benchmar
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 1.61 ms | 0.27 ms | **6.0×** | 3.77 ms | 0.58 ms | **6.6×** |
-| quadratic | 0.1 | 2.07 ms | 0.38 ms | **5.4×** | 4.27 ms | 0.56 ms | **7.6×** |
-| nonlinear | 0.0092 | 2.23 ms | 0.99 ms | 2.3× | 5.40 ms | 1.19 ms | 4.5× |
-| nonlinear | 0.1 | 46.7 ms | 2.16 ms | **22×** | 48.7 ms | 2.47 ms | **20×** |
-| power2 | 0.0092 | 1.31 ms | 0.78 ms | 1.7× | 3.97 ms | 1.07 ms | 3.7× |
-| power2 | 0.1 | 26.6 ms | 1.12 ms | **24×** | 24.3 ms | 1.31 ms | **19×** |
+| quadratic | 0.0092 | 2.12 ms | 0.24 ms | **8.8×** | 4.87 ms | 0.49 ms | **10×** |
+| quadratic | 0.1 | 2.48 ms | 0.43 ms | **5.8×** | 5.13 ms | 0.69 ms | **7.4×** |
+| nonlinear | 0.0092 | 2.75 ms | 0.94 ms | 2.9× | 5.23 ms | 1.16 ms | 4.5× |
+| nonlinear | 0.1 | 45.8 ms | 2.68 ms | **17×** | 38.3 ms | 2.39 ms | **16×** |
+| power2 | 0.0092 | 1.30 ms | 0.77 ms | 1.7× | 4.00 ms | 1.01 ms | 4.0× |
+| power2 | 0.1 | 29.1 ms | 1.07 ms | **27×** | 25.2 ms | 1.23 ms | **21×** |
 
 batman's numerical laws (nonlinear, power2) run at its default tolerance of 1 ppm; pizzetti's
-errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.7–2.6 times faster
+errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.7–4.4 times faster
 ([examples/inference](examples/inference)).
 
 ## Installation
