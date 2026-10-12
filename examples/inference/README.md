@@ -17,11 +17,11 @@ law; c and alpha for the power-2 law), uniform priors; 32 walkers, 20 000 steps,
 ./runall.sh                      # the four runs (~25 min on one core)
 python analyze.py tess 4000      # corner plots, quantiles, Monte Carlo errors -> results/
 python analyze.py kepler 4000
-python benchmark_calls.py        # cost per likelihood evaluation at 200 posterior samples (interleaved)
+python benchmark_calls.py        # cost per likelihood evaluation, a new posterior sample per call (interleaved)
 python benchmark_wall.py         # wall-clock time of 2000-step runs
 ```
 
-## Results (Intel Xeon 2.8 GHz, single thread)
+## Results (Intel Xeon 2.1 GHz, single thread)
 
 | | hot Jupiter (quadratic) | super-Earth (power-2) |
 |---|---|---|
@@ -30,18 +30,20 @@ python benchmark_wall.py         # wall-clock time of 2000-step runs
 | chains step-by-step identical for | 846 steps | 6 steps |
 | largest model error over the posterior, batman | 9e-9 | 1.9e-6 |
 | largest model error over the posterior, pizzetti | 7e-10 | 5e-10 |
-| likelihood evaluation, batman | 0.133 ms | 1.11 ms |
-| likelihood evaluation, pizzetti | 0.056 ms (2.4x) | 0.77 ms (1.4x) |
-| likelihood evaluation, batman with `max_err=0.01` | — | 6.0 ms (error still 4e-8) |
-| 2000-step emcee run, batman / pizzetti | 10.3 s / 4.5 s | 69 s / 46 s |
+| likelihood evaluation, batman | 0.104 ms | 0.82 ms |
+| likelihood evaluation, pizzetti | 0.040 ms (2.6x) | 0.48 ms (1.7x) |
+| likelihood evaluation, batman with `max_err=0.01` | — | 4.6 ms (error still 4e-8) |
+| 2000-step emcee run, batman / pizzetti | 8.4 s / 3.6 s | 51 s / 27 s |
+| likelihood / gradient (7 parameters), Pizzetti.jl | 0.039 / 0.40 ms | 0.41 / 4.1 ms |
 
 MCSE: Monte Carlo standard error of the difference of the medians, from the integrated autocorrelation
 times. The posteriors agree within their Monte Carlo noise. The chains, which draw identical proposals, stay
 identical until a model difference changes an acceptance decision: batman's power-2 integrator (1 ppm
 tolerance) differs from the reference by 1.9e-6, 1.3 % of the noise, and the chains part after 6 steps.
 
-In the super-Earth case two thirds of pizzetti's time goes to the 330 limb samples per light curve, which
-use quadrature because there are fewer than 300 per exponent (below that the set-up of the contact
-expansions does not pay off).
+In the super-Earth case the power-2 exponent alpha changes at every step, so every call builds the
+coefficient tables of the Gauss functions and the contact expansions for the 330 limb samples anew; this
+is about a third of pizzetti's time. The Julia numbers are from `julia/benchmark/inference_cases.jl`
+(same light curves and posterior samples, `results/posterior_samples.json`).
 
 ![corner plots](results/corner_kepler_paper.png)

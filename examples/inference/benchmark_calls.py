@@ -30,7 +30,11 @@ def main(nsel=200, reps=20):
         ivar = 1.0 / c["sigma"] ** 2
         chain = np.load(os.path.join(R.OUT, f"chain_{case}_pizzetti.npy"))
         samp = chain[4000:].reshape(-1, chain.shape[-1])
-        sel = samp[np.random.default_rng(1).choice(len(samp), nsel, replace=False)]
+        # distinct posterior samples for every repetition, so that no code profits from
+        # caches keyed by parameter values (pizzetti caches the hypergeometric tables
+        # per limb-darkening exponent; in a fit every call has a new exponent)
+        allsel = samp[np.random.default_rng(1).choice(len(samp), nsel * (reps + 1), replace=False)]
+        sel = allsel[:nsel]
         configs = {"batman": dict(code="batman", kw={}),
                    "pizzetti": dict(code="pizzetti", kw={})}
         if c["law"] == "power2":
@@ -49,8 +53,8 @@ def main(nsel=200, reps=20):
             prm, m = models[name]
             R.set_params(c, prm, sel[0])
             m.light_curve(prm)
-        # per-call time: loop over all samples (every call changes the parameters, so the
-        # orbit is recomputed as in a fit), repeated, codes interleaved
+        # per-call time: loop over posterior samples (every call changes the parameters, so the
+        # orbit is recomputed as in a fit), repeated with new samples, codes interleaved
         err = {name: 0.0 for name in configs}
         for th in sel:
             R.set_params(c, ref_p, th)
@@ -60,11 +64,12 @@ def main(nsel=200, reps=20):
                 R.set_params(c, prm, th)
                 err[name] = max(err[name], float(np.max(np.abs(m.light_curve(prm) - fr))))
         times = {name: [] for name in configs}
-        for _ in range(reps):
+        for rep in range(reps):
+            chunk = allsel[(rep + 1) * nsel:(rep + 2) * nsel]
             for name in configs:
                 prm, m = models[name]
                 s = time.perf_counter()
-                for th in sel:
+                for th in chunk:
                     R.set_params(c, prm, th)
                     r = y - m.light_curve(prm)
                     _ = -0.5 * ivar * np.dot(r, r)

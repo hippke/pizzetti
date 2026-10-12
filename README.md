@@ -33,8 +33,9 @@ iterations and no special cases.
 For an Earth-sized planet crossing a Sun-like star, the series covers **96–98 %** of the
 in-transit points (central transit: 98 %; averaged over impact parameters: 96 %). The few points that touch the stellar limb use an exact, vectorised Mandel & Agol solver
 (uniform, linear and quadratic laws) or, for the other laws, power series about first and second contact with
-coefficients computed once per light curve (accurate to ~1e-15, 7-15x faster per sample than quadrature, radius
-ratios up to ~0.2). Short light curves and larger occulters use a high-order Green's-theorem quadrature.
+coefficients computed once per light curve (accurate to ~1e-15, 15-22x faster per sample than quadrature, radius
+ratios up to ~0.2). Short light curves and larger occulters use a Green's-theorem quadrature with a
+Gauss–Jacobi rule for the endpoint singularity at the limb (~1e-16).
 
 ## Proven correctness
 
@@ -50,23 +51,27 @@ ratios up to ~0.2). Short light curves and larger occulters use a high-order Gre
   Kepler's equation is solved to 10⁻¹⁵ instead of 10⁻⁷.
 - **The limb can be proven too.** With `limb="proven"` the contact expansions are split into
   pieces whose degrees are chosen so that their flux error is also proven to be below `series_tol`
-  (radius ratios up to ~0.2 at 10⁻⁹, ~0.15 at 10⁻¹²). The proof costs 10–100 ms of set-up per light
+  (radius ratios up to ~0.2 at 10⁻⁹, ~0.15 at 10⁻¹²). The proof costs 5–60 ms of set-up per light
   curve, so it is opt-in; `occult(..., return_certified=True)` reports which samples it covers.
   The default (`limb="fast"`) uses the same expansions at fixed order with an estimated error of ~10⁻¹⁵.
 
 ## Speed against batman
 
-Single thread, 10⁵ points, about 30 % of them in transit (`benchmarks/benchmark.py`, Intel Core
-Ultra 5 226V). "Full" means that every call also recomputes the orbit, as in a fit.
+Single thread, 10⁵ points, about 30 % of them in transit (`benchmarks/benchmark.py`, Intel Xeon
+2.1 GHz, numba 0.68). "Full" means that every call also recomputes the orbit, as in a fit.
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 1.79 ms | 0.16 ms | **11.0×** | 3.49 ms | 0.40 ms | **8.7×** |
-| quadratic | 0.1 | 1.91 ms | 0.25 ms | **7.6×** | 3.78 ms | 0.52 ms | **7.2×** |
-| nonlinear | 0.0092 | 1.88 ms | 0.58 ms | 3.2× | 3.90 ms | 0.85 ms | 4.6× |
-| nonlinear | 0.1 | 30.9 ms | 5.7 ms | 5.4× | 33.2 ms | 6.2 ms | 5.4× |
-| power2 | 0.0092 | 1.06 ms | 1.05 ms | 1.0× | 2.97 ms | 1.35 ms | 2.2× |
-| power2 | 0.1 | 19.2 ms | 6.7 ms | 2.9× | 21.4 ms | 7.0 ms | 3.1× |
+| quadratic | 0.0092 | 1.61 ms | 0.27 ms | **6.0×** | 3.77 ms | 0.58 ms | **6.6×** |
+| quadratic | 0.1 | 2.07 ms | 0.38 ms | **5.4×** | 4.27 ms | 0.56 ms | **7.6×** |
+| nonlinear | 0.0092 | 2.23 ms | 0.99 ms | 2.3× | 5.40 ms | 1.19 ms | 4.5× |
+| nonlinear | 0.1 | 46.7 ms | 2.16 ms | **22×** | 48.7 ms | 2.47 ms | **20×** |
+| power2 | 0.0092 | 1.31 ms | 0.78 ms | 1.7× | 3.97 ms | 1.07 ms | 3.7× |
+| power2 | 0.1 | 26.6 ms | 1.12 ms | **24×** | 24.3 ms | 1.31 ms | **19×** |
+
+batman's numerical laws (nonlinear, power2) run at its default tolerance of 1 ppm; pizzetti's
+errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.7–2.6 times faster
+([examples/inference](examples/inference)).
 
 ## Installation
 

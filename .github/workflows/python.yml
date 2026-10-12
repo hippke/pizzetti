@@ -1,0 +1,22 @@
+name: Python
+
+on:
+  push:
+    paths: ["src/**", "tests/**", "testdata/**", "pyproject.toml", ".github/workflows/python.yml"]
+  pull_request:
+    paths: ["src/**", "tests/**", "testdata/**", "pyproject.toml", ".github/workflows/python.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e . pytest mpmath batman-package
+      - run: pytest -q tests
