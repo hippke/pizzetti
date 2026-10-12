@@ -18,13 +18,16 @@ function limb_jmax(p::Float64, zc::Float64)
     return min(CONTACT_JC, max(CONTACT_NS, 16 * ((J + 15) ÷ 16)))
 end
 
-function lens_tables(γ::Vector{Float64}, jm::Int)
+# `nc` coefficients per series: the fixed-order contact expansions use the first
+# CONTACT_NS + 1 (a third of the table, so a third of the set-up when the exponent
+# changes from call to call, as for a fitted power-2 law); the proven pieces all of them
+function lens_tables(γ::Vector{Float64}, jm::Int; nc::Int = HYP_NC)
     lock(_LENS_LOCK) do
         map(γ) do g
             t = get(_LENS_CACHE, g, nothing)
-            if t === nothing || jmax(t) < jm
+            if t === nothing || jmax(t) < jm || size(t.T, 4) < nc
                 length(_LENS_CACHE) > 256 && empty!(_LENS_CACHE)
-                t = lens_table(g, jm)
+                t = lens_table(g, jm; nc = nc)
                 _LENS_CACHE[g] = t
             end
             t
@@ -32,12 +35,23 @@ function lens_tables(γ::Vector{Float64}, jm::Int)
     end
 end
 
+# Gauss functions of the exact derivatives (Section 5.4) for one exponent. Mutable so
+# that it is passed by reference (each HypCache holds 240 coefficients).
+mutable struct DHyp
+    γ::Float64
+    F1::HypCache                 # ₂F₁(-γ, ½; 1; ·)
+    F2::HypCache                 # ₂F₁(-γ, 3/2; 2; ·)
+    H1::HypCache                 # B(½, γ+1) ₂F₁(½, ½; γ+3/2; ·)   (limb, Eq. dPlimb)
+    H2::HypCache                 # 2 B(3/2, γ+1) ₂F₁(½, 3/2; γ+5/2; ·)
+end
+DHyp(g::Float64) = DHyp(g, HypCache(-g, 0.5, 1.0), HypCache(-g, 1.5, 2.0),
+                        HypCache(0.5, 0.5, g + 1.5, _beta(0.5, g + 1)), HypCache(0.5, 1.5, g + 2.5, 2_beta(1.5, g + 1)))
+
 struct DTerm
     γ::Float64
     a::Vector{Float64}
     ad::Vector{Float64}
-    F1::HypCache                 # ₂F₁(-γ, ½; 1; ·)
-    F2::HypCache                 # ₂F₁(-γ, 3/2; 2; ·)
+    dh::DHyp
     rules::QuadRules{Float64}
     ce::Vector{ContactExpansion} # limb: P_γ, and P at γ ± h, γ ± h/2 (empty: quadrature)
     hγ::Float64
@@ -159,7 +173,7 @@ function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Sy
         else
             # exponents 0 and 1 in closed form, the others by the expansions
             ib = [i for i in eachindex(γ) if !(γ[i] == 0 || γ[i] == 1)]
-            tabs = lens_tables(γ[ib], jl)
+            tabs = lens_tables(γ[ib], jl; nc = CONTACT_NS + 1)
             ce = contact_build(p, γ[ib], c[ib], tabs, zc)
             if ce.est <= CONTACT_TOL
                 c0 = sum((c[i] for i in eachindex(γ) if γ[i] == 0); init = 0.0)
@@ -235,6 +249,24 @@ end
 # single-term quadrature rule.
 const DTERM_M = 31
 
+# the parts of a DTerm that depend on γ only (cached: in a fit with fixed limb darkening
+# every light curve has the same exponents)
+struct _DTermγ
+    A::Matrix{ComplexF64}        # series table of P_γ at γ + i h (complex step)
+    dh::DHyp
+end
+const _DTERMγ_CACHE = Dict{Float64,_DTermγ}()
+const _DTERMγ_LOCK = ReentrantLock()
+
+function _dterm_γ(gv::Float64)
+    lock(_DTERMγ_LOCK) do
+        get!(_DTERMγ_CACHE, gv) do
+            length(_DTERMγ_CACHE) > 512 && empty!(_DTERMγ_CACHE)
+            _DTermγ(series_table(complex(gv, 1e-30), DTERM_M), DHyp(gv))
+        end
+    end
+end
+
 function _dterms(o::Occultor)
     if isempty(o.dterms[])
         pv = Float64(_val(o.p))
@@ -244,19 +276,21 @@ function _dterms(o::Occultor)
         for g in o.γ
             gv = Float64(_val(g))
             h = 1e-30
-            ac = series_coeffs(series_table(complex(gv, h), DTERM_M), pv, π * pv^2)
+            dγ = _dterm_γ(gv)
+            ac = series_coeffs(dγ.A, pv, π * pv^2)
             ce = ContactExpansion[]
             hγ = 1e-3 * max(1.0, abs(gv))
             if usece && !(gv == 0 || gv == 1)
                 gs = _isconst(g, gv) ? (gv,) : (gv, gv + hγ, gv - hγ, gv + hγ / 2, gv - hγ / 2)
                 for gg in gs
-                    e = contact_build(pv, [gg], [1.0], lens_tables([gg], jl), o.zc)
+                    e = contact_build(pv, [gg], [1.0], lens_tables([gg], jl; nc = CONTACT_NS + 1), o.zc)
                     e.est <= CONTACT_TOL || (empty!(ce); break)
                     push!(ce, e)
                 end
             end
-            push!(v, DTerm(gv, real.(ac), imag.(ac) ./ h, HypCache(-gv, 0.5, 1.0), HypCache(-gv, 1.5, 2.0),
-                           quad_rules([gv]), ce, hγ))
+            a = real.(ac)
+            na = something(findlast(!iszero, a), 1)          # terminating series (integer γ)
+            push!(v, DTerm(gv, a[1:na], imag.(ac) ./ h, dγ.dh, quad_rules([gv]), ce, hγ))
         end
         o.dterms[] = v
     end

@@ -46,3 +46,24 @@
         @test g ≈ [dz, dp] atol = 1e-13
     end
 end
+
+@testset "derivatives: elementary forms (γ = 0, 1) and cached Gauss functions" begin
+    setprecision(BigFloat, 160) do
+        for p in (0.0092, 0.1, 0.3, 0.7, 1.3)
+            zs = vcat(range(0, 1 + p, length = 12)[1:end-1],
+                      [abs(1 - p) + 1e-9, 1 - p - 1e-9, 1 + p - 1e-9, p + 1e-9, abs(p - 1) + 1e-12])
+            for z in zs
+                (p >= 1 && z <= p - 1) && continue
+                r = Pizzetti._bderiv01(z, p)
+                a = blocked_derivatives(big(z), big(p), big(0))
+                b = blocked_derivatives(big(z), big(p), big(1))
+                @test collect(r) ≈ Float64.([a[1], a[2], b[1], b[2]]) atol = 1e-15 * 2π * p
+                p < 1 || continue
+                for (i, g) in enumerate((0.0, 0.5, 1.0))
+                    c = blocked_derivatives(big(z), big(p), big(g))
+                    @test collect(Pizzetti._bderiv(Pizzetti._qfam()[i], z, p)) ≈ Float64.(collect(c)) atol = 1e-14 * 2π * p
+                end
+            end
+        end
+    end
+end

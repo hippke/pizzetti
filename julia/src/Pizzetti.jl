@@ -24,7 +24,7 @@ export power_terms, limb_darkening, intensity
 export series_cut, series_bound, series_table, SERIES_M, SERIES_TOL
 export Occultor, occult, occult!, evaluate!, method
 export quadratic_flux, blocked_quadrature, hyp2f1_unit
-export blocked_flux, blocked_derivatives, flux_gradient, flux_gradient_law, coefficient_jacobian
+export blocked_flux, blocked_derivatives, flux_gradient, flux_gradient_law, flux_gradient_quadratic, coefficient_jacobian
 export transit_poly, transit_poly!
 export ProvenLimb, occult_certified, occult_interval
 export TransitParams, impact_parameter, eccentric_anomaly, rsky, light_curve, light_curve!

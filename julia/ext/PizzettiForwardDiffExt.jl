@@ -28,17 +28,6 @@ function _dP_dγ(z, p, γ)
     return (4D2 - D1) / 3
 end
 
-# ∂P/∂z, ∂P/∂p inside the disk (Eq. dPin) with cached hypergeometric coefficients
-function _interior_derivatives(d::Pizzetti.DTerm, z::Float64, p::Float64)
-    zmp = z - p
-    x = (1 - zmp) * (1 + zmp)
-    κ = z > 0 ? min(4z * p / x, 1.0) : 0.0
-    F1 = d.F1(κ)
-    F2 = d.F2(κ)
-    pre = 2π * p * (d.γ == 0 ? 1.0 : exp(d.γ * log(x)))
-    return pre * (F2 - F1), pre * F1
-end
-
 # Interior: the value is the series (proven accuracy); the partial derivatives are the
 # exact ones of Section 5.4 (the derivative of the truncated series is not bounded by
 # Theorem 2 and is accurate only to ~1e-7 at the cut for series_tol = 1e-9).
@@ -51,25 +40,23 @@ function Pizzetti._series_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,F
     v = 1 / w
     lw = log(w)
     num = zero(S)
-    den = zero(S)
     dt = Pizzetti._dterms(o)
     for i in eachindex(o.γ)
         γD = convert(S, o.γ[i])
         cD = convert(S, o.c[i])
         γv = value(γD)
         d = dt[i]
-        wg = γv == 0 ? 1.0 : exp(γv * lw)
+        wg = γv == 0 ? 1.0 : γv == 1 ? w : γv == 0.5 ? sqrt(w) : exp(γv * lw)
         Ps = Pizzetti._horner_v(d.a, v)
         Pv = wg * Ps
-        Pz, Pp = _interior_derivatives(d, zv, pv)
+        Pz, Pp = blocked_derivatives(d, zv, pv)
         ∂ = Pz * partials(zD) + Pp * partials(pD)
         if !all(iszero, partials(γD))
             ∂ += wg * (lw * Ps + Pizzetti._horner_v(d.ad, v)) * partials(γD)
         end
         num += cD * S(Pv, ∂)
-        den += cD * π / (γD + 1)
     end
-    return 1 - num / den
+    return 1 - num / convert(S, o.total)
 end
 
 # first-order duals over Float64 only (nested duals, e.g. Hessians, use plain AD)
@@ -79,7 +66,6 @@ function Pizzetti._limb_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,Flo
     zv = value(zD)
     pv = value(pD)
     num = zero(S)
-    den = zero(S)
     dt = Pizzetti._dterms(o)
     P01 = pv < 1 ? Pizzetti._P01(zv, pv) : (NaN, NaN)
     for i in eachindex(o.γ)
@@ -89,9 +75,10 @@ function Pizzetti._limb_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,Flo
         d = dt[i]
         # value: closed form (γ = 0, 1), contact expansion, or quadrature
         Pv = γv == 0 && pv < 1 ? P01[1] : γv == 1 && pv < 1 ? P01[2] :
+             γv == 0.5 && pv < 1 ? (1 - Pizzetti.quadratic_flux(zv, pv, 1.0, 0.0)) * (2π / 3) :   # I = μ
              isempty(d.ce) ? NaN : d.ce[1](zv)
         isnan(Pv) && (Pv = blocked_quadrature(zv, pv, (γv,), (1.0,), d.rules))
-        Pz, Pp = blocked_derivatives(zv, pv, γv)
+        Pz, Pp = blocked_derivatives(d, zv, pv)
         ∂ = Pz * partials(zD) + Pp * partials(pD)
         if !all(iszero, partials(γD))
             Pγ = NaN
@@ -104,9 +91,8 @@ function Pizzetti._limb_eval(o::Occultor, z, ::Type{S}) where {S<:Dual{<:Any,Flo
             ∂ += Pγ * partials(γD)
         end
         num += cD * S(Pv, ∂)
-        den += cD * π / (γD + 1)
     end
-    return 1 - num / den
+    return 1 - num / convert(S, o.total)
 end
 
 end

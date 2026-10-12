@@ -114,7 +114,11 @@ function quadratic_flux(z, k, u1, u2)
         Cp = 3s * sg
     end
     sden = sqrt(den)
-    kc = max(sqrt(max(num, zero(T))) / sden, T(1e-150))
+    # complementary modulus, floored at √eps: at contact (kc → 0) the terms in K and Π
+    # diverge like ln(1/kc) and cancel, so a smaller kc only amplifies rounding errors (a
+    # floor of 1e-150 cost 2e-13 in flux at z + p = 1 ± 1 ulp),
+    # while the flux changes by O(kc² ln kc) ≈ 1e-15 (and is exact at kc = 0 in the limit)
+    kc = max(sqrt(max(num, zero(T))) / sden, sqrt(eps(_float(T))))
     ldx = 2 / (9 * T(π)) / sden * _ell_combo(kc, pp, A, den * (z2 + 7k2 - 4), 3s / d, Cp)
     z < k && (ldx += T(2) / 3)
     return 1 - (c1 * lex + c2 * ldx + u2 * edx) * ω

@@ -151,16 +151,17 @@ end
 end
 
 """
-    hyp2f1_unit(a, b, c, x)
+    hyp2f1_unit(a, b, c, x, y = 1 - x)
 
 Gauss hypergeometric function ₂F₁(a, b; c; x) for 0 ≤ x ≤ 1 and c - a - b > 0
 (including integer c - a - b, the logarithmic case), by its Taylor series for
 x ≤ ½ and the connection formula about x = 1 beyond. Generic in the number type;
-the series are summed until the terms are below the working precision.
+the series are summed until the terms are below the working precision. `y = 1 - x` can
+be passed when it is known more accurately than by the subtraction.
 """
-function hyp2f1_unit(a, b, c, x)
+function hyp2f1_unit(a, b, c, x, y = 1 - x)
     T = float(promote_type(typeof(a), typeof(b), typeof(c), typeof(x)))
-    a, b, c, x = T(a), T(b), T(c), T(x)
+    a, b, c, x, y = T(a), T(b), T(c), T(x), T(y)
     epsT = eps(_float(T))
     if x <= 0.5
         s = zero(T)
@@ -173,7 +174,6 @@ function hyp2f1_unit(a, b, c, x)
         end
         return s
     end
-    y = 1 - x
     m = c - a - b
     mi = round(_val(m))
     # number of terms: geometric convergence with ratio y ≤ ½ (plus slack for the prefactors)
@@ -190,35 +190,97 @@ function hyp2f1_unit(a, b, c, x)
 end
 
 """
-    HypCache(a, b, c; n = 60)
+    HypCache(a, b, c, scale = 1)
 
-₂F₁(a, b; c; x) on 0 ≤ x ≤ 1 (c - a - b > 0) from precomputed coefficients: the Taylor
+`scale` × ₂F₁(a, b; c; x) on 0 ≤ x ≤ 1 (c - a - b > 0) from precomputed coefficients: the Taylor
 series for x ≤ ½ and the connection form A(y) + y^m (ln y Bl(y) + Bc(y)), y = 1 - x, beyond;
 60 terms give 2^-60 on both halves. Float64.
 """
 struct HypCache
-    T::NTuple{60,Float64}
-    A::NTuple{60,Float64}
-    Bl::NTuple{60,Float64}
-    Bc::NTuple{60,Float64}
+    T::Vector{Float64}           # vectors, not tuples: the struct stays small and is passed
+    A::Vector{Float64}           # by reference (copies of large tuples cost more than the
+    Bl::Vector{Float64}          # polynomial evaluations)
+    Bc::Vector{Float64}
     m::Float64
+    nT::Int          # Taylor coefficients up to the last non-zero one (terminating series)
 end
 
-function HypCache(a::Float64, b::Float64, c::Float64)
+function HypCache(a::Float64, b::Float64, c::Float64, scale::Float64 = 1.0)
     n = 60
     Ty = zeros(n); A = zeros(n); Bl = zeros(n); Bc = zeros(n)
     _taylor!(Ty, a, b, c)
     _connection!(A, Bl, Bc, a, b, c)
-    HypCache(Tuple(Ty), Tuple(A), Tuple(Bl), Tuple(Bc), c - a - b)
+    Ty .*= scale; A .*= scale; Bl .*= scale; Bc .*= scale
+    nT = something(findlast(!iszero, Ty), 1)
+    HypCache(Ty, A, Bl, Bc, c - a - b, nT)
 end
 
-@inline function (h::HypCache)(x::Float64)
-    x <= 0.5 && return evalpoly(x, h.T)
-    y = 1.0 - x
-    r = evalpoly(y, h.A)
+# Terms needed for |u| ≤ x so that u^n < 2^-56 (the coefficients of the Gauss functions
+# used here are at most of order one and do not increase): a few comparisons instead of
+# a logarithm; 60 terms at x = ½.
+@inline function _nterms(x::Float64)
+    x <= 0.0078125 && return 9            # 2^-7
+    x <= 0.03125 && return 13             # 2^-5
+    x <= 0.0625 && return 16              # 2^-4
+    x <= 0.125 && return 21               # 2^-3
+    x <= 0.25 && return 31                # 2^-2
+    x <= 0.354 && return 40               # 2^-1.5
+    return 60
+end
+
+# Horner over the first n entries of a tuple
+@inline function _evalpoly_n(x::Float64, c::Vector{Float64}, n::Int)
+    s = @inbounds c[n]
+    @inbounds for i in n-1:-1:1
+        s = muladd(s, x, c[i])
+    end
+    s
+end
+
+# y = 1 - x, given separately when it is known more accurately than by subtraction
+# (near the contacts the argument is 1 - O(δ) and ₂F₁ has a y^m singular part)
+@inline function (h::HypCache)(x::Float64, y::Float64 = 1.0 - x)
+    x <= 0.5 && return _evalpoly_n(x, h.T, min(h.nT, _nterms(x)))
+    n = _nterms(y)
+    r = _evalpoly_n(y, h.A, n)
     if y > 0
         ly = log(y)
-        r += exp(h.m * ly) * (ly * evalpoly(y, h.Bl) + evalpoly(y, h.Bc))
+        r += exp(h.m * ly) * (ly * _evalpoly_n(y, h.Bl, n) + _evalpoly_n(y, h.Bc, n))
     end
     r
+end
+
+# two Horner chains interleaved (independent, so they overlap in the pipeline)
+@inline function _evalpoly2_n(x::Float64, c::Vector{Float64}, d::Vector{Float64}, n::Int)
+    s = @inbounds c[n]
+    t = @inbounds d[n]
+    @inbounds for i in n-1:-1:1
+        s = muladd(s, x, c[i])
+        t = muladd(t, x, d[i])
+    end
+    s, t
+end
+
+"""
+    hyp_pair(h, g, x, y = 1 - x)
+
+`(h(x), g(x))` for two `HypCache`s with the same `c - a - b` (the pairs of the
+derivative formulas): one logarithm and one power, interleaved polynomial evaluation.
+"""
+@inline function hyp_pair(h::HypCache, g::HypCache, x::Float64, y::Float64 = 1.0 - x)
+    if x <= 0.5
+        n = _nterms(x)
+        return _evalpoly2_n(x, h.T, g.T, min(max(h.nT, g.nT), n))
+    end
+    n = _nterms(y)
+    rh, rg = _evalpoly2_n(y, h.A, g.A, n)
+    if y > 0
+        ly = log(y)
+        ym = exp(h.m * ly)
+        lh, lg = _evalpoly2_n(y, h.Bl, g.Bl, n)
+        ch, cg = _evalpoly2_n(y, h.Bc, g.Bc, n)
+        rh += ym * (ly * lh + ch)
+        rg += exp(g.m * ly) * (ly * lg + cg)
+    end
+    rh, rg
 end

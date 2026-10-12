@@ -51,9 +51,12 @@ println("gradient, finite differences: ", round.(gfd, sigdigits = 8))
 # ## Optimisation: gradient-free vs gradient-based
 lower = [-Inf, -Inf, -Inf, (1.5 - 20.0) / 0.3, -Inf, (0.0 - 0.6) / 0.1, (0.0 - 0.6) / 0.1] .+ 1e-6
 upper = [Inf, Inf, Inf, Inf, Inf, (1.0 - 0.6) / 0.1, (2.0 - 0.6) / 0.1] .- 1e-6
-r_nm = optimize(nll, x0, NelderMead(), Optim.Options(iterations = 20_000, g_tol = 1e-10))
-r_bfgs = optimize(nll, x -> ForwardDiff.gradient(nll, x), lower, upper, x0, Fminbox(LBFGS()),
-                  Optim.Options(g_tol = 1e-6); inplace = false)
+run_nm() = optimize(nll, x0, NelderMead(), Optim.Options(iterations = 20_000, g_tol = 1e-10))
+run_bfgs() = optimize(nll, x -> ForwardDiff.gradient(nll, x), lower, upper, x0, Fminbox(LBFGS()),
+                      Optim.Options(g_tol = 1e-6); inplace = false)
+run_nm(); run_bfgs()                        # compile first, then time
+r_nm = run_nm()
+r_bfgs = run_bfgs()
 for (name, r) in (("Nelder-Mead", r_nm), ("L-BFGS + ForwardDiff", r_bfgs))
     @printf("%-22s -lnL = %.4f  f-calls %5d  g-calls %4d  time %.2f s\n", name, Optim.minimum(r),
             Optim.f_calls(r), Optim.g_calls(r), Optim.time_run(r))
