@@ -1,0 +1,232 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage[authoryear,round]{natbib}
+\usepackage{hyperref}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newenvironment{proof}{\par\noindent\textit{Proof.}\ }{\hfill$\square$\par\medskip}
+\newcommand{\avg}[1]{\left\langle #1 \right\rangle}
+\newcommand{\dd}{\mathrm{d}}
+\renewcommand{\theequation}{S\arabic{equation}}
+\renewcommand{\thesection}{S\arabic{section}}
+\title{Supplementary proofs to ``A Fast Elementary Series to Calculate Limb-darkened Transit Flux''}
+\author{M.~Hippke, E.~Agol, R.~Heller}
+\date{}
+\begin{document}
+\maketitle
+
+This supplement contains the proofs that are not needed to use or to check the method of the paper:
+the error bounds for the truncation of the interior series by powers of $p$ (Section~\ref{app:meanvalue}),
+and the proof of the bound for the contact pieces, Theorem~3 of the paper (Section~\ref{app:contactproof}).
+Equation numbers with a prefix S refer to this supplement. Readable explanations of all proofs, and
+notebooks that check every bound numerically against references independent of the derivations, are in the
+same repository (\texttt{docs/proofs} and \texttt{validation}).
+
+\section*{Notation from the paper}
+
+The stellar disk is the unit disk, $r$ the distance from its centre, $\mu=\sqrt{1-r^2}$, and
+$D_\gamma(z,p)=\avg{(1-r^2)^\gamma}$ the mean of $(1-r^2)^\gamma$ over an occulting disk of radius $p$ centred at
+distance $z$; $w=1-z^2$, $v=1/w$, $\beta_m=(-1)^m\binom{\gamma}{m}$. Truncated by powers of $p$, the series of
+the paper is $S^{\rm P}_N=\sum_{n\le N}T_n$, where $T_n$ is the coefficient of $p^{2n}$, equal to the $n$-th term of
+the mean-value expansion
+\begin{equation}
+\avg{f}=\sum_{n=0}^\infty\frac{(p^2/4)^n}{n!\,(n+1)!}\,\Delta^n f\big|_{\mathrm{centre}}, \label{eq:pizzetti}
+\end{equation}
+with $\Delta$ the Laplacian in the sky plane. Across the limb and inside the disk, the blocked integral
+$P_\gamma=\int(1-r^2)^\gamma\,\dd A$ over the occulted part of the star is, with $s=r^2$, $a=(z-p)^2$,
+$b=(z+p)^2$, $s_1=1$ across the limb and $s_1=b$ inside,
+\begin{equation}
+P_\gamma=-\frac{1}{2(\gamma+1)}\int_a^{s_1}(1-s)^{\gamma+1}\left[1+\frac{p^2-z^2}{s}\right]\frac{\dd s}{\sqrt{(s-a)(b-s)}}, \label{eq:P1d}
+\end{equation}
+With $x=1-(z-p)^2$, $c_0=1+p^2-z^2$, $c_j=(p^2-z^2)x^j$ ($j\ge1$),
+\begin{equation}
+k=\frac{1-(z-p)^2}{4zp}, \label{eq:k}
+\end{equation}
+and $\kappa=1/k$,
+\begin{equation}
+P_\gamma=-\frac{x^{\gamma+1}\sqrt{k}}{2(\gamma+1)}\sum_{j\ge0}c_j\,B\!\left(\tfrac12,\gamma+2+j\right)\,{}_2F_1\!\left(\tfrac12,\tfrac12;\gamma+\tfrac52+j;k\right), \label{eq:ingress}
+\end{equation}
+\begin{equation}
+P_\gamma=-\frac{\pi\,x^{\gamma+1}}{2(\gamma+1)}\sum_{j\ge0}c_j\,{}_2F_1\!\left(-\gamma-1-j,\tfrac12;1;\kappa\right). \label{eq:interiorhyp}
+\end{equation}
+For fixed $p$, $z$ is an algebraic function of $k$,
+\begin{equation}
+z=p(1-2k)+\sqrt{p^2(1-2k)^2+1-p^2}, \label{eq:zk}
+\end{equation}
+\begin{theorem}[Theorem 3 of the paper] \label{thm:contact}
+Let $p<\tfrac12$. On every piece of the contact expansions, $|P_\gamma-\hat P_\gamma|\le E_\gamma^{(j)}+E_\gamma^{(n)}$, where $\hat P_\gamma$ is the polynomial approximation of the piece, $E_\gamma^{(j)}$ (Equation~\ref{eq:Ej}) bounds the remainder of the $j$-series and $E_\gamma^{(n)}$ (Equations~\ref{eq:cauchy}--\ref{eq:Eneta}) the truncation in $n$. Both are explicit functions of $p$, $\gamma$, $J$, $N$, the piece and a radius $\rho$, and are finite whenever the disk conditions of Lemma~\ref{lem:geom} hold. The flux error is at most $\sum_i|c_i|\,(E^{(j)}_{\gamma_i}+E^{(n)}_{\gamma_i})\big/\bigl(2\pi\sum_ic_i/(\alpha_i+2)\bigr)$.
+\end{theorem}
+
+\section{Truncation by powers of $p$} \label{app:meanvalue}
+
+Truncation by powers of $p$ gives a second family of approximations, $S^{\rm P}_N=\sum_{n\le N}T_n$, which is also a polynomial in $v$, of degree $2N$. Two bounds apply to it.
+
+\begin{proposition}[Mean-value remainder] \label{prop:lagrange}
+Let $f\in C^{2N+2}$ on the closed occulting disk $\bar D$. Then
+\begin{equation}
+\avg{f}-\sum_{n=0}^{N}\frac{(p^2/4)^n}{n!(n+1)!}\Delta^nf\big|_{\mathrm{centre}}=\frac{(p^2/4)^{N+1}}{(N+1)!\,(N+2)!}\,\Delta^{N+1}f(\xi) \label{eq:lagrange}
+\end{equation}
+for some $\xi\in\bar D$. For $f=(1-r^2)^\gamma$ with $0<\gamma<1$, $\Delta^{n}f\le0$ and $|\Delta^nf|$ increases with $r$ for $n\ge1$. The remainder therefore lies between the right-hand side evaluated at $r=\max(0,z-p)$ and at $r=z+p$.
+\end{proposition}
+
+The proof, which follows \citet{Pizzetti1909}, is given in Section~\ref{app:pizzetti}. The upper end of this two-sided bound grows like $(p/(1-z-p))^{2N+2}$ and is useful only for $z<1-2p$. A bound valid up to contact follows from the sign structure.
+
+\begin{proposition}[Abel bound] \label{prop:abel}
+Let $\gamma=\tfrac12$, $t=p^2$ and $t_1=(1-z)^2$. Then for $0\le p\le 1-z$,
+\begin{equation}
+0\le S^{\rm P}_N(z,p)-D_{1/2}(z,p)\le\left(\frac{p}{1-z}\right)^{2N+2}\left[S^{\rm P}_N(z,1-z)-D_{1/2}(z,1-z)\right], \label{eq:abel}
+\end{equation}
+where the internally tangent disk has the elementary mean
+\begin{equation}
+D_{1/2}(1-q,q)=\frac{2\arccos(1-2q)-\tfrac43(3+2q-8q^2)\sqrt{q(1-q)}}{3\pi q^2},\qquad 0<q<1 . \label{eq:contact}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+As a power series in $t$, $D_{1/2}(z,\sqrt t)=\sum_n d_n t^n$ with $d_n\le0$ for $n\ge1$, convergent for $t<t_1$. The partial sums at $t_1$ are non-increasing in $N$ and bounded below by $D_{1/2}(z,1-z)$, because $S^{\rm P}_N(z,\sqrt t)\ge D_{1/2}(z,\sqrt t)$ for $t<t_1$ and $D_{1/2}$ is continuous in $p$. The series therefore converges at $t_1$, and by Abel's theorem its sum is $D_{1/2}(z,1-z)$. Then $\sum_{n>N}|d_n|t^n\le(t/t_1)^{N+1}\sum_{n>N}|d_n|t_1^n$. Equation~(\ref{eq:contact}) is the $b+r=1$ case of \citet{Agol2020}, divided by $q^2$; it agrees with direct quadrature to $10^{-27}$.
+\end{proof}
+
+\subsection{Mean-value expansion with remainder on the disk} \label{app:pizzetti}
+
+Let $f\in C^{2N+2}(\bar D)$, where $\bar D$ is the closed disk of radius $p$ about $c$, and let $m_g(\rho)$ denote the mean of $g$ over the circle of radius $\rho$ about $c$. Green's theorem gives
+\begin{equation}
+2\pi\rho\,m_f'(\rho)=\int_{|x-c|\le\rho}\Delta f\,\dd A=2\pi\int_0^\rho s\,m_{\Delta f}(s)\,\dd s .
+\end{equation}
+Integrating from $0$ gives
+\begin{equation}
+m_f(\rho)=f(c)+(\mathcal{T}m_{\Delta f})(\rho),\qquad(\mathcal{T}g)(\rho)=\int_0^\rho s\ln\frac{\rho}{s}\,g(s)\,\dd s .
+\end{equation}
+The operator $\mathcal{T}$ has a non-negative kernel and maps $\rho^{2j}$ to $\rho^{2j+2}/(2j+2)^2$. Iterating, with $m_{\Delta^jf}(0)=\Delta^jf(c)$,
+\begin{equation}
+m_f(\rho)=\sum_{j=0}^{N}\frac{\rho^{2j}}{4^j(j!)^2}\Delta^jf(c)+(\mathcal{T}^{N+1}m_{\Delta^{N+1}f})(\rho).
+\end{equation}
+The area mean is $\avg{f}=(2/p^2)\int_0^p\rho\,m_f(\rho)\,\dd\rho$. The polynomial terms give the coefficients $(p^2/4)^j/(j!(j+1)!)$ of Equation~(\ref{eq:pizzetti}). The remainder is $\int_0^pK(s)\,m_{\Delta^{N+1}f}(s)\,\dd s$ with a non-negative kernel $K$, whose integral equals the remainder for $\Delta^{N+1}f\equiv1$, namely $(p^2/4)^{N+1}/((N+1)!(N+2)!)$. Since each circle mean lies between the minimum and maximum of $\Delta^{N+1}f$ on $\bar D$, the mean-value theorem for integrals gives Equation~(\ref{eq:lagrange}).
+
+For $f=(1-r^2)^\gamma=\sum_m\beta_m r^{2m}$ with $0<\gamma<1$, $\Delta^n r^{2m}=4^n\left(m!/(m-n)!\right)^2r^{2(m-n)}$ for $m\ge n$. Hence $\Delta^nf=\sum_{m\ge n}\beta_m4^n(m!/(m-n)!)^2r^{2(m-n)}$ has only negative coefficients for $n\ge1$. It is therefore negative, and its modulus increases with $r$. On the disk $r$ ranges over $[\max(0,z-p),z+p]$ (for $z<p$ the disk covers the stellar centre), which gives the two-sided bound of Proposition~\ref{prop:lagrange}.
+
+
+\section{Proof of the bound for the contact pieces} \label{app:contactproof}
+
+This section proves Theorem~\ref{thm:contact} of the paper (restated above). Throughout, $0<p<\tfrac12$, $m=\gamma+\tfrac32$, and $u$ is the variable of a piece: $u=k$ (first contact), $u=y=1-k$ and $u=y'=1-\kappa$ (second contact), $u=k-k_0$ and $u=\kappa-\kappa_0$ (middle pieces centred at $k_0$ and $\kappa_0$). On each piece the variable satisfies $|u|\le w$. For a power series $F(u)=\sum_nt_nu^n$ we write $\hat F(r)=\sum_n|t_n|r^n$ and $\hat F^{>n_0}(r)=\sum_{n>n_0}|t_n|r^n$.
+
+\subsection{Representation}
+
+In Equation~(\ref{eq:P1d}) substitute $s=1-x(1-t)$. Then $s-a=xt$, $b-s=4zp(1-kt)$ because $b-1+x=b-a=4zp$, and $\dd s=x\,\dd t$, so that
+\begin{equation}
+P_\gamma=-\frac{x^{\gamma+1}\sqrt k}{2(\gamma+1)}\int_0^{t_1}t^{-1/2}(1-t)^{\gamma+1}(1-kt)^{-1/2}\left[1+\frac{p^2-z^2}{s}\right]\dd t, \label{eq:Pt}
+\end{equation}
+with $t_1=1$ across the limb and $t_1=4zp/x=\kappa$ inside the disk. For $z>p$ we have $0<x<1$ and $0\le x(1-t)\le x$, so $1/s=\sum_jx^j(1-t)^j$ converges uniformly on $[0,1]$ and may be integrated term by term. With
+\begin{equation}
+H_j(k)=\int_0^1t^{-1/2}(1-t)^{\gamma+1+j}(1-kt)^{-1/2}\dd t,\qquad
+G_j(\kappa)=\frac1\pi\int_0^1t^{-1/2}(1-t)^{-1/2}(1-\kappa t)^{\gamma+1+j}\dd t \label{eq:HG}
+\end{equation}
+(the second after $t\to\kappa t$), Euler's integral \citep[15.6.1]{DLMF} gives $H_j=B(\tfrac12,\gamma+2+j)\,{}_2F_1(\tfrac12,\tfrac12;\gamma+\tfrac52+j;k)$ and $G_j={}_2F_1(-\gamma-1-j,\tfrac12;1;\kappa)$, and hence Equations~(\ref{eq:ingress}) and (\ref{eq:interiorhyp}). We write $\mathcal F_j=H_j$, $\Pi=-x^{\gamma+1}\sqrt k/(2(\gamma+1))$ across the limb and $\mathcal F_j=\pi G_j$, $\Pi=-x^{\gamma+1}/(2(\gamma+1))$ inside, so that $P_\gamma=\Pi\sum_jc_j\mathcal F_j$, and $P_{\gamma,J}$ for the sum through $j=J$.
+
+\subsection{The remainder in $j$}
+
+\begin{lemma} \label{lem:jrem}
+Let a piece have $z_-\le z\le z_+$ with $z_->p$ and $k\le\bar k$ (limb). With $\bar x=1-(z_--p)^2$ and $\bar Q=z_+^2-p^2$,
+\begin{equation}
+|P_\gamma-P_{\gamma,J}|\le E^{(j)}_\gamma=\frac{\bar x^{\gamma+1}\bar Q\,\bar x^{J+1}}{2(\gamma+1)(1-\bar x)}\times\begin{cases}\sqrt{\bar k}\,H_{J+1}(\bar k)&\text{across the limb,}\\ \pi&\text{inside the disk.}\end{cases} \label{eq:Ej}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+For $j>J$, $|c_j|=|z^2-p^2|\,x^j$. The integrands of Equation~(\ref{eq:HG}) are positive, and they do not increase with $j$ because $0\le1-t\le1$ and $0\le1-\kappa t\le1$ for $0\le\kappa\le1$. Hence $0<H_j\le H_{J+1}$ and $0<\pi G_j\le\pi G_{J+1}\le\pi$ for $j>J$, and $|P_\gamma-P_{\gamma,J}|\le|\Pi|\,|z^2-p^2|\,\mathcal F_{J+1}\sum_{j>J}x^j=|\Pi|\,|z^2-p^2|\,\mathcal F_{J+1}x^{J+1}/(1-x)$. On the piece, $x$ decreases and $z^2-p^2$ increases with $z>p$, $k$ decreases with $z$ across the limb, and $H_{J+1}$ and $\sqrt k$ increase with $k$. Each factor is therefore bounded by its value at the appropriate end of the piece. For $\bar k=1$, $H_{J+1}(1)$ follows from Gauss's sum \citep[15.4.20]{DLMF}; for $\bar k<1$ it equals $\hat H_{J+1}(\bar k)$, which Lemma~\ref{lem:maj} bounds.
+\end{proof}
+
+\subsection{Analytic continuation of the geometry}
+
+\begin{lemma} \label{lem:geom}
+(a) Across the limb, $z=p(1-2k)+W^{1/2}$ with $W=1-4p^2k(1-k)$. On a closed disk $D$ on which $4p^2|k|\,|1-k|<1$, the principal root $W^{1/2}$ is analytic and agrees with Equation~(\ref{eq:zk}) on $D\cap\mathbb R$, $z$ has no zero, and there are branches of $(4pz)^{\gamma+1}$, of $x^{\gamma+1}=(4pzk)^{\gamma+1}$ and of $\sqrt k$ (the latter two if $0\notin D$) that are analytic on $D$, agree with the real ones on $D\cap\mathbb R$, and satisfy $|f^{\gamma+1}|=|f|^{\gamma+1}$.
+(b) Inside the disk, $z=\bigl(V^{1/2}-p(2-\kappa)\bigr)/\kappa$ with $V=(\kappa-2p^2)^2+h^2$, $h^2=4p^2(1-p^2)$. If $D=\{|\kappa-\kappa_0|\le r\}$, $\kappa_0$ real, does not contain 0 and
+\begin{equation}
+\min_{-1\le v\le1}\left[c^2+h^2-r^2+2crv+2r^2v^2\right]>0,\qquad c=\kappa_0-2p^2, \label{eq:ReV}
+\end{equation}
+the same conclusions hold with $x=4pz/\kappa$.
+\end{lemma}
+
+\begin{proof}
+(a) $|W-1|<1$ implies $\operatorname{Re}W>0$, so the principal root is analytic on $D$; it is positive on $D\cap\mathbb R$, as in Equation~(\ref{eq:zk}). Since $\bigl(W^{1/2}+p(1-2k)\bigr)\bigl(W^{1/2}-p(1-2k)\bigr)=W-p^2(1-2k)^2=1-p^2\ne0$, $z$ has no zero on $D$. A function without zeros on a disk has an analytic logarithm, unique up to $2\pi i$, which we fix by its real value on $D\cap\mathbb R$; then $|f^{\gamma+1}|=|\exp((\gamma+1)\log f)|=|f|^{\gamma+1}$.
+(b) Solving $\kappa=4zp/(1-(z-p)^2)$ for $z$ gives the stated root. $\operatorname{Re}V$ is harmonic, so its minimum over $D$ lies on the circle $\kappa=\kappa_0+re^{i\theta}$, where $\operatorname{Re}V$ is the bracket of Equation~(\ref{eq:ReV}) with $v=\cos\theta$. Thus $\operatorname{Re}V>0$ on $D$, and the principal root is analytic and positive on $D\cap\mathbb R$. From $\bigl(V^{1/2}-p(2-\kappa)\bigr)\bigl(V^{1/2}+p(2-\kappa)\bigr)=(1-p^2)\kappa^2$, a zero of $V^{1/2}-p(2-\kappa)$ requires $V=p^2(2-\kappa)^2$ and hence $\kappa=0\notin D$. The rest follows as in (a).
+\end{proof}
+
+On $D$ the crude bounds $|z|\le p(1+2\max_D|k|)+(1+4p^2\max_D|k|\max_D|1-k|)^{1/2}$ (limb) and $|z|\le\bigl(d+r+p(2+\max_D|\kappa|)\bigr)/\min_D|\kappa|$ (inside, with $d=|\kappa_0-2p^2-ih|$, since $|V|\le(d+r)^2$) hold, together with $|x|\le4p\max_D|z|\max_D|k|$ and $|x|\le4p\max_D|z|/\min_D|\kappa|$.
+
+\begin{lemma} \label{lem:sample}
+Let $f$ be analytic on $|u|\le\rho_2$ with $|f|\le C$ there, and $\rho<\rho_2$. Then
+\begin{equation}
+\max_{|u|=\rho}|f(u)|\le\max_{0\le \ell<K}\bigl|f(\rho e^{2\pi i\ell/K})\bigr|+\frac{\pi\rho\,C}{K(\rho_2-\rho)} .
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+For $|u|=\rho$, Cauchy's estimate on the disk of radius $\rho_2-\rho$ about $u$ gives $|f'(u)|\le C/(\rho_2-\rho)$. Every point of the circle lies within arc length $\pi\rho/K$ of a sample, and $|f|$ changes along the arc by at most the arc length times $\max|f'|$.
+\end{proof}
+
+We apply Lemma~\ref{lem:sample} with $K=1024$ to $z$ and $x$ on a disk of radius $\rho_2>\rho$ that satisfies Lemma~\ref{lem:geom}, with the crude bounds as $C$, and call the results $Z$ and $X$. With $Q=p^2+Z^2$, on $|u|=\rho$
+\begin{equation}
+|c_0|\le C_0=1+Q,\qquad |c_j|\le C_j=Q\,X^j\quad(j\ge1). \label{eq:Cj}
+\end{equation}
+
+\subsection{Majorants of the Gauss functions}
+
+\begin{lemma} \label{lem:maj}
+(a) Let $t_{n+1}/t_n=(n+a)(n+b)/((n+c)(n+1))$ and let $n+a$, $n+b$, $n+c>0$. Then for all $n'\ge n$
+\begin{equation}
+\left|\frac{t_{n'+1}}{t_{n'}}\right|\le\bar r(n)=1+\frac{\max(0,a+b-c-1)}{n+c}+\frac{|ab-c|}{(n+c)(n+1)}, \label{eq:rbar}
+\end{equation}
+and if $q=\bar r(n)\,r<1$, then $\sum_{n'\ge n}|t_{n'}|r^{n'}\le|t_n|r^n/(1-q)$.
+(b) For $x\ge\tfrac16$, $\ln x-1/x\le\psi(x)\le\ln x$.
+(c) If $|1-\kappa|\le1$ and $\kappa\notin[1,\infty)$, then $|G_j(\kappa)|\le1$.
+(d) For $0<w<1$, $\max_{0<y\le w}y^m|\ln y|=L^*(w)$, with $L^*(w)=w^m|\ln w|$ for $w\le e^{-1/m}$ and $1/(em)$ otherwise.
+\end{lemma}
+
+\begin{proof}
+(a) $(n+a)(n+b)-(n+c)(n+1)=n(a+b-c-1)+ab-c$ and $n\le n+1$ give the bound for $n'=n$; $\bar r$ does not increase with $n$. The tail is then dominated by a geometric series.
+(b) Binet's formula \citep[5.9.13]{DLMF} gives $\psi(x)=\ln x-1/(2x)-2\int_0^\infty t\,\dd t/\bigl((t^2+x^2)(e^{2\pi t}-1)\bigr)$. The integral is positive and at most $x^{-2}\int_0^\infty t\,\dd t/(e^{2\pi t}-1)=1/(24x^2)$, so $\ln x-1/(2x)-1/(12x^2)\le\psi(x)\le\ln x$, and $1/(12x^2)\le1/(2x)$ for $x\ge\tfrac16$.
+(c) On $t\in[0,1]$, $1-\kappa t$ lies on the segment from 1 to $1-\kappa$, so $|1-\kappa t|\le1$ and $1-\kappa t\ne0$; the weight in Equation~(\ref{eq:HG}) integrates to 1.
+(d) $y^m|\ln y|$ increases on $(0,e^{-1/m}]$ and decreases on $[e^{-1/m},1)$.
+\end{proof}
+
+The series about $k=0$ have $a=b=\tfrac12$, $c=\gamma+\tfrac52+j$, and all their coefficients are positive, so $|H_j(k)|\le\hat H_j(|k|)$. About argument 1 the connection formulae \citep[15.8.4, 15.8.10]{DLMF} write $\mathcal F_j=A_j(u)+u^{m+j}\bigl[B_{l,j}(u)\ln u+B_{c,j}(u)\bigr]$ with $u=y$ or $y'$. For non-integer $m$, $A_j$ and $u^{-m-j}(\mathcal F_j-A_j)$ are again hypergeometric series, with parameters $(a,b;1-m-j)$ and $(c-a,c-b;1+m+j)$, and $B_{l,j}=0$. For integer $m$ (half-integer $\gamma$), $A_j$ is a polynomial, $B_{l,j}$ is hypergeometric with parameters $(a+m+j,b+m+j;1+m+j)$, and $B_{c,j}$ has the coefficients of $B_{l,j}$ multiplied by $\psi_n=\psi(a+m+j+n)+\psi(b+m+j+n)-\psi(1+n)-\psi(1+m+j+n)$. All arguments of $\psi$ here are at least $\tfrac12$. By Lemma~\ref{lem:maj}(b) and $|\ln(X/Y)|\le|X-Y|/\min(X,Y)$, $|\psi_n|\le\Phi(n)$, where $\Phi(n)$ is built from terms $\alpha/(n+\beta)$ with $\alpha\ge0$, $\beta>0$ by sums and a maximum, and so does not increase with $n$. The tail of $\hat B_{c,j}$ after the $n$th term is therefore at most $\Phi(n+1)$ times that of $\hat B_{l,j}$. With Lemma~\ref{lem:maj}(a), every $\hat F(r)$ and $\hat F^{>n_0}(r)$ is bounded by finitely many terms and a geometric tail.
+
+\subsection{Truncation in $n$}
+
+\begin{lemma} \label{lem:cauchy}
+Let $f=\tilde f+e$ with $f$ analytic on $|u|\le\rho$ and $|f|\le M$ on $|u|=\rho$, let $\tilde f_n$ and $e_n$ be the Taylor coefficients of $\tilde f$ and $e$, and let $\sum_{n\le N_B}|e_n|w^n\le\eta'$. Then for $|u|\le w<\rho$ and $N\le N_B$,
+\begin{equation}
+\Bigl|f(u)-\sum_{n\le N}\tilde f_nu^n\Bigr|\le\sum_{n=N+1}^{N_B}|\tilde f_n|\,w^n+M\,\frac{(w/\rho)^{N_B+1}}{1-w/\rho}+\eta' . \label{eq:cauchy}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+$f(u)-\sum_{n\le N}\tilde f_nu^n=\sum_{n\le N_B}e_nu^n+\sum_{N<n\le N_B}\tilde f_nu^n+\sum_{n>N_B}f_nu^n$, and Cauchy's estimate gives $|f_n|\le M\rho^{-n}$.
+\end{proof}
+
+For the first-contact and second-contact pieces the computed coefficients are those of $f$ itself ($e=0$): they are obtained by multiplying and composing power series about $u=0$, which is exact up to order $N_B=64$. For the middle pieces, the series of $\mathcal F_j$ about $k=0$ or $y=0$ are truncated after $n_t$ terms and re-centred exactly, so that $\tilde f$ is $f$ with $\mathcal F_j$ replaced by its truncation and $e=\Pi\sum_jc_j(\mathcal F_j-\tilde{\mathcal F}_j)$. If $|e|\le\eta$ on $|u|=\rho$, Cauchy's estimate gives $\eta'=\eta/(1-w/\rho)$.
+
+\subsection{Proof of Theorem~\ref{thm:contact}}
+
+Let the closed disk $|u|\le\rho_2$ satisfy Lemma~\ref{lem:geom}, and let $w<\rho<\rho_2$, with $\rho<1$ ($\rho<k_0$ and $k_0+\rho<1$ for the middle pieces in $k$; $\rho\le\kappa_0$ and $\kappa_0+\rho<1$ for those in $\kappa$). Then $P_{\gamma,J}$ and its parts are analytic on $|u|\le\rho$: $\Pi$ and $c_j$ by Lemma~\ref{lem:geom}, and the Gauss series because their arguments stay in the unit disk. On $|u|=\rho$ we have $|x^{\gamma+1}|\le X^{\gamma+1}$, $|(4pz)^{\gamma+1}|\le(4pZ)^{\gamma+1}$ and $|\sqrt k|\le\sqrt{\max|k|}$, and $C_j$ from Equation~(\ref{eq:Cj}). With $\Pi^*=X^{\gamma+1}/(2(\gamma+1))$, Equation~(\ref{eq:cauchy}) applies to the following parts.
+
+First contact. $P_{\gamma,J}=k^{m}R(k)$ with $R=-(4pz)^{\gamma+1}/(2(\gamma+1))\sum_{j\le J}c_jH_j$ and $M=(4pZ)^{\gamma+1}/(2(\gamma+1))\sum_jC_j\hat H_j(\rho)$. The error is $w^m$ times the right-hand side of Equation~(\ref{eq:cauchy}) with $\eta'=0$.
+
+Middle pieces in $k$. $f=P_{\gamma,J}$, $M=\Pi^*\sqrt{k_0+\rho}\sum_jC_j\hat H_j(k_0+\rho)$ and $\eta=\Pi^*\sqrt{k_0+\rho}\sum_jC_j\hat H_j^{>n_t}(k_0+\rho)$.
+
+Middle pieces in $\kappa$. $f=P_{\gamma,J}$ and $M=\pi\Pi^*\sum_jC_j$ by Lemma~\ref{lem:maj}(c), since $|1-\kappa|\le1-\kappa_0+\rho\le1$. With $r_y=1-\kappa_0+\rho<1$, $\operatorname{Re}y\ge1-\kappa_0-\rho>0$ and $|\ln y|\le\Lambda=\max\bigl(|\ln(1-\kappa_0-\rho)|,|\ln r_y|\bigr)+\pi/2$,
+\begin{equation}
+\eta=\Pi^*\sum_jC_j\left[\hat A_j^{>n_t}(r_y)+r_y^{m+j}\bigl(\Lambda\,\hat B_{l,j}^{>n_t}(r_y)+\hat B_{c,j}^{>n_t}(r_y)\bigr)\right]. \label{eq:Eneta}
+\end{equation}
+
+Second contact. $P_{\gamma,J}=R+u^{m}(S_L\ln u+S_C)$ with $R=\Pi\sum_jc_jA_j$, $S_L=\Pi\sum_jc_ju^jB_{l,j}$ and $S_C=\Pi\sum_jc_ju^jB_{c,j}$, and $M_R=\Pi^\dagger\sum_jC_j\hat A_j(\rho)$, $M_L=\Pi^\dagger\sum_jC_j\rho^j\hat B_{l,j}(\rho)$, $M_C=\Pi^\dagger\sum_jC_j\rho^j\hat B_{c,j}(\rho)$, where $\Pi^\dagger=\Pi^*\sqrt{1+\rho}$ outside and $\Pi^*$ inside. By Lemma~\ref{lem:maj}(d) the error is at most the bound of Equation~(\ref{eq:cauchy}) for $R$, plus $L^*(w)$ times that for $S_L$, plus $w^m$ times that for $S_C$.
+
+In each case $E^{(n)}_\gamma$ is the resulting bound and $P_{\gamma,J}-\hat P_\gamma$ is at most $E^{(n)}_\gamma$; Lemma~\ref{lem:jrem} adds $E^{(j)}_\gamma$. The implementation stores $\sum_ic_i\hat P_{\gamma_i}$. For parts shared by all exponents ($R$ and the middle pieces) it uses $\rho=\min_i\rho_i$ and $M=\sum_i|c_i|M_i$, which is valid by the maximum principle; the parts carrying $u^{m_i}$ are bounded separately for each exponent. Dividing $\sum_ic_iP_{\gamma_i}$ by the stellar flux $2\pi\sum_ic_i/(\alpha_i+2)$ gives the flux, which completes the proof. \hfill$\square$
+
+
+
+\bibliographystyle{plainnat}
+\bibliography{paper}
+\end{document}
