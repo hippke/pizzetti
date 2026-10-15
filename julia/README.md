@@ -160,41 +160,43 @@ transit_poly!(r, b, u_n, dfdrbu)        # flux, and dfdrbu = [∂F/∂r, ∂F/�
 
 ## Speed
 
-Single thread, Intel Xeon 2.1 GHz, Julia 1.13 (`benchmark/benchmarks.jl`, results in
+Single thread, Intel Xeon 2.8 GHz, Julia 1.13 (`benchmark/benchmarks.jl`, results in
 `benchmark/results.md`). Per sample:
 
 | | quadratic | power-2 | nonlinear |
 |---|---|---|---|
-| interior series (SIMD) | 1.6 ns | 3.3 ns | 2.4 ns |
-| contact expansions | — | 55 ns | 93 ns |
-| quadrature (Gauss–Jacobi) | — | ~1 µs | ~1.7 µs |
-| exact quadratic solution | 43 ns | — | — |
+| interior series (SIMD) | 2.3 ns | 5.5–5.9 ns | 3.3 ns |
+| contact expansions | — | 90 ns | 154 ns |
+| quadrature (Gauss–Jacobi) | — | ~1.7 µs | ~2.8 µs |
+| exact quadratic solution | 71–75 ns | — | — |
 
-Set-up per light curve: ~5 µs (series cut and coefficients); contact expansions 0.06–0.4 ms
-(used only for light curves with enough limb samples); proven pieces 6–37 ms.
+Set-up per light curve: 5–11 µs (series cut and coefficients); contact expansions 0.12–0.8 ms
+(used only for light curves with enough limb samples); proven pieces 10–47 ms.
 
-`evaluate!` skips blocks of 64 samples in which no sample lies on the star (`|z| ≥ 1 + p`, flux
-exactly 1). This matters for long light curves with few points in transit. For 10⁵ sorted
-separations (Xeon 2.8 GHz, Julia 1.13) with 3 % of them in transit, p = 0.0092: quadratic
-0.23 → 0.047 ms, power-2 0.69 → 0.17 ms, nonlinear 0.52 → 0.23 ms; p = 0.1: 0.28 → 0.095 ms,
-1.83 → 1.29 ms, 2.40 → 2.12 ms. With 30 % in transit the gain is 1.0–1.7×. A 10⁵-sample
-light curve (orbit and flux) over 10 transits, p = 0.0092, takes 0.42 ms (quadratic) and 0.48 ms
-(power-2) instead of 0.58 ms and 1.05 ms. Short light curves that are mostly in transit (the Kepler
-and TESS cases above) are unchanged to within 2–3 %.
+`evaluate!` skips runs of 64-sample blocks in which no sample lies on the star (`|z| ≥ 1 + p`,
+flux exactly 1). This matters for long light curves with few points in transit. For 10⁵ sorted
+separations with 3 % of them in transit, p = 0.0092: quadratic 0.23 → 0.048 ms, power-2
+0.69 → 0.16 ms, nonlinear 0.52 → 0.23 ms; p = 0.1: 0.28 → 0.099 ms, 1.83 → 1.30 ms,
+2.40 → 2.13 ms. With 30 % in transit the gain is 1.0–1.9×. A 10⁵-sample light curve (orbit and
+flux) over 10 transits, p = 0.0092, takes 0.44 ms (quadratic) and 0.50 ms (power-2) instead of
+0.59 ms and 1.06 ms. Short light curves that are mostly in transit (the Kepler and TESS cases
+below) are unchanged. The price is the scan of the separations, 0.1–0.3 ns per sample: an array
+in which every sample is on the star costs 2.0 → 2.3 ns (quadratic), 5.4 → 5.8 ns (power-2) and
+3.2 → 3.3 ns (nonlinear) per sample.
 
 The likelihoods of the paper's inference example (`benchmark/inference_cases.jl`, a new posterior
 sample at every call):
 
 | | hot Jupiter, quadratic, 1316 samples | super-Earth, power-2, 10 380 samples |
 |---|---|---|
-| likelihood (orbit, light curve, χ²) | 0.039 ms | 0.41 ms |
-| gradient, 7 parameters (ForwardDiff) | 0.40 ms | 4.1 ms |
-| for comparison: Python pizzetti / batman | 0.024 / 0.107 ms | 0.48 / 0.83 ms |
+| likelihood (orbit, light curve, χ²) | 0.039 ms | 0.52 ms |
+| gradient, 7 parameters (ForwardDiff) | 0.39 ms | 5.2 ms |
+| for comparison: Python pizzetti / batman (other machine) | 0.024 / 0.107 ms | 0.48 / 0.83 ms |
 
-Against Limbdark.jl (quadratic law, p = 0.1, 10 000 samples): a light curve costs 0.13 ms
-(Limbdark.jl 0.48 ms with its work structure re-used); a light curve with the gradient
-`[∂F/∂r, ∂F/∂b, ∂F/∂u₁, ∂F/∂u₂]` at every sample 1.1 ms in both; a single `transit_poly` call
-29 ns (1.5 µs). Fluxes agree to 5e-15 and gradients to 1e-14, except within 1e-16 of a contact,
+Against Limbdark.jl (quadratic law, p = 0.1, 10 000 samples): a light curve costs 0.21 ms
+(Limbdark.jl 0.82 ms with its work structure re-used); a light curve with the gradient
+`[∂F/∂r, ∂F/∂b, ∂F/∂u₁, ∂F/∂u₂]` at every sample 1.6 ms (Limbdark.jl 1.5 ms); a single
+`transit_poly` call 46 ns (2.5 µs). Fluxes agree to 5e-15 and gradients to 1e-14, except within 1e-16 of a contact,
 where the derivative has a √δ term and both codes are limited by the rounding of their input.
 
 ## Citing

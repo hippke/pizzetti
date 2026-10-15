@@ -3,6 +3,10 @@
 ## 0.1.0 (unreleased)
 
 - First release.
+- Pizzetti.jl: `evaluate!` skips runs of 64-sample blocks that lie entirely off the star
+  (|z| >= 1 + p), for all laws. Fluxes are unchanged; with 3 % of 10^5 samples in transit the
+  quadratic flux is up to 5x faster, the power-2 flux up to 4x. An array with every sample on the
+  star costs 0.1-0.3 ns per sample more.
 - Quadratic family: blocks of samples that lie entirely off the star (separation >= 1 + rp)
   are filled with 1 without evaluating the series, and are skipped when the samples for the exact
   solver are collected. The fluxes are unchanged; with 3 % of 10^5 points in transit the flux is

@@ -38,6 +38,18 @@
         @test maximum(abs.(outz .- o.(zz))) < 4e-16
     end
     @test all(evaluate!(zeros(1000), Occultor(0.1, Quadratic(0.4, 0.25)), collect(range(1.3, 40, length = 1000))) .== 1.0)
+    # runs of on-star and off-star blocks of different lengths (the interior series is evaluated per run)
+    for law in (Quadratic(0.4, 0.25), Power2(0.6, 0.6)), p in (0.02, 0.1)
+        o = Occultor(p, law)
+        B = Pizzetti.BLOCK_SIZE
+        z = Float64[]
+        for (len, on) in zip([1, 3, 2, 7, 1, 4, 5, 2, 9, 1] .* B .+ [0, 5, 0, 17, 0, 0, 33, 0, 1, 2], [true, false, true, false, true, false, true, false, true, false])
+            append!(z, on ? rand(Xoshiro(len), len) .* (1 + p) : fill(7.0, len))
+        end
+        out = similar(z)
+        evaluate!(out, o, z)
+        @test maximum(abs.(out .- o.(z))) < 4e-16
+    end
     # circular-orbit rsky (SIMD) against the scalar version
     P = TransitParams(per = 3.7, rp = 0.1, a = 11.0, b = 0.3, w = 37.0, law = Quadratic(0.4, 0.25))
     t = collect(range(-10, 10, length = 20001))

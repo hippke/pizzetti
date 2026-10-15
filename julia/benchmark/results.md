@@ -1,26 +1,26 @@
 # Pizzetti.jl benchmarks
 
-Julia 1.13.1, Intel(R) Xeon(R) Processor @ 2.10GHz, single thread. Minimum over repeated runs.
+Julia 1.13.1, Intel(R) Xeon(R) Processor @ 2.80GHz, single thread. Minimum over repeated runs.
 
 ## Cost per sample
 
 | law | p | interior series | limb: contact | limb: quadrature | quadratic: exact |
 |---|---|---|---|---|---|
-| Quadratic | 0.0092 | 1.57 ns | — | — | 44 ns |
-| Quadratic | 0.1 | 1.57 ns | — | — | 42 ns |
-| Power2 | 0.0092 | 3.32 ns | 55 ns | 1223 ns | — |
-| Power2 | 0.1 | 3.31 ns | 55 ns | 1128 ns | — |
-| Nonlinear | 0.0092 | 2.38 ns | 92 ns | 2035 ns | — |
-| Nonlinear | 0.1 | 2.46 ns | 93 ns | 1835 ns | — |
+| Quadratic | 0.0092 | 2.26 ns | — | — | 75 ns |
+| Quadratic | 0.1 | 2.26 ns | — | — | 71 ns |
+| Power2 | 0.0092 | 5.54 ns | 92 ns | 1712 ns | — |
+| Power2 | 0.1 | 5.88 ns | 89 ns | 1616 ns | — |
+| Nonlinear | 0.0092 | 3.33 ns | 154 ns | 2931 ns | — |
+| Nonlinear | 0.1 | 3.36 ns | 154 ns | 2687 ns | — |
 
 ## Set-up per light curve
 
 | law | p | series cut + coefficients | contact expansions | proven pieces |
 |---|---|---|---|---|
-| Power2 | 0.0092 | 3.3 µs | 0.06 ms | 8.0 ms |
-| Power2 | 0.1 | 3.3 µs | 0.14 ms | 19.3 ms |
-| Nonlinear | 0.0092 | 7.4 µs | 0.23 ms | 20.1 ms |
-| Nonlinear | 0.1 | 7.4 µs | 0.42 ms | 36.9 ms |
+| Power2 | 0.0092 | 5.0 µs | 0.12 ms | 9.6 ms |
+| Power2 | 0.1 | 5.0 µs | 0.27 ms | 18.1 ms |
+| Nonlinear | 0.0092 | 10.8 µs | 0.35 ms | 25.1 ms |
+| Nonlinear | 0.1 | 10.8 µs | 0.82 ms | 47.0 ms |
 
 ## Light curves (orbit + flux), as in a fit
 
@@ -29,18 +29,18 @@ TESS-like hot Jupiter: 7 transits at 2-min cadence (1316 samples), p = 0.1, a/R 
 
 | case | law | light curve | gradient (ForwardDiff, 7 parameters) |
 |---|---|---|---|
-| Kepler super-Earth | Quadratic | 0.059 ms | 2.41 ms |
-| Kepler super-Earth | Power2 | 0.156 ms | 2.24 ms |
-| TESS hot Jupiter | Quadratic | 0.021 ms | 0.25 ms |
-| TESS hot Jupiter | Power2 | 0.328 ms | 1.51 ms |
+| Kepler super-Earth | Quadratic | 0.089 ms | 3.20 ms |
+| Kepler super-Earth | Power2 | 0.259 ms | 4.12 ms |
+| TESS hot Jupiter | Quadratic | 0.027 ms | 0.32 ms |
+| TESS hot Jupiter | Power2 | 0.324 ms | 2.05 ms |
 
 ## Against Limbdark.jl (quadratic law, p = 0.1, 10 000 samples)
 
 | | Pizzetti.jl | Limbdark.jl |
 |---|---|---|
-| light curve | 0.126 ms | 0.480 ms |
-| light curve with gradient (r, b, u) | 1.072 ms | 1.072 ms |
-| single call `transit_poly` | 29 ns | 1541 ns |
+| light curve | 0.209 ms | 0.820 ms |
+| light curve with gradient (r, b, u) | 1.572 ms | 1.462 ms |
+| single call `transit_poly` | 46 ns | 2505 ns |
 
 Limbdark.jl re-uses its work structure across samples (`transit_poly!(t)`); `transit_poly(r, b, u)`
 allocates it per call. Pizzetti.jl's gradient for the quadratic family uses closed forms

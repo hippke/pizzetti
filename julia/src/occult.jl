@@ -357,35 +357,48 @@ end
 """
     evaluate!(out, o::Occultor, z)
 
-`out .= o.(z)`. For Float64 the samples are processed in blocks of `BLOCK_SIZE`. A block in
-which no sample lies on the star (all `|z| ≥ 1 + p`, flux exactly 1) is filled with 1. In the
-other blocks the interior series is evaluated for all samples in a branch-free loop that the
-compiler vectorises (SIMD), and the remaining samples (near and across the limb) are computed
-in a second pass.
+`out .= o.(z)`. For Float64 the separations are scanned in blocks of `BLOCK_SIZE`. Runs of
+blocks in which no sample lies on the star (all `|z| ≥ 1 + p`, flux exactly 1) are filled with 1.
+In the other runs the interior series is evaluated for all samples in a branch-free loop that
+the compiler vectorises (SIMD), and the remaining samples (near and across the limb) are
+computed in a second pass.
 """
 evaluate!(out::AbstractArray, o::Occultor, z::AbstractArray) = (out .= o.(z))
 
 "Block length of the Float64 `evaluate!`: blocks without a sample on the star are skipped."
 const BLOCK_SIZE = 64
 
+# Is any sample of z[lo:hi] on the star? `!(|z| ≥ 1 + p)`, not `|z| < 1 + p`, so that a NaN counts as
+# on the star and is handled by the scalar path, as without blocks.
+function _any_on_star(z, lo::Int, hi::Int, one_p::Float64)
+    n = 0
+    @inbounds @simd for i in lo:hi
+        n += !(abs(z[i]) >= one_p)
+    end
+    n > 0
+end
+
 function evaluate!(out::AbstractArray{Float64}, o::Occultor{Float64}, z::AbstractArray{Float64})
     axes(out) == axes(z) || throw(DimensionMismatch("out and z must have the same axes"))
     if IndexStyle(out, z) isa IndexLinear
         one_p = 1 + o.p
         r = eachindex(IndexLinear(), z)
-        lo, last_i = first(r), last(r)
-        while lo <= last_i
-            hi = min(lo + BLOCK_SIZE - 1, last_i)
-            zb = view(z, lo:hi)
-            ob = view(out, lo:hi)
-            on = false
-            # `!(|z| ≥ 1 + p)` (not `|z| < 1 + p`) so that a NaN counts as on the star and is
-            # handled by the scalar path, as without blocks
-            @inbounds @simd for i in eachindex(zb)
-                on |= !(abs(zb[i]) >= one_p)
+        i, last_i = first(r), last(r)
+        while i <= last_i
+            # extend the run [i, j] of blocks that are all on the star or all off the star
+            j = min(i + BLOCK_SIZE - 1, last_i)
+            on = _any_on_star(z, i, j, one_p)
+            while j < last_i
+                hi = min(j + BLOCK_SIZE, last_i)
+                _any_on_star(z, j + 1, hi, one_p) == on || break
+                j = hi
             end
-            on ? _evaluate_block!(ob, o, zb) : fill!(ob, 1.0)
-            lo = hi + 1
+            if on
+                _evaluate_block!(view(out, i:j), o, view(z, i:j))
+            else
+                fill!(view(out, i:j), 1.0)
+            end
+            i = j + 1
         end
     else
         _evaluate_block!(out, o, z)
