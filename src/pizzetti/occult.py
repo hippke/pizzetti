@@ -31,24 +31,49 @@ CONTACT_BREAK_EVEN = 4.5
 _A_HALF = _series.table(0.5, _series.M)
 
 
+#: Block length of the series pass: blocks without any on-star sample are skipped.
+BLK = 64
+
+
 @njit(cache=True, fastmath=True, error_model="numpy")
-def _series_select(z, a, A0, A1, z_c, one_k, out):
-    """Branch-free, vectorised: out[i] = series flux if z <= z_c, else 1.
-    Returns the number of samples with z_c < z < 1 + k (need the exact flux)."""
+def _series_select(z, a, A0, A1, z_c, one_k, out, bcnt):
+    """Branch-free, vectorised series pass, in blocks of BLK samples:
+    out[i] = series flux if z <= z_c, else 1. A block in which no sample lies on
+    the star (all |z| >= 1 + k, flux exactly 1) is filled with 1 without
+    evaluating the series. bcnt[b] = number of samples of block b with
+    z_c < z < 1 + k (they need the exact flux); returns their total.
+    The blocks are sliced (zr, fr) so that LLVM vectorises the inner loops."""
     a0, a1, a2, a3, a4, a5 = a[0], a[1], a[2], a[3], a[4], a[5]
     a6, a7, a8, a9, a10, a11 = a[6], a[7], a[8], a[9], a[10], a[11]
-    cnt = 0
-    for i in range(z.shape[0]):
-        zi = abs(z[i])
-        z2 = zi * zi
-        w = max(1.0 - z2, 1e-12)
-        v = 1.0 / w
-        P = ((((((((((a11 * v + a10) * v + a9) * v + a8) * v + a7) * v + a6) * v + a5) * v
-                 + a4) * v + a3) * v + a2) * v + a1) * v + a0
-        f = A0 + A1 * z2 - np.sqrt(w) * P
-        out[i] = f if zi <= z_c else 1.0
-        cnt += 1 if (zi > z_c) & (zi < one_k) else 0
-    return cnt
+    n = z.shape[0]
+    tot = 0
+    for b in range((n + BLK - 1) // BLK):
+        lo = b * BLK
+        hi = min(lo + BLK, n)
+        zr = z[lo:hi]
+        fr = out[lo:hi]
+        on = 0
+        for q in range(hi - lo):
+            on += 1 if (abs(zr[q]) < one_k) else 0
+        if on == 0:
+            for q in range(hi - lo):
+                fr[q] = 1.0
+            bcnt[b] = 0
+            continue
+        cnt = 0
+        for q in range(hi - lo):
+            zi = abs(zr[q])
+            z2 = zi * zi
+            w = max(1.0 - z2, 1e-12)
+            v = 1.0 / w
+            P = ((((((((((a11 * v + a10) * v + a9) * v + a8) * v + a7) * v + a6) * v + a5) * v
+                     + a4) * v + a3) * v + a2) * v + a1) * v + a0
+            f = A0 + A1 * z2 - np.sqrt(w) * P
+            fr[q] = f if zi <= z_c else 1.0
+            cnt += 1 if (zi > z_c) & (zi < one_k) else 0
+        bcnt[b] = cnt
+        tot += cnt
+    return tot
 
 
 @njit(cache=True, fastmath=True)
@@ -77,27 +102,32 @@ def _quadratic_flux(z, k, u1, u2, z_c, A_half):
     if z_c >= 0.0:
         a = _series.coeffs(A_half, k, kk * c2)
         A0 = 1.0 - kk * ((1.0 - u1 - u2) - u2 * (1.0 - k2 / 2.0))
-        m = _series_select(z, a, A0, -kk * u2, z_c, one_k, out)
+        bcnt = np.empty((n + BLK - 1) // BLK, dtype=np.int64)
+        m = _series_select(z, a, A0, -kk * u2, z_c, one_k, out, bcnt)
     else:
         out[:] = 1.0
         m = _count_rest(z, z_c, one_k)
+        bcnt = np.ones((n + BLK - 1) // BLK, dtype=np.int64)
     if m == 0:
         return out
     # pass 2: collect the samples that need the exact solution
     zb = np.empty(m)
     idx = np.empty(m, dtype=np.int64)
     j = 0
-    for i in range(n):
-        zi = abs(z[i])
-        if (zi > z_c) & (zi < one_k):
-            if k >= 1.0 and zi <= k - 1.0:
-                out[i] = 0.0
-                continue
-            if abs(zi - k) < _exact.Z_K_MIN:
-                zi = k + max(k * 2.220446049250313e-16, _exact.Z_K_MIN)
-            zb[j] = zi
-            idx[j] = i
-            j += 1
+    for b in range(bcnt.shape[0]):
+        if bcnt[b] == 0:
+            continue
+        for i in range(b * BLK, min(b * BLK + BLK, n)):
+            zi = abs(z[i])
+            if (zi > z_c) & (zi < one_k):
+                if k >= 1.0 and zi <= k - 1.0:
+                    out[i] = 0.0
+                    continue
+                if abs(zi - k) < _exact.Z_K_MIN:
+                    zi = k + max(k * 2.220446049250313e-16, _exact.Z_K_MIN)
+                zb[j] = zi
+                idx[j] = i
+                j += 1
     m = j
     # pass 3: exact solution (vectorised), scalar fallback, scatter
     if m > 0:

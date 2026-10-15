@@ -3,6 +3,10 @@
 ## 0.1.0 (unreleased)
 
 - First release.
+- Quadratic family: blocks of samples that lie entirely off the star (separation >= 1 + rp)
+  are filled with 1 without evaluating the series, and are skipped when the samples for the exact
+  solver are collected. The fluxes are unchanged; with 3 % of 10^5 points in transit the flux is
+  2.2-2.8x faster (0.24 -> 0.09 ms at rp = 0.0092), with 30 % in transit 1.1-1.7x.
 - Interior series with a rigorous error bound for all power-law intensity laws.
 - Exact vectorised Mandel & Agol solver near the limb (uniform, linear, quadratic laws).
 - Contact expansions near the limb for the square-root, nonlinear and power-2 laws: power series

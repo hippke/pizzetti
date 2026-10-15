@@ -15,23 +15,47 @@ faster.
 ## Light curves against batman
 
 The numbers come from `python benchmarks/benchmark.py` (10⁵ points, about 30 % in transit, Intel
-Core Ultra 5 226V, single thread):
+Xeon 2.8 GHz, numba 0.68, single thread):
 - "flux only": consecutive calls change only `rp` and `u`;
 - "full": every call also changes the orbit.
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 1.79 ms | 0.16 ms | 11.0× | 3.49 ms | 0.40 ms | 8.7× |
-| quadratic | 0.1 | 1.91 ms | 0.25 ms | 7.6× | 3.78 ms | 0.52 ms | 7.2× |
-| nonlinear | 0.0092 | 1.88 ms | 0.58 ms | 3.2× | 3.90 ms | 0.85 ms | 4.6× |
-| nonlinear | 0.1 | 30.9 ms | 5.7 ms | 5.4× | 33.2 ms | 6.2 ms | 5.4× |
-| power2 | 0.0092 | 1.06 ms | 1.05 ms | 1.0× | 2.97 ms | 1.35 ms | 2.2× |
-| power2 | 0.1 | 19.2 ms | 6.7 ms | 2.9× | 21.4 ms | 7.0 ms | 3.1× |
+| quadratic | 0.0092 | 2.42 ms | 0.15 ms | 16.7× | 5.96 ms | 0.40 ms | 14.9× |
+| quadratic | 0.1 | 3.01 ms | 0.32 ms | 9.5× | 6.57 ms | 0.61 ms | 10.8× |
+| nonlinear | 0.0092 | 3.13 ms | 1.07 ms | 2.9× | 6.69 ms | 1.41 ms | 4.8× |
+| nonlinear | 0.1 | 57.1 ms | 2.73 ms | 20.9× | 67.4 ms | 3.87 ms | 17.4× |
+| power2 | 0.0092 | 2.00 ms | 0.83 ms | 2.4× | 5.25 ms | 1.16 ms | 4.5× |
+| power2 | 0.1 | 35.9 ms | 1.77 ms | 20.2× | 39.7 ms | 2.13 ms | 18.7× |
+
+### Low transit duty cycle
+
+Long light curves have few points in transit. With `python benchmarks/benchmark.py --half-width 2.5`
+(10⁵ points, about 3 % in transit):
+
+| law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
+|---|---|---|---|---|---|---|---|
+| quadratic | 0.0092 | 0.63 ms | 0.09 ms | 7.1× | 4.36 ms | 0.35 ms | 12.3× |
+| quadratic | 0.1 | 0.69 ms | 0.11 ms | 6.5× | 4.40 ms | 0.38 ms | 11.6× |
+| nonlinear | 0.0092 | 0.39 ms | 0.54 ms | 0.7× | 4.11 ms | 0.85 ms | 4.8× |
+| nonlinear | 0.1 | 5.77 ms | 1.64 ms | 3.5× | 9.45 ms | 1.91 ms | 5.0× |
+| power2 | 0.0092 | 0.25 ms | 0.50 ms | 0.5× | 4.00 ms | 0.82 ms | 4.9× |
+| power2 | 0.1 | 3.74 ms | 1.19 ms | 3.2× | 7.54 ms | 1.66 ms | 4.5× |
+
+In the same setting the quadratic flux was 0.24 ms (rp = 0.0092) and 0.26 ms (rp = 0.1) before blocks
+without on-star samples were skipped. The nonlinear and power-2 laws do not skip yet: they still
+evaluate their series at every sample, which is why batman, which skips off-star samples, is
+faster for small planets when few points are in transit.
 
 ## Notes
 
-- Out-of-transit points cost about 1 ns each. The series is evaluated branch-free for all points
-  and selected, and only points near the limb are gathered for the reference solver.
+- Quadratic family: the series is evaluated branch-free in blocks of 64 samples. A block in which
+  no sample lies on the star (all separations ≥ 1 + rp, flux exactly 1) is filled with 1 and skipped
+  (about 0.4 ns per sample); only points near the limb are gathered for the reference solver.
+  The flux is identical to that of the unblocked evaluation, because a sample is skipped only if it
+  fails the test `z < 1 + rp` that already selected its flux of 1.
+- Nonlinear, square-root and power-2 laws: the series is still evaluated for all samples (about
+  1 ns each, more with `exp` / `log`) and selected.
 - For the power-2 law with an arbitrary exponent, each interior point needs one `exp` and one `log`
   (about 20 ns), because numba cannot vectorise them. The quarter powers of the nonlinear and
   square-root laws are computed with square roots instead.

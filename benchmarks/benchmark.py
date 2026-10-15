@@ -1,6 +1,10 @@
 """Benchmark pizzetti against batman with the identical API.
 
-Usage: python benchmarks/benchmark.py [--n 100000]
+Usage: python benchmarks/benchmark.py [--n 100000] [--half-width 0.25]
+
+The light curve spans +-half-width days around mid-transit (P = 10 d, a = 20). The default
+(0.25 d) puts about 30 % of the points in transit; --half-width 2.5 gives about 3 %, closer to a
+long survey light curve.
 
 Two scenarios per law and radius ratio:
   * "flux only": the orbit is unchanged between calls (only rp / u change)
@@ -36,8 +40,8 @@ def make(mod, rp, law, u):
     return p
 
 
-def run(n):
-    t = np.linspace(-0.25, 0.25, n)
+def run(n, half_width=0.25):
+    t = np.linspace(-half_width, half_width, n)
     rows = []
     for law, u in (("quadratic", [0.4, 0.25]), ("nonlinear", [0.5, 0.1, 0.1, -0.1]), ("power2", [0.7, 0.6])):
         for rp in (0.0092, 0.1):
@@ -57,7 +61,8 @@ def run(n):
 
                 res[name] = (flux_only, best(full))
             rows.append((law, rp, res))
-    print(f"\n{n} samples, transit duty cycle ~30 %\n")
+    duty = float(np.mean(pizzetti.TransitModel(make(pizzetti, 0.1, "quadratic", [0.4, 0.25]), t).ds < 1.1))
+    print(f"\n{n} samples, transit duty cycle ~{100 * duty:.0f} %\n")
     print("| law | rp | batman flux only [ms] | pizzetti flux only [ms] | speed-up | batman full [ms] | pizzetti full [ms] | speed-up |")
     print("|---|---|---|---|---|---|---|---|")
     for law, rp, res in rows:
@@ -73,4 +78,6 @@ def run(n):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=100_000)
-    run(ap.parse_args().n)
+    ap.add_argument("--half-width", type=float, default=0.25)
+    args = ap.parse_args()
+    run(args.n, args.half_width)

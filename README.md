@@ -81,16 +81,23 @@ Notebooks: [drop-in replacement in an emcee fit](examples/01_batman_dropin_emcee
 ## Speed against batman
 
 Single thread, 10⁵ points, about 30 % of them in transit (`benchmarks/benchmark.py`, Intel Xeon
-2.1 GHz, numba 0.68). "Full" means that every call also recomputes the orbit, as in a fit.
+2.8 GHz, numba 0.68). "Full" means that every call also recomputes the orbit, as in a fit.
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 2.12 ms | 0.24 ms | **8.8×** | 4.87 ms | 0.49 ms | **10×** |
-| quadratic | 0.1 | 2.48 ms | 0.43 ms | **5.8×** | 5.13 ms | 0.69 ms | **7.4×** |
-| nonlinear | 0.0092 | 2.75 ms | 0.94 ms | 2.9× | 5.23 ms | 1.16 ms | 4.5× |
-| nonlinear | 0.1 | 45.8 ms | 2.68 ms | **17×** | 38.3 ms | 2.39 ms | **16×** |
-| power2 | 0.0092 | 1.30 ms | 0.77 ms | 1.7× | 4.00 ms | 1.01 ms | 4.0× |
-| power2 | 0.1 | 29.1 ms | 1.07 ms | **27×** | 25.2 ms | 1.23 ms | **21×** |
+| quadratic | 0.0092 | 2.42 ms | 0.15 ms | **17×** | 5.96 ms | 0.40 ms | **15×** |
+| quadratic | 0.1 | 3.01 ms | 0.32 ms | **9.5×** | 6.57 ms | 0.61 ms | **11×** |
+| nonlinear | 0.0092 | 3.13 ms | 1.07 ms | 2.9× | 6.69 ms | 1.41 ms | 4.8× |
+| nonlinear | 0.1 | 57.1 ms | 2.73 ms | **21×** | 67.4 ms | 3.87 ms | **17×** |
+| power2 | 0.0092 | 2.00 ms | 0.83 ms | 2.4× | 5.25 ms | 1.16 ms | 4.5× |
+| power2 | 0.1 | 35.9 ms | 1.77 ms | **20×** | 39.7 ms | 2.13 ms | **19×** |
+
+For the quadratic law, pizzetti skips blocks of samples that are entirely off the star (separation
+≥ 1 + rp, flux exactly 1) without evaluating the series. This matters most for long light curves
+with a small transit duty cycle: with 3 % of the points in transit
+(`python benchmarks/benchmark.py --half-width 2.5`) the quadratic flux takes 0.09 ms (rp = 0.0092)
+and 0.11 ms (rp = 0.1) for 10⁵ points, 7× and 6.5× faster than batman, and 2.7× and 2.4× faster than
+before the block skipping.
 
 batman's numerical laws (nonlinear, power2) run at its default tolerance of 1 ppm; pizzetti's
 errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.7–4.4 times faster

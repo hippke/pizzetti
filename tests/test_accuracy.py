@@ -113,3 +113,31 @@ def test_full_occultation_and_no_transit():
     assert occult(np.array([2.0]), 0.1, [0.4, 0.25])[0] == 1.0
     assert occult(np.array([0.3]), 0.0, [0.4, 0.25])[0] == 1.0
     assert occult(np.array([0.1]), 1.5, [0.7, 0.6], "power2")[0] == 0.0
+
+
+# --- block skipping of the series pass --------------------------------------
+# The quadratic kernel fills blocks without any on-star sample (all |z| >= 1 + k)
+# with 1 and skips them in the collection of exact samples. A sample's flux must
+# not depend on its neighbours or on its position in a block (up to rounding).
+@pytest.mark.parametrize("k", [0.0092, 0.1, 0.5, 1.0, 1.5])
+def test_block_skipping_matches_single_samples(k):
+    rng = np.random.default_rng(7)
+    n = 3 * 64 + 5
+    z = np.full(n, 50.0)
+    pos = [0, 1, 62, 63, 64, 65, 127, 128, 191, n - 1]
+    special = [0.0, 0.3 * (1 - abs(1 - k)), abs(1 - k), k, 1.0, 1 + k - 1e-12, 1 + k,
+               np.nextafter(1 + k, 0), np.nextafter(1 + k, 10), -0.2]
+    for p, v in zip(pos, special):
+        z[p] = v
+    z[rng.choice(n, 20, replace=False)] = rng.uniform(0, 1 + k, 20)
+    f = occult(z, k, [0.4, 0.25], "quadratic")
+    one = np.array([occult(z[i:i + 1], k, [0.4, 0.25], "quadratic")[0] for i in range(n)])
+    # the exact solver's vector lanes and its scalar remainder differ by ~1 ulp
+    assert np.max(np.abs(f - one)) < 1e-14
+    assert np.all(f[np.abs(z) >= 1 + k] == 1.0)
+    assert np.all(one[np.abs(z) >= 1 + k] == 1.0)
+
+
+def test_block_skipping_all_off_star():
+    z = np.linspace(1.3, 40.0, 1000)
+    assert np.all(occult(z, 0.1, [0.4, 0.25], "quadratic") == 1.0)
