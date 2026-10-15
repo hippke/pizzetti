@@ -28,8 +28,16 @@ def main(nsel=200, reps=20):
         c = R.CASES[case]
         t, y = R.simulate(c)
         ivar = 1.0 / c["sigma"] ** 2
-        chain = np.load(os.path.join(R.OUT, f"chain_{case}_pizzetti.npy"))
-        samp = chain[4000:].reshape(-1, chain.shape[-1])
+        fn = os.path.join(R.OUT, f"chain_{case}_pizzetti.npy")
+        if os.path.exists(fn):
+            chain = np.load(fn)
+            samp = chain[4000:].reshape(-1, chain.shape[-1])
+        else:  # chains are not stored: use the stored posterior samples, jittered so that
+            # every call still sees a new parameter vector (relative 1e-4, far below the width)
+            base = np.asarray(json.load(open(os.path.join(R.OUT, "posterior_samples.json")))[case]["samples"])
+            rng = np.random.default_rng(0)
+            samp = np.repeat(base, -(-nsel * (reps + 1) // len(base)), axis=0)
+            samp = samp * (1 + 1e-4 * rng.standard_normal(samp.shape))
         # distinct posterior samples for every repetition, so that no code profits from
         # caches keyed by parameter values (pizzetti caches the hypergeometric tables
         # per limb-darkening exponent; in a fit every call has a new exponent)

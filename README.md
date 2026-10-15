@@ -65,11 +65,11 @@ with pizzetti, with identical likelihoods, starting positions and random numbers
 |---|---|---|
 | largest difference of the posterior medians | 0.08 σ | 0.04 σ |
 | model error over the posterior, batman / pizzetti | 9 × 10⁻⁹ / 7 × 10⁻¹⁰ | 1.9 × 10⁻⁶ / 5 × 10⁻¹⁰ |
-| one likelihood evaluation, batman / pizzetti | 0.107 / 0.024 ms (**4.4×**) | 0.83 / 0.48 ms (**1.7×**) |
-| 2000-step emcee run, batman / pizzetti | 8.5 / 2.5 s | 52 / 28 s |
+| one likelihood evaluation, batman / pizzetti | 0.130 / 0.029 ms (**4.5×**) | 1.10 / 0.57 ms (**1.9×**) |
+| 2000-step emcee run, batman / pizzetti | 9.8 / 3.0 s | 67 / 34 s |
 
 The posteriors agree within their Monte Carlo noise. To come close to pizzetti's accuracy for the
-power-2 law, batman needs `max_err=0.01`, at 4.7 ms per evaluation (still off by 4 × 10⁻⁸). The
+power-2 law, batman needs `max_err=0.01`, at 6.1 ms per evaluation (still off by 4 × 10⁻⁸). The
 Julia version computes the gradient of either likelihood with respect to all seven parameters in
 about ten likelihood evaluations ([julia/](julia)).
 
@@ -100,7 +100,7 @@ and 0.11 ms (rp = 0.1) for 10⁵ points, 7× and 6.5× faster than batman, and 2
 before the block skipping.
 
 batman's numerical laws (nonlinear, power2) run at its default tolerance of 1 ppm; pizzetti's
-errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.7–4.4 times faster
+errors stay below 10⁻⁹. In a complete emcee fit the likelihood is 1.9–4.5 times faster
 ([examples/inference](examples/inference)).
 
 ## Installation

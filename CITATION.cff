@@ -4,7 +4,7 @@ title: "pizzetti: fast limb-darkened transit light curves"
 authors:
   - family-names: "One"
     given-names: "Author"
-version: 0.1.0
+version: 0.2.1
 license: GPL-3.0-or-later
 repository-code: "https://github.com/user/repo"
 preferred-citation:

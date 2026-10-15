@@ -21,7 +21,7 @@ python benchmark_calls.py        # cost per likelihood evaluation, a new posteri
 python benchmark_wall.py         # wall-clock time of 2000-step runs
 ```
 
-## Results (Intel Xeon 2.1 GHz, single thread)
+## Results (Intel Xeon 2.8 GHz, single thread)
 
 | | hot Jupiter (quadratic) | super-Earth (power-2) |
 |---|---|---|
@@ -30,11 +30,16 @@ python benchmark_wall.py         # wall-clock time of 2000-step runs
 | chains step-by-step identical for | 846 steps | 6 steps |
 | largest model error over the posterior, batman | 9e-9 | 1.9e-6 |
 | largest model error over the posterior, pizzetti | 7e-10 | 5e-10 |
-| likelihood evaluation, batman | 0.107 ms | 0.83 ms |
-| likelihood evaluation, pizzetti | 0.024 ms (4.4x) | 0.48 ms (1.7x) |
-| likelihood evaluation, batman with `max_err=0.01` | — | 4.7 ms (error still 4e-8) |
-| 2000-step emcee run, batman / pizzetti | 8.5 s / 2.5 s | 52 s / 28 s |
+| likelihood evaluation, batman | 0.130 ms | 1.10 ms |
+| likelihood evaluation, pizzetti | 0.029 ms (4.5x) | 0.57 ms (1.9x) |
+| likelihood evaluation, batman with `max_err=0.01` | — | 6.1 ms (error still 4e-8) |
+| 2000-step emcee run, batman / pizzetti | 9.8 s / 3.0 s | 67 s / 34 s |
 | likelihood / gradient (7 parameters), Pizzetti.jl | 0.039 / 0.40 ms | 0.41 / 4.1 ms |
+
+In these fits 50-66 % of the samples are in transit, so the off-star block skipping (0.2.1) changes
+little here; the timings were re-measured on a machine about 20 % slower than the earlier ones, and the
+batman/pizzetti ratios are unchanged within noise. `benchmark_calls.py` uses `results/posterior_samples.json`
+(jittered by 1e-4) when no stored chains are present.
 
 MCSE: Monte Carlo standard error of the difference of the medians, from the integrated autocorrelation
 times. The posteriors agree within their Monte Carlo noise. The chains, which draw identical proposals, stay
