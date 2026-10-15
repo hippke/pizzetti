@@ -17,6 +17,27 @@
             @test maximum(abs.(out .- o.(z))) < 4e-16
         end
     end
+    # blocks without a sample on the star are filled with 1; the flux of a sample does not depend on its
+    # neighbours or on its position in a block
+    for law in (Quadratic(0.4, 0.25), Power2(0.6, 0.6)), p in (0.02, 0.1, 0.4)
+        o = Occultor(p, law)
+        n = 3 * Pizzetti.BLOCK_SIZE + 5
+        z = fill(50.0, n)
+        for (i, v) in zip([1, 2, 63, 64, 65, 66, 128, 129, 192, n], [0.0, 0.3 * abs(1 - p), abs(1 - p), p, 1.0, 1 + p - 1e-12, 1 + p, nextfloat(1 + p), prevfloat(1 + p), -0.2])
+            z[i] = v
+        end
+        z[rand(Xoshiro(7), 1:n, 20)] .= rand(Xoshiro(8), 20) .* (1 + p)
+        out = similar(z)
+        evaluate!(out, o, z)
+        @test maximum(abs.(out .- o.(z))) < 4e-16
+        @test all(out[abs.(z) .>= 1 + p] .== 1.0)
+        # a strided view: same result whichever indexing path is taken
+        zz = view(vcat(z, z), 1:2:2n)
+        outz = zeros(length(zz))
+        evaluate!(outz, o, zz)
+        @test maximum(abs.(outz .- o.(zz))) < 4e-16
+    end
+    @test all(evaluate!(zeros(1000), Occultor(0.1, Quadratic(0.4, 0.25)), collect(range(1.3, 40, length = 1000))) .== 1.0)
     # circular-orbit rsky (SIMD) against the scalar version
     P = TransitParams(per = 3.7, rp = 0.1, a = 11.0, b = 0.3, w = 37.0, law = Quadratic(0.4, 0.25))
     t = collect(range(-10, 10, length = 20001))

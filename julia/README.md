@@ -173,6 +173,15 @@ Single thread, Intel Xeon 2.1 GHz, Julia 1.13 (`benchmark/benchmarks.jl`, result
 Set-up per light curve: ~5 µs (series cut and coefficients); contact expansions 0.06–0.4 ms
 (used only for light curves with enough limb samples); proven pieces 6–37 ms.
 
+`evaluate!` skips blocks of 64 samples in which no sample lies on the star (`|z| ≥ 1 + p`, flux
+exactly 1). This matters for long light curves with few points in transit. For 10⁵ sorted
+separations (Xeon 2.8 GHz, Julia 1.13) with 3 % of them in transit, p = 0.0092: quadratic
+0.23 → 0.047 ms, power-2 0.69 → 0.17 ms, nonlinear 0.52 → 0.23 ms; p = 0.1: 0.28 → 0.095 ms,
+1.83 → 1.29 ms, 2.40 → 2.12 ms. With 30 % in transit the gain is 1.0–1.7×. A 10⁵-sample
+light curve (orbit and flux) over 10 transits, p = 0.0092, takes 0.42 ms (quadratic) and 0.48 ms
+(power-2) instead of 0.58 ms and 1.05 ms. Short light curves that are mostly in transit (the Kepler
+and TESS cases above) are unchanged to within 2–3 %.
+
 The likelihoods of the paper's inference example (`benchmark/inference_cases.jl`, a new posterior
 sample at every call):
 

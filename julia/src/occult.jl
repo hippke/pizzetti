@@ -357,14 +357,44 @@ end
 """
     evaluate!(out, o::Occultor, z)
 
-`out .= o.(z)`. For Float64 the interior series is evaluated for all samples in a
-branch-free loop that the compiler vectorises (SIMD), and the remaining samples
-(near and across the limb) are computed in a second pass.
+`out .= o.(z)`. For Float64 the samples are processed in blocks of `BLOCK_SIZE`. A block in
+which no sample lies on the star (all `|z| ≥ 1 + p`, flux exactly 1) is filled with 1. In the
+other blocks the interior series is evaluated for all samples in a branch-free loop that the
+compiler vectorises (SIMD), and the remaining samples (near and across the limb) are computed
+in a second pass.
 """
 evaluate!(out::AbstractArray, o::Occultor, z::AbstractArray) = (out .= o.(z))
 
+"Block length of the Float64 `evaluate!`: blocks without a sample on the star are skipped."
+const BLOCK_SIZE = 64
+
 function evaluate!(out::AbstractArray{Float64}, o::Occultor{Float64}, z::AbstractArray{Float64})
     axes(out) == axes(z) || throw(DimensionMismatch("out and z must have the same axes"))
+    if IndexStyle(out, z) isa IndexLinear
+        one_p = 1 + o.p
+        r = eachindex(IndexLinear(), z)
+        lo, last_i = first(r), last(r)
+        while lo <= last_i
+            hi = min(lo + BLOCK_SIZE - 1, last_i)
+            zb = view(z, lo:hi)
+            ob = view(out, lo:hi)
+            on = false
+            # `!(|z| ≥ 1 + p)` (not `|z| < 1 + p`) so that a NaN counts as on the star and is
+            # handled by the scalar path, as without blocks
+            @inbounds @simd for i in eachindex(zb)
+                on |= !(abs(zb[i]) >= one_p)
+            end
+            on ? _evaluate_block!(ob, o, zb) : fill!(ob, 1.0)
+            lo = hi + 1
+        end
+    else
+        _evaluate_block!(out, o, z)
+    end
+    out
+end
+
+# series pass for all samples, then the samples beyond z_c
+function _evaluate_block!(out, o::Occultor{Float64}, z)
     zc = o.zc
     if zc >= 0
         _series_pass!(out, o, z)
