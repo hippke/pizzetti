@@ -16,6 +16,7 @@ import numpy as np
 from numba import njit
 
 from . import _orbit
+from ._powbasis import alpha_column, columns_kernel
 from .terms import _occult_terms_cut
 
 # 12-point Gauss-Legendre with the endpoint-smoothing map u = t^2 (3 - 2t)
@@ -516,12 +517,79 @@ def _qr_solve(A, y):
     return True, c, Fi, logdet, chi2
 
 
+@njit(cache=True, fastmath=True)
+def _dot(a, b):
+    s = 0.0
+    for t in range(a.shape[0]):
+        s += a[t] * b[t]
+    return s
+
+
 @njit(cache=True)
-def marg_loglike_gen(A, y, D, cone):
-    """Marginal log-likelihood for y = A c + unit noise, flat prior on c over the cone
-    D c >= 0 (cone=True) or unconstrained (cone=False); K = A.shape[1] <= 5."""
-    K = A.shape[1]
-    ok, c, Fi, logdet, chi2 = _qr_solve(A, y)
+def _ne_solve(AT, y):
+    """As _qr_solve, for the transposed design AT (K x n, rows contiguous), via
+    equilibrated normal equations (Cholesky) plus one step of iterative refinement;
+    chi2 from the explicit residual (no y'y - r'F^-1 r cancellation). Falls back to
+    QR if F is not safely positive definite (pivot ratio < 1e-6, cond(F) > ~1e12)."""
+    K, n = AT.shape
+    sc = np.zeros(K)
+    F = np.zeros((K, K))
+    r = np.zeros(K)
+    for i in range(K):
+        r[i] = _dot(AT[i], y)
+        for j in range(i + 1):
+            F[i, j] = _dot(AT[i], AT[j])
+    for i in range(K):
+        if not F[i, i] > 0.0:
+            return _qr_solve(np.ascontiguousarray(AT.T), y)
+        sc[i] = math.sqrt(F[i, i])
+    for i in range(K):
+        r[i] /= sc[i]
+        for j in range(i + 1):
+            F[i, j] /= sc[i] * sc[j]
+            F[j, i] = F[i, j]
+    ok, L = chol_gen(F)
+    if not ok:
+        return _qr_solve(np.ascontiguousarray(AT.T), y)
+    dmin = L[0, 0]
+    dmax = L[0, 0]
+    for i in range(K):
+        dmin = min(dmin, L[i, i])
+        dmax = max(dmax, L[i, i])
+    if dmin < 1e-6 * dmax:
+        return _qr_solve(np.ascontiguousarray(AT.T), y)
+    Fis = inv_from_chol(L)
+    cs = Fis @ r
+    c = cs / sc
+    # refinement: residual d = y - A c, correction delta = F^-1 A' d
+    d = y.copy()
+    for i in range(K):
+        ci = c[i]
+        a = AT[i]
+        for t in range(n):
+            d[t] -= a[t] * ci
+    g = np.zeros(K)
+    for i in range(K):
+        g[i] = _dot(AT[i], d) / sc[i]
+    delta = Fis @ g
+    chi2 = _dot(d, d) - delta @ g          # |y - A (c + delta)|^2 = |d|^2 - delta' F delta
+    logdet = 0.0
+    for i in range(K):
+        logdet += 2.0 * (math.log(L[i, i]) + math.log(sc[i]))
+    Fi = np.empty((K, K))
+    for i in range(K):
+        c[i] = (cs[i] + delta[i]) / sc[i]
+        for j in range(K):
+            Fi[i, j] = Fis[i, j] / (sc[i] * sc[j])
+    return True, c, Fi, logdet, chi2
+
+
+@njit(cache=True)
+def marg_loglike_genT(AT, y, D, cone):
+    """Marginal log-likelihood for y = A c + unit noise (AT = A transposed, K x n),
+    flat prior on c over the cone D c >= 0 (cone=True) or unconstrained; K <= 5."""
+    K = AT.shape[0]
+    ok, c, Fi, logdet, chi2 = _ne_solve(AT, y)
     if not ok:
         return -np.inf
     lp = -0.5 * chi2 - 0.5 * logdet
@@ -538,9 +606,15 @@ def marg_loglike_gen(A, y, D, cone):
 
 
 @njit(cache=True)
+def marg_loglike_gen(A, y, D, cone):
+    """As marg_loglike_genT for A (n x K)."""
+    return marg_loglike_genT(np.ascontiguousarray(A.T), y, D, cone)
+
+
+@njit(cache=True)
 def moments_gen(A, y):
     """(chat, F^-1) of the untruncated Gaussian of c (A, y noise-weighted)."""
-    ok, c, Fi, logdet, chi2 = _qr_solve(A, y)
+    ok, c, Fi, logdet, chi2 = _ne_solve(np.ascontiguousarray(A.T), y)
     return c, Fi
 
 
@@ -570,3 +644,137 @@ def gibbs_cone_gen(mu, cov, D, rng_u, sweeps):
             u = min(max(u, 1e-300), 1.0 - 1e-16)
             w[i] = mi + sd * ndtri(u)
     return np.linalg.solve(D, w)
+
+
+# ----------------------------------------------------------------------------
+# Fused general path: all laws with fixed exponents, and secondary eclipses
+# ----------------------------------------------------------------------------
+@njit(cache=True, fastmath=True)
+def gen_design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, ttype, tol, A_half, Gt,
+               dvec, W, gams, sertabs, ptol, cheb, lens, valid, ycs, plo, phi, ju, jw, has,
+               amode, alpha, cheb2, lens2, valid2, yc2, plo2, phi2, alo2, ahi2, nreg2):
+    """Noise-weighted design matrix, transposed (K x n), of one geometry:
+    primary: A = d - [lex, ldx, edx, P_g...] @ W (occult_terms + _powbasis columns);
+    secondary (ttype 2): A = [1, v - 1] with v the visible planet fraction."""
+    m = tt.shape[0]
+    inc = math.acos(min(abs(b) / a, 1.0))
+    z = _orbit.rsky(tt, t0, per, a, inc, ecc, w, ttype)
+    K = dvec.shape[0]
+    Af = np.empty((K, m))
+    if ttype == 2:
+        v = _orbit.eclipse(z, abs(rp), 1.0)
+        for r in range(m):
+            Af[0, r] = 1.0
+            Af[1, r] = v[r] - 1.0
+    else:
+        T = _occult_terms_cut(z, abs(rp), tol, A_half, Gt)
+        npw = 1 if amode else gams.shape[0]
+        for j in range(K):
+            dj, w0, w1, w2 = dvec[j], W[0, j], W[1, j], W[2, j]
+            row = Af[j]
+            T0 = T[0]
+            T1 = T[1]
+            T2 = T[2]
+            for r in range(m):
+                row[r] = dj - T0[r] * w0 - T1[r] * w1 - T2[r] * w2
+        if npw > 0:
+            Pc = np.empty((npw, m))
+            if amode:
+                alpha_column(z, abs(rp), alpha, ptol, Gt, cheb2, lens2, valid2, yc2, plo2, phi2,
+                             alo2, ahi2, nreg2, Pc, 0)
+            else:
+                columns_kernel(z, abs(rp), gams, sertabs, ptol, Gt, cheb, lens, valid, ycs, plo,
+                               phi, ju, jw, has, Pc, 0)
+            for q in range(npw):
+                pq = Pc[q]
+                for j in range(K):
+                    wq = W[3 + q, j]
+                    if wq != 0.0:
+                        row = Af[j]
+                        for r in range(m):
+                            row[r] -= pq[r] * wq
+    if ksup == 1:
+        for j in range(K):
+            row = Af[j]
+            for r in range(m):
+                row[r] *= wts[r]
+        return Af
+    n = m // ksup
+    A = np.zeros((K, n))
+    inv = 1.0 / ksup
+    for j in range(K):
+        for i in range(n):
+            s_ = 0.0
+            for s in range(ksup):
+                s_ += Af[j, i * ksup + s]
+            A[j, i] = s_ * inv * wts[i]
+    return A
+
+
+@njit(cache=True)
+def _phase_ecl(TA, e):
+    E = 2.0 * math.atan(math.sqrt((1.0 - e) / (1.0 + e)) * math.tan(TA / 2.0))
+    return (E - e * math.sin(E)) / (2.0 * math.pi)
+
+
+@njit(cache=True)
+def t0_from_tsec(tsec, per, ecc, w):
+    """Time of inferior conjunction from the time of secondary eclipse (batman)."""
+    return tsec + per * (_phase_ecl(math.pi / 2.0 - w, ecc) - _phase_ecl(1.5 * math.pi - w, ecc))
+
+
+@njit(cache=True)
+def gen_batch(P, lj, al, check, lo, hi, has_alpha, alo, ahi, rowpan, tt, ksup, wts, yw, ttype,
+              tol, A_half, Gt, dvec, W, gams, sertabs, ptol, CHEB, LENS, VALID, YCS, PLO, PHI,
+              ju, jw, has, D, cone, moments, amode, rowpan2, CH2, LE2, VA2, YC2, PL2, PH2, AL2,
+              AH2, NR2):
+    """amode: power-2 law with free alpha (al), 2-D panels (rowpan2 into CH2 ...).
+    For every canonical row of P (log-Jacobian lj, exponent al, panel index rowpan
+    into the stacked panels): the marginal log-likelihood + lj, -inf outside the box
+    prior (check=True; as loglike_batch, plus alo < al < ahi if has_alpha), or the
+    moments (chat, F^-1) of c (moments=True). Secondary eclipses (ttype 2): P[:, 0] is
+    the time of secondary eclipse."""
+    n = P.shape[0]
+    K = dvec.shape[0]
+    out = np.full(n, -np.inf)
+    C = np.zeros((n, K))
+    S = np.zeros((n, K, K))
+    for i in range(n):
+        ok = True
+        for k in range(7):
+            v = P[i, k]
+            if not v == v:
+                ok = False
+            elif check and not (lo[k] < v < hi[k]):
+                ok = False
+        t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
+        if check and not (ok and 0.0 <= b < 1.0 + rp and 0.0 <= ecc < 1.0 and per > 0.0
+                          and rp > 0.0 and a > 1.0
+                          and (not has_alpha or alo < al[i] < ahi)):
+            ok = False
+        if not ok:
+            continue
+        if ttype == 2:
+            t0 = t0_from_tsec(t0, per, ecc, w)
+        ip = rowpan[i]
+        j = ip if ip >= 0 else 0
+        plo_ = PLO[j] if ip >= 0 else -1.0
+        q = rowpan2[i] if amode else -1
+        j2 = q if q >= 0 else 0
+        va2 = VA2[j2] and q >= 0
+        pl2 = PL2[j2] if q >= 0 else -1.0
+        al_ = al[i]
+        dv = dvec
+        if amode:
+            dv = np.array([al_ / (al_ + 2.0), 2.0 / (al_ + 2.0)])
+        A = gen_design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, ttype, tol, A_half, Gt, dv,
+                       W, gams, sertabs, ptol, CHEB[j], LENS[j], VALID[j], YCS[j], plo_, PHI[j],
+                       ju, jw, has, amode, al_, CH2[j2], LE2[j2], va2, YC2[j2], pl2, PH2[j2],
+                       AL2[j2], AH2[j2], NR2[j2])
+        if moments:
+            okc, c, Fi, ld_, ch_ = _ne_solve(A, yw)
+            C[i] = c
+            S[i] = Fi
+        else:
+            out[i] = marg_loglike_genT(A, yw, D, cone) + lj[i]
+    return out, C, S

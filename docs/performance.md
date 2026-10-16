@@ -65,20 +65,23 @@ faster for small planets when few points are in transit.
 
 ## Marginal likelihood (`MarginalTransitModel`)
 
-One likelihood evaluation, n = 1316, rp = 0.1, 196 samples near the limb (single thread, loaded
-machine, so the numbers are approximate):
+One likelihood evaluation, n = 1316, rp = 0.1, 280 samples near the limb, single thread:
 
-| law | per evaluation | where the time goes |
-|---|---|---|
-| quadratic | 15–20 µs | fused numba path: orbit 4 µs, `occult_terms` 7 µs, 3×3 algebra |
-| uniform | ~40 µs | general path: Python overhead (~20 µs) |
-| linear | ~60 µs | general path: Python overhead (~30 µs) |
-| square-root | ~330 µs | one μ^½ flux: ~22 µs call overhead + ~1.1 µs per limb sample (quadrature) |
-| power-2 | ~370 µs | as square-root, plus `exp`/`log` per interior sample |
-| nonlinear | ~610 µs | two non-integer exponents (μ^½, μ^{3/2}) |
-| logarithmic | ~1270 µs | μ ln μ from four power-law fluxes (5-point difference in the exponent) |
+| law | single call | per row (batch of 64) | where the time goes |
+|---|---|---|---|
+| uniform, linear | ~21 µs | ~12 µs | orbit 4 µs, `occult_terms` 7 µs, normal equations |
+| quadratic (fast path) | ~19 µs | ~15 µs | as above, 3×3 closed form |
+| square-root, power-2 | ~35 µs | ~25 µs | + one power-law column (~10 µs) |
+| nonlinear | ~53 µs | ~39 µs | + two columns, 5×5 system |
+| power-2, free α | ~54 µs | ~44 µs | + collapsing the α axis of the panel (~5 µs) |
+| logarithmic | ~68 µs | ~60 µs | + four columns (μ ln μ by a difference in the exponent) |
 
-For the non-quadratic laws the samples near the limb dominate. With fewer than about
-4.5 × (number of series terms) limb samples, i.e. ≲ 430 for rp = 0.1, `occult` uses the
-quadrature rather than the contact expansions, because building the expansions for a new rp
-costs about as much as the quadrature (~180 µs here).
+One power-law column costs about 12 µs:
+- ~3 µs fixed: Chebyshev interpolation of the expansion coefficients, and the interior cut;
+- ~2.5 µs for 378 interior samples;
+- ~5 µs for 280 limb samples (contact expansions evaluated across samples, so the loops
+  vectorise; ~18 ns each).
+
+The same 280 samples cost ~300 µs with the quadrature, which is what `occult` uses for light
+curves with fewer than ~430 limb samples. The panel scheme removes the per-light-curve set-up
+that `occult` would pay (~180 µs per exponent).

@@ -47,6 +47,11 @@ def blocked_power(z, rp, alpha, tol=_TOL):
     return disk * (1.0 - occult(z, rp, [1.0, float(alpha)], "power2", series_tol=tol))
 
 
+_FD_H = 0.01
+_FD_K = np.array([-2.0, -1.0, 1.0, 2.0])
+_FD_W = np.array([1.0, -8.0, 8.0, -1.0])
+
+
 def blocked_mulogmu(z, rp, h=0.01):
     """Blocked flux of mu ln(mu) = d/dalpha mu^alpha at alpha = 1, by a fifth-order
     central difference in the exponent (truncation ~1e-11, see tests)."""
@@ -55,16 +60,36 @@ def blocked_mulogmu(z, rp, h=0.01):
 
 
 class Law:
+    """Base class. A law is described by ``linmap(alpha) -> (d, W, gams)``: the design
+    matrix is A = d - [lex, ldx, edx, P_g1, ...] @ W, where (lex, ldx, edx) are
+    ``occult_terms`` and P_g the blocked fluxes / pi of (1 - r^2)^g (``_powbasis``)."""
     name = None
     K = None
     D = None                 # cone matrix, or None (curved: is_physical)
     has_alpha = False
     out_labels = {}
 
+    def linmap(self, alpha=None):
+        raise NotImplementedError
+
+    def basis(self, z, rp, alpha=None, pcols=None):
+        """n x K design matrix (generic, from ``linmap``). pcols: optional
+        ``_powbasis.PowerColumns`` for the exponents (built on the fly otherwise)."""
+        d, W, gams = self.linmap(alpha)
+        z = np.ascontiguousarray(z, dtype=float)
+        T = occult_terms(z, rp)
+        A = d[None, :] - T.T @ W[:3]
+        if len(gams):
+            if pcols is None:
+                from ._powbasis import PowerColumns
+                pcols = PowerColumns(gams, _TOL)
+            A -= pcols(z, rp) @ W[3:]
+        return A
+
     def disk(self, alpha=None):
         raise NotImplementedError
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         raise NotImplementedError
 
     def central(self, c):
@@ -86,10 +111,13 @@ class Law:
 class Uniform(Law):
     name, K, D = "uniform", 1, np.eye(1)
 
+    def linmap(self, alpha=None):
+        return np.array([1.0]), np.array([[1.0], [0.0], [0.0]]), np.zeros(0)
+
     def disk(self, alpha=None):
         return np.array([1.0])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         return (1.0 - occult_terms(z, rp)[0])[:, None]
 
     def central(self, c):
@@ -106,10 +134,14 @@ class Linear(Law):
     """Bernstein degree 1: I = c0 (1 - mu) + c1 mu; physical 0 <= c0 <= c1."""
     name, K, D = "linear", 2, _D2
 
+    def linmap(self, alpha=None):
+        return (np.array([1 / 3, 2 / 3]), np.array([[1.0, 0.0], [-1.0, 1.0], [0.0, 0.0]]),
+                np.zeros(0))
+
     def disk(self, alpha=None):
         return np.array([1.0 / 3.0, 2.0 / 3.0])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex, ldx, _ = occult_terms(z, rp)
         return np.column_stack([1.0 / 3.0 - (lex - ldx), 2.0 / 3.0 - ldx])
 
@@ -127,10 +159,14 @@ class Quadratic(Law):
     """Bernstein degree 2 in mu; physical 0 <= c0 <= c1 <= c2 (Kipping 2013)."""
     name, K, D = "quadratic", 3, _D3
 
+    def linmap(self, alpha=None):
+        return (np.array([1 / 6, 1 / 3, 0.5]),
+                np.array([[2.0, -2.0, 1.0], [-2.0, 2.0, 0.0], [-1.0, 2.0, -1.0]]), np.zeros(0))
+
     def disk(self, alpha=None):
         return np.array([1.0 / 6.0, 1.0 / 3.0, 0.5])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex, ldx, edx = occult_terms(z, rp)
         return np.column_stack([1 / 6 - (2 * lex - 2 * ldx - edx), 1 / 3 - 2 * (ldx - lex + edx),
                                 0.5 - (lex - edx)])
@@ -157,10 +193,16 @@ class SquareRoot(Law):
     quadratic law. I = c0 (1-s)^2 + c1 2 s (1-s) + c2 s^2."""
     name, K, D = "squareroot", 3, _D3
 
+    def linmap(self, alpha=None):
+        # rows: lex, ldx, edx, P(mu^1/2)
+        return (np.array([1 / 15, 4 / 15, 2 / 3]),
+                np.array([[1.0, 0.0, 0.0], [1.0, -2.0, 1.0], [0.0, 0.0, 0.0], [-2.0, 2.0, 0.0]]),
+                np.array([0.25]))
+
     def disk(self, alpha=None):
         return np.array([1.0 / 15.0, 4.0 / 15.0, 2.0 / 3.0])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex, ldx, _ = occult_terms(z, rp)
         bh = blocked_power(z, rp, 0.5)                   # blocked flux of sqrt(mu)
         # (1-s)^2 = 1 - 2 sqrt(mu) + mu ; 2 s (1-s) = 2 sqrt(mu) - 2 mu ; s^2 = mu
@@ -190,10 +232,20 @@ class Logarithmic(Law):
     I = c0 (-mu ln mu) + c1 (mu - 1) + c2 ; physical 0 <= u2 <= u1 <= 1 = the ordered cone."""
     name, K, D = "logarithmic", 3, _D3
 
+    def linmap(self, alpha=None):
+        # mu ln mu = d/dalpha mu^alpha at alpha = 1: fifth-order central difference of
+        # four power terms (exponents alpha = 1 +- h, 1 +- 2h; g = alpha / 2)
+        W = np.zeros((7, 3))
+        W[0] = [0.0, -1.0, 1.0]
+        W[1] = [0.0, 1.0, 0.0]
+        for r, wk in zip(range(3, 7), _FD_W):
+            W[r, 0] = -wk / (12.0 * _FD_H)
+        return np.array([2 / 9, -1 / 3, 1.0]), W, (1.0 + _FD_H * _FD_K) / 2.0
+
     def disk(self, alpha=None):
         return np.array([2.0 / 9.0, -1.0 / 3.0, 1.0])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex, ldx, _ = occult_terms(z, rp)
         bl = blocked_mulogmu(z, rp)                       # blocked flux of mu ln mu
         return np.column_stack([2 / 9 + bl, (2 / 3 - ldx) - (1 - lex), 1 - lex])
@@ -213,10 +265,26 @@ class Power2(Law):
     physical 0 <= c0 <= c1 (0 <= c <= 1). alpha is a sampled (non-linear) parameter."""
     name, K, D, has_alpha = "power2", 2, _D2, True
 
+    def linmap(self, alpha=None):
+        alpha = float(alpha)
+        d = self.disk(alpha)
+        W = np.zeros((3, 2))
+        W[0, 0] = 1.0
+        if alpha == 0.0:                      # mu^alpha column from the terms
+            W[0] += [-1.0, 1.0]
+        elif alpha == 1.0:
+            W[1] += [-1.0, 1.0]
+        elif alpha == 2.0:
+            W[0] += [-1.0, 1.0]
+            W[2] -= [-1.0, 1.0]
+        else:
+            return d, np.vstack([W, [[-1.0, 1.0]]]), np.array([alpha / 2.0])
+        return d, W, np.zeros(0)
+
     def disk(self, alpha=None):
         return np.array([alpha / (alpha + 2.0), 2.0 / (alpha + 2.0)])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex = occult_terms(z, rp)[0]
         ba = blocked_power(z, rp, alpha)
         d = self.disk(alpha)
@@ -252,13 +320,24 @@ class Nonlinear(Law):
     the exact test ``is_physical`` (importance weights), not an orthant probability."""
     name, K, D = "nonlinear", 5, None
 
+    def linmap(self, alpha=None):
+        # blocked power terms s^k (k = 0..4) = [lex, P(1/4), ldx, P(3/4), lex - edx]
+        Bm = np.zeros((5, 5))                 # rows: lex, ldx, edx, P(1/4), P(3/4)
+        Bm[0, 0] = Bm[0, 4] = 1.0
+        Bm[1, 2] = 1.0
+        Bm[2, 4] = -1.0
+        Bm[3, 1] = 1.0
+        Bm[4, 3] = 1.0
+        dpow = np.array([4.0 / (k + 4.0) for k in range(5)])
+        return dpow @ _M4, Bm @ _M4, np.array([0.25, 0.75])
+
     def disk(self, alpha=None):
         # int 2 mu B_j(sqrt mu) dmu = 4 int s^3 B_j(s) ds = 4 C(4,j) B(j+4, 5-j)
         from math import comb, factorial
         return np.array([4 * comb(4, j) * factorial(j + 3) * factorial(4 - j) / factorial(8)
                          for j in range(5)])
 
-    def basis(self, z, rp, alpha=None):
+    def basis_ref(self, z, rp, alpha=None):
         lex, ldx, edx = occult_terms(z, rp)
         blocked = [lex, blocked_power(z, rp, 0.5), ldx, blocked_power(z, rp, 1.5), lex - edx]
         dpow = np.array([4.0 / (k + 4.0) for k in range(5)])

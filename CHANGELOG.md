@@ -16,6 +16,16 @@
   - On example 01: 42× fewer likelihood evaluations than `TransitModel` + emcee, with the same
     posterior.
   - New optional extra: `pip install pizzetti[fit]` (emcee, scipy).
+- Faster general path of `MarginalTransitModel`: 5–15× for the square-root, power-2,
+  nonlinear and logarithmic laws, 2× for uniform/linear.
+  - One fused numba kernel per batch replaces the Python per-row loop.
+  - Equilibrated, refined normal equations replace QR (QR remains the fallback).
+  - New module `_powbasis`: the blocked fluxes of non-integer powers of μ come from contact
+    expansions precomputed per panel of radius ratio, interpolated, and validated against
+    quadrature. Free α uses 2-D panels, with a regularised form at α = 1, 3.
+  - Accuracy: ≤ 1e-12 against quadrature. The log-likelihood is unchanged within 3e-8 nats;
+    at α = 1 exactly, the new column is more accurate than the old `occult_terms`-based one.
+  - One-call fits on 7 transits now take 0.4–1.7 s for every law.
 - `occult_terms` / `quadratic_from_terms`: the three quadratic-family basis fluxes in one pass.
 - Eccentric orbits: faster `rsky`.
 - Example 03: marginal model with emcee and with `fit()`, compared with `TransitModel` and batman.

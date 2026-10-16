@@ -40,12 +40,16 @@ import math
 import numpy as np
 from numba import njit
 
-from . import _laws, _orbit
+from . import _laws, _orbit, _powbasis
 from . import _marginal as K
 from . import _series
 from .terms import _A_HALF
 
 CANON = K.CANON
+_NO_ROWPAN2 = np.full(1, -1, dtype=np.int64)
+_NO_ASTACK = (np.zeros((1, _powbasis.DEG_A + 1, _powbasis.DEG + 1, 7, _powbasis.NB + 1)),
+              np.zeros((1, 7), np.int64), np.zeros(1, np.bool_), np.zeros(1), np.full(1, -1.0),
+              np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1, np.int64))
 _DEG = math.pi / 180.0
 
 
@@ -245,6 +249,11 @@ class MarginalTransitModel:
         self.fast = (law == "quadratic" and not self.secondary and self.physical)
         self.cone = self.physical and self.law.D is not None      # orthant in the likelihood
         self.Dmat = np.ascontiguousarray(self.law.D if self.law.D is not None else np.eye(self.law.K))
+        # fused general path (numba batch): every law but the fast quadratic one
+        self._fused = not self.fast
+        self._amode = self.law.has_alpha and self.alpha_col >= 0
+        if self._fused:
+            self._setup_general()
         self.labels = list(self.free)
         self.ndim = len(self.free)
         self.n_eval = 0
@@ -312,14 +321,134 @@ class MarginalTransitModel:
             return (E - ecc * np.sin(E)) / (2.0 * math.pi)
         return tsec + per * (phase(math.pi / 2.0 - w) - phase(3.0 * math.pi / 2.0 - w))
 
-    # -- generic (all laws, eclipses) design ------------------------------------
+    # -- fused general path ------------------------------------------------------
+    def _setup_general(self):
+        if self.secondary:
+            d, W, gams = np.ones(2), np.zeros((3, 2)), np.zeros(0)
+        elif self._amode:
+            # power-2, free alpha: A = d(alpha) - [lex, ldx, edx, P_alpha] @ W
+            d, W, gams = np.ones(2), np.array([[1.0, 0.0], [0, 0], [0, 0], [-1.0, 1.0]]), np.zeros(0)
+        else:
+            d, W, gams = self.law.linmap(self.alpha_fixed)
+        self.acols = _powbasis.AlphaColumns(_laws._TOL) if self._amode else None
+        self._apos = {}
+        self._astack = None
+        self._dvec = np.ascontiguousarray(d, dtype=float)
+        self._W = np.ascontiguousarray(W, dtype=float)
+        self._gams = np.ascontiguousarray(gams, dtype=float)
+        self.pcols = _powbasis.PowerColumns(self._gams, _laws._TOL) if self._gams.size else None
+        if self.pcols is not None:
+            self._qr = (self.pcols.sertabs, self.pcols.ju, self.pcols.jw, self.pcols.has)
+        else:
+            from . import _general
+            self._qr = (np.zeros((0, _series.M + 1, _series.M + 1)),
+                        np.zeros((0, _general.N_NODES)), np.zeros((0, _general.N_NODES)),
+                        _general.quad_rules(np.array([0.5]))[2][:0])
+        self._pan_pos = {}
+        self._stack = None
+        self._restack()
+
+    def _restack(self):
+        """Stack the built panels (in order of first use) for the numba kernel."""
+        nt = self._gams.size
+        sh = (_powbasis.DEG + 1, 7, _powbasis.NB + 1)
+        self._lut = np.full(max(self._pan_pos, default=-1) + 1, -1, dtype=np.int64)
+        for ip, pos in self._pan_pos.items():
+            self._lut[ip] = pos
+        if not self._pan_pos:
+            self._stack = (np.zeros((1, nt) + sh), np.zeros((1, nt, 7), np.int64),
+                           np.zeros((1, nt), np.bool_), np.zeros((1, nt)), np.full(1, -1.0),
+                           np.full(1, -1.0))
+            return
+        Ps = [self.pcols.panels[ip] for ip in sorted(self._pan_pos, key=self._pan_pos.get)]
+        self._stack = tuple(np.ascontiguousarray(np.stack([P_[k] for P_ in Ps])) for k in range(4)) + (
+            np.array([P_[4] for P_ in Ps]), np.array([P_[5] for P_ in Ps]))
+
+    def _panel_pos(self, ip):
+        pos = self._pan_pos.get(ip)
+        if pos is None:
+            lo_, hi_ = _powbasis.panel_range(ip)
+            self.pcols.panel(0.5 * (lo_ + hi_))          # build (validated) on first use
+            pos = self._pan_pos[ip] = len(self._pan_pos)
+            self._restack()
+        return pos
+
+    def _rowpanels(self, rp):
+        """Index of every row's panel in the stack (-1: quadrature); builds new panels."""
+        if len(rp) == 0:
+            return np.zeros(0, dtype=np.int64)
+        if len(rp) == 1:
+            r = float(rp[0])
+            ip = _powbasis.panel_index(r) if r == r else -1
+            return np.array([self._panel_pos(ip) if ip >= 0 else -1], dtype=np.int64)
+        with np.errstate(all="ignore"):
+            ids = np.floor(np.log(rp / _powbasis.P_MIN) / _powbasis._LOG_RATIO)
+        good = (rp >= _powbasis.P_MIN) & (rp < _powbasis.P_MAX)
+        ids = np.where(good, ids, -1).astype(np.int64)
+        lut = self._lut
+        if ids.max() >= len(lut) or np.any(lut[ids[ids >= 0]] < 0):
+            for ip in np.unique(ids[ids >= 0]):
+                self._panel_pos(int(ip))
+            lut = self._lut
+        return np.where(ids >= 0, lut[np.clip(ids, 0, len(lut) - 1)], -1)
+
+    def _alpha_rowpanels(self, rp, al):
+        """Free alpha: index of every row's (p, alpha) panel in the 2-D stack (-1: none)."""
+        out = np.full(len(rp), -1, dtype=np.int64)
+        new = False
+        for i in range(len(rp)):
+            r, a_ = float(rp[i]), float(al[i])
+            if not (r == r and a_ == a_):
+                continue
+            ip, ia = _powbasis.panel_index(r), _powbasis.alpha_index(a_)
+            if ip < 0 or ia < 0:
+                continue
+            key = (ip, ia)
+            pos = self._apos.get(key)
+            if pos is None:
+                self.acols.panel(r, a_)
+                pos = self._apos[key] = len(self._apos)
+                new = True
+            out[i] = pos
+        if new or self._astack is None:
+            Ps = [self.acols.panels[k] for k in sorted(self._apos, key=self._apos.get)]
+            if not Ps:
+                Ps = [self.acols._empty]
+            self._astack = (np.ascontiguousarray(np.stack([P_[0] for P_ in Ps])),
+                            np.ascontiguousarray(np.stack([P_[1] for P_ in Ps])),
+                            np.array([P_[2] for P_ in Ps], dtype=np.bool_),
+                            *(np.array([P_[k] for P_ in Ps], dtype=float) for k in range(3, 8)),
+                            np.array([P_[8] for P_ in Ps], dtype=np.int64))
+        return out
+
+    def _gen(self, P, lj, al, check, moments):
+        P = np.ascontiguousarray(P, dtype=float)
+        rp = P[:, 2]
+        al = np.ascontiguousarray(al, dtype=float)
+        if self.pcols is None:
+            rowpan = np.full(len(P), -1, dtype=np.int64)
+        else:
+            rowpan = self._rowpanels(rp)
+        sertabs, ju, jw, has = self._qr
+        CHEB, LENS, VALID, YCS, PLO, PHI = self._stack
+        args = (P, np.ascontiguousarray(lj, dtype=float), al, check, self.lo, self.hi,
+                self.law.has_alpha, self.alpha_lo, self.alpha_hi, rowpan, self.tt,
+                self.k, self.wts, self.yw, self.ttype, self.tol, _A_HALF, _series._GTAB,
+                self._dvec, self._W, self._gams, sertabs, _laws._TOL, CHEB, LENS, VALID,
+                YCS, PLO, PHI, ju, jw, has, self.Dmat, self.cone, moments)
+        if not self._amode:
+            return K.gen_batch(*args, False, _NO_ROWPAN2, *_NO_ASTACK)
+        rowpan2 = self._alpha_rowpanels(rp, al)
+        return K.gen_batch(*args, True, rowpan2, *self._astack)
+
+    # -- generic (power-2 with free alpha) design ---------------------------------
     def _design_row(self, prow, alpha):
         t0, per, rp, a, b, ecc, w = prow
         if self.secondary:
             t0 = float(self._t0_from_tsec(t0, per, ecc, w))
         inc = math.acos(min(abs(b) / a, 1.0))
         z = _orbit.rsky(self.tt, t0, per, a, inc, ecc, w, self.ttype)
-        A = self.law.basis(z, rp, alpha)
+        A = (self.law.basis if self.secondary else self.law.basis_ref)(z, rp, alpha)
         if self.k > 1:
             A = A.reshape(len(self.t), self.k, -1).mean(axis=1)
         return np.ascontiguousarray(A * self.wts[:, None])
@@ -338,6 +467,9 @@ class MarginalTransitModel:
             out = K.loglike_batch(self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi,
                                   self.tt, self.k, self.wts, self.yw, self.tol, _A_HALF,
                                   _series._GTAB, self.has_ldp, self.mb, self.Pb)
+        elif self._fused:
+            P, lj = self._canonical_internal(Xi)
+            out = self._gen(P, lj, self._alpha(Xi), True, False)[0]
         else:
             P, lj = self._canonical_internal(Xi)
             al = self._alpha(Xi)
@@ -400,8 +532,11 @@ class MarginalTransitModel:
         Kc = self.law.K
         C = np.empty((len(X), Kc))
         S = np.empty((len(X), Kc, Kc))
-        for i in range(len(X)):
-            C[i], S[i] = K.moments_gen(self._design_row(P[i], al[i]), self.yw)
+        if self._fused:
+            _, C, S = self._gen(P, np.zeros(len(P)), al, False, True)
+        else:
+            for i in range(len(X)):
+                C[i], S[i] = K.moments_gen(self._design_row(P[i], al[i]), self.yw)
         disk = np.array([self.law.disk(a_) for a_ in al])
         if self.cone:
             c = self._draw_cone(C, S, rng)

@@ -111,15 +111,47 @@ evaluation counts are the more reliable measure.
 
 ## Cost per likelihood evaluation
 
-n = 1316, rp = 0.1, 196 samples near the limb:
+n = 1316 points, rp = 0.1, single thread:
 
-| law | per evaluation | dominated by |
+| law | single call | per row in batches of 64 |
 |---|---|---|
-| quadratic | 15–20 µs | fused path |
-| uniform, linear | 40–60 µs | Python overhead of the general path |
-| square-root, power-2 | ~0.3 ms | limb quadrature for μ^½ / μ^α |
-| nonlinear | ~0.6 ms | two non-integer exponents |
-| logarithmic | ~1.3 ms | four power-law calls for μ ln μ |
+| uniform, linear, secondary eclipse | ~20 µs | ~12 µs |
+| quadratic (fast path) | ~19 µs | ~15 µs |
+| square-root, power-2 (fixed α) | ~35 µs | ~25 µs |
+| nonlinear | ~53 µs | ~39 µs |
+| power-2 with free α | ~54 µs | ~44 µs |
+| logarithmic | ~68 µs | ~60 µs |
+
+All laws run in one numba kernel per batch: orbit, `occult_terms`, the power-law columns,
+supersampling and the normal equations. The normal equations are equilibrated, refined once,
+and take χ² from the explicit residual; they fall back to QR when ill-conditioned.
+
+**Power-law columns.** These are the blocked fluxes of the non-integer powers μ^½, μ^{3/2},
+μ^α. Interior samples use pizzetti's interior series (bound 10⁻¹²). Samples near the limb use
+its contact expansions, but those normally have to be rebuilt for every new radius ratio. Here
+they are computed once per panel instead:
+- Panels are geometric in rp (width ×1.15); with α free they are 2-D, with α steps of 0.25.
+- The coefficients are interpolated in rp (and α) with Chebyshev polynomials.
+- Each panel is validated against Green's-theorem quadrature when it is first used: errors
+  ≤ 10⁻¹² (typically 10⁻¹⁵). A panel that fails validation uses quadrature.
+- The series are extended to degree 64, so that they reach the interior cut.
+- Near α = 1 and 3 the expansions have cancelling poles; they are stored in a regularised form.
+
+A new panel costs 10–100 ms, and panels are shared by all models in a session. The expansions
+are validated for 0.001 ≤ rp ≲ 0.2 (and 0 < α < 3); outside that range the limb samples use the
+quadrature (~1 µs each).
+
+One-call `fit()` on 7 simulated transits, before and after these optimisations:
+
+| law | before | after |
+|---|---|---|
+| uniform | 0.64 s | 0.40 s |
+| linear | 0.92 s | 0.46 s |
+| square-root | 6.7 s | 0.84 s |
+| power-2 | 5.3 s | 0.75 s |
+| power-2, free α | 7.8 s | 1.7 s |
+| nonlinear | 11.3 s | 1.25 s |
+| logarithmic | 18.9 s | 1.29 s |
 
 ## Limitations
 

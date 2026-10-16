@@ -154,10 +154,21 @@ can be passed as a callable.
 **Extras:** supersampling and per-point errors work as in `TransitModel`. emcee and scipy are
 optional: `pip install pizzetti[fit]`.
 
-**Cost of one likelihood evaluation** (n = 1316): quadratic 15–20 µs (fused numba path),
-uniform/linear 40–60 µs, square-root and power-2 ~0.3 ms, nonlinear ~0.6 ms,
-logarithmic ~1.3 ms. The non-quadratic laws are limited by their limb samples (see
-[performance](docs/performance.md)).
+**Cost of one likelihood evaluation** (n = 1316, single call):
+
+| law | per evaluation |
+|---|---|
+| uniform, linear, secondary eclipse | ~20 µs |
+| quadratic | ~19 µs |
+| square-root, power-2 | ~35 µs |
+| nonlinear | ~53 µs |
+| power-2 with free α | ~54 µs |
+| logarithmic | ~68 µs |
+
+Every law runs in a fused numba kernel. For the non-integer powers of μ, the contact expansions
+at the limb are precomputed once per fit on small panels of radius ratio (and α), interpolated
+in between, and checked against quadrature before use. A one-call fit takes 0.4–1.7 s for every
+law (7 transits). See [performance](docs/performance.md).
 
 Not supported yet: inverse transits (rp < 0) and the exponential law.
 
@@ -248,8 +259,8 @@ z_c = pizzetti.series_cut(0.1, "quadratic", [0.4, 0.25])   # series used for z <
 
 [`examples/`](examples/) has notebooks that fit synthetic TESS- and Kepler-like light curves with emcee,
 once with batman and once with pizzetti (same likelihood, starting points and random numbers). The posteriors
-agree within their Monte Carlo noise; the likelihood evaluations are 2.4x (quadratic law, hot Jupiter) and
-1.4x (power-2 law, super-Earth) faster, and pizzetti's model error over the posterior is below 1e-9, against
+agree within their Monte Carlo noise; the likelihood evaluations are 4.5x (quadratic law, hot Jupiter) and
+1.9x (power-2 law, super-Earth) faster, and pizzetti's model error over the posterior is below 1e-9, against
 9e-9 and 1.9e-6 for batman. See [`examples/inference`](examples/inference) for the full runs.
 
 ## Julia
