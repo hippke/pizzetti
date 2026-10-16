@@ -411,3 +411,162 @@ def c_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp=False, mb=np.
             for j in range(3):
                 S[i, k, j] = Fi[k, j]
     return C, S
+
+
+# ----------------------------------------------------------------------------
+# General K-coefficient kernels (all laws other than the fast quadratic path)
+# ----------------------------------------------------------------------------
+@njit(cache=True)
+def chol_gen(F):
+    """Cholesky of a small SPD matrix; returns (ok, L)."""
+    K = F.shape[0]
+    L = np.zeros((K, K))
+    for i in range(K):
+        for j in range(i + 1):
+            s = F[i, j]
+            for k in range(j):
+                s -= L[i, k] * L[j, k]
+            if i == j:
+                if s <= 0.0:
+                    return False, L
+                L[i, i] = math.sqrt(s)
+            else:
+                L[i, j] = s / L[j, j]
+    return True, L
+
+
+@njit(cache=True)
+def inv_from_chol(L):
+    K = L.shape[0]
+    Li = np.zeros((K, K))
+    for i in range(K):
+        Li[i, i] = 1.0 / L[i, i]
+        for j in range(i):
+            s = 0.0
+            for k in range(j, i):
+                s -= L[i, k] * Li[k, j]
+            Li[i, j] = s / L[i, i]
+    return Li.T @ Li
+
+
+@njit(cache=True)
+def log_orthant_prob2(m, S, gx, gw):
+    """log P(w > 0), w ~ N(m, S), 2-d (Genz, one-dimensional quadrature)."""
+    s0, s1 = math.sqrt(S[0, 0]), math.sqrt(S[1, 1])
+    z0, z1 = m[0] / s0, m[1] / s1
+    if min(z0, z1) > 6.0:
+        return 0.0
+    if z1 < z0:                                   # most restrictive first
+        m = np.array([m[1], m[0]])
+        S = np.array([[S[1, 1], S[1, 0]], [S[0, 1], S[0, 0]]])
+        z0, z1 = z1, z0
+    l00 = math.sqrt(S[0, 0])
+    l10 = S[1, 0] / l00
+    l11 = math.sqrt(max(S[1, 1] - l10 * l10, 1e-300))
+    x1 = m[0] / l00
+    if x1 < -37.0:
+        return -np.inf
+    e1 = ndtr(x1)
+    if x1 > -3.0 and z1 > 6.0:
+        return math.log(e1)
+    acc = 0.0
+    for i in range(gx.shape[0]):
+        zz = -ndtri((1.0 - gx[i]) * e1)
+        acc += gw[i] * ndtr((m[1] + l10 * zz) / l11)
+    return math.log(e1) + math.log(acc) if acc > 0.0 else -np.inf
+
+
+@njit(cache=True)
+def _qr_solve(A, y):
+    """Least squares for y = A c via column equilibration + QR (no normal equations,
+    which square the condition number). Returns (ok, c, Finv, logdetF, chi2)."""
+    n, K = A.shape
+    sc = np.empty(K)
+    As = np.empty((n, K))
+    for k in range(K):
+        nrm = 0.0
+        for t in range(n):
+            nrm += A[t, k] * A[t, k]
+        nrm = math.sqrt(nrm)
+        if not nrm > 0.0:
+            return False, np.zeros(K), np.eye(K), 0.0, 0.0
+        sc[k] = nrm
+        for t in range(n):
+            As[t, k] = A[t, k] / nrm
+    Q, R = np.linalg.qr(As)
+    logdet = 0.0
+    for k in range(K):
+        if not abs(R[k, k]) > 1e-14:
+            return False, np.zeros(K), np.eye(K), 0.0, 0.0
+        logdet += 2.0 * (math.log(abs(R[k, k])) + math.log(sc[k]))
+    Ri = np.linalg.inv(R)
+    cs = Ri @ (Q.T @ y)
+    c = cs / sc
+    Fis = Ri @ Ri.T
+    Fi = np.empty((K, K))
+    for i in range(K):
+        for j in range(K):
+            Fi[i, j] = Fis[i, j] / (sc[i] * sc[j])
+    chi2 = 0.0
+    for t in range(n):
+        d = y[t]
+        for k in range(K):
+            d -= A[t, k] * c[k]
+        chi2 += d * d
+    return True, c, Fi, logdet, chi2
+
+
+@njit(cache=True)
+def marg_loglike_gen(A, y, D, cone):
+    """Marginal log-likelihood for y = A c + unit noise, flat prior on c over the cone
+    D c >= 0 (cone=True) or unconstrained (cone=False); K = A.shape[1] <= 5."""
+    K = A.shape[1]
+    ok, c, Fi, logdet, chi2 = _qr_solve(A, y)
+    if not ok:
+        return -np.inf
+    lp = -0.5 * chi2 - 0.5 * logdet
+    if not cone:
+        return lp
+    m = D @ c
+    S = D @ Fi @ D.T
+    if K == 1:
+        z = m[0] / math.sqrt(S[0, 0])
+        return lp + (0.0 if z > 8.0 else math.log(max(ndtr(z), 1e-300)))
+    if K == 2:
+        return lp + log_orthant_prob2(m, S, GL_X, GL_W)
+    return lp + log_orthant_prob(m, S, GL_X, GL_W)
+
+
+@njit(cache=True)
+def moments_gen(A, y):
+    """(chat, F^-1) of the untruncated Gaussian of c (A, y noise-weighted)."""
+    ok, c, Fi, logdet, chi2 = _qr_solve(A, y)
+    return c, Fi
+
+
+@njit(cache=True)
+def gibbs_cone_gen(mu, cov, D, rng_u, sweeps):
+    """One draw of c ~ N(mu, cov) truncated to D c >= 0 (D invertible, K <= 3):
+    Gibbs in w = D c with inverse-CDF truncated-normal updates."""
+    K = mu.shape[0]
+    m = D @ mu
+    S = D @ cov @ D.T
+    ok, L = chol_gen(S)
+    P = inv_from_chol(L)
+    w = np.empty(K)
+    for i in range(K):
+        w[i] = max(m[i], 1e-12 * math.sqrt(S[i, i]))
+    k = 0
+    for _ in range(sweeps):
+        for i in range(K):
+            sd = 1.0 / math.sqrt(P[i, i])
+            mi = m[i]
+            for j in range(K):
+                if j != i:
+                    mi -= P[i, j] * (w[j] - m[j]) / P[i, i]
+            lo = ndtr((0.0 - mi) / sd)
+            u = lo + rng_u[k] * (1.0 - lo)
+            k += 1
+            u = min(max(u, 1e-300), 1.0 - 1e-16)
+            w[i] = mi + sd * ndtri(u)
+    return np.linalg.solve(D, w)

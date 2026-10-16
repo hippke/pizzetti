@@ -89,15 +89,17 @@ def test_eccentric_and_supersampled_free_ecc():
 
 def test_scope_errors():
     t, y, p = data()
-    for attr, val, msg in (("limb_dark", "nonlinear", "quadratic"), ("rp", -0.1, "rp > 0")):
+    for attr, val, msg in (("limb_dark", "exponential", "exponential"), ("rp", -0.1, "rp > 0")):
         q = params()
         setattr(q, attr, val)
         with pytest.raises(NotImplementedError, match=msg):
             pizzetti.MarginalTransitModel(q, t, y, 1e-3)
-    with pytest.raises(NotImplementedError, match="secondary"):
-        pizzetti.MarginalTransitModel(p, t, y, 1e-3, transittype="secondary")
     with pytest.raises(ValueError, match="inc"):
         pizzetti.MarginalTransitModel(p, t, y, 1e-3, free=["inc"])
+    with pytest.raises(NotImplementedError, match="quadratic"):
+        q = params()
+        q.limb_dark, q.u = "squareroot", [0.3, 0.3]
+        pizzetti.MarginalTransitModel(q, t, y, 1e-3, ld_prior={"mean": (0.3, 0.3), "cov": np.eye(2)})
 
 
 def test_emcee_sampler_api_and_ld_recovery():
