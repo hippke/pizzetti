@@ -20,6 +20,7 @@ classifiers = [
 dependencies = ["numpy>=1.22", "numba>=0.57"]
 
 [project.optional-dependencies]
+fit = ["emcee>=3", "scipy>=1.8"]
 test = ["pytest>=7", "batman-package>=2.4", "mpmath>=1.2"]
 docs = ["sphinx>=7", "furo", "myst-parser>=2"]
 

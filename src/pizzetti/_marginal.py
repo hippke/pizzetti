@@ -1,0 +1,413 @@
+"""Numba kernels for transit likelihoods with quadratic limb darkening and the
+flux scale integrated out analytically (``pizzetti.MarginalTransitModel``).
+
+Model. The unnormalised quadratic intensity in the degree-2 Bernstein basis,
+    I(mu) = c0 (1-mu)^2 + c1 2 mu (1-mu) + c2 mu^2,
+makes the observed flux linear in c for fixed geometry: m = A(theta) c. The
+physical conditions (positive, darkening towards the limb; Kipping 2013) are
+exactly the cone 0 <= c0 <= c1 <= c2. With a flat prior on c over the cone,
+    log L(theta) = -chi2_min/2 - log det F / 2 + log P(c in cone)  (+ const),
+F = A^T W A, where P is a trivariate normal orthant probability (Genz transform
+on a fixed Gauss-Legendre grid; deterministic and smooth in theta).
+"""
+import math
+
+import numpy as np
+from numba import njit
+
+from . import _orbit
+from .terms import _occult_terms_cut
+
+# 12-point Gauss-Legendre with the endpoint-smoothing map u = t^2 (3 - 2t)
+_t, _w = np.polynomial.legendre.leggauss(12)
+_t = 0.5 * (_t + 1.0)
+GL_X = _t * _t * (3.0 - 2.0 * _t)
+GL_W = 0.5 * _w * 6.0 * _t * (1.0 - _t)
+DISK = np.array([1.0 / 6.0, 1.0 / 3.0, 1.0 / 2.0])
+
+# canonical parameter order of the kernels
+CANON = ("t0", "per", "rp", "a", "b", "ecc", "w")
+
+_SQRT2 = math.sqrt(2.0)
+_SQRT2PI = math.sqrt(2.0 * math.pi)
+_A = (-3.969683028665376e01, 2.209460984245205e02, -2.759285104469687e02,
+      1.383577518672690e02, -3.066479806614716e01, 2.506628277459239e00)
+_B = (-5.447609879822406e01, 1.615858368580409e02, -1.556989798598866e02,
+      6.680131188771972e01, -1.328068155288572e01)
+_C = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e00,
+      -2.549732539343734e00, 4.374664141464968e00, 2.938163982698783e00)
+_D = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e00,
+      3.754408661907416e00)
+
+
+@njit(cache=True, inline="always")
+def ndtr(x):
+    return 0.5 * math.erfc(-x / _SQRT2)
+
+
+@njit(cache=True)
+def ndtri(p):
+    """Inverse normal CDF: Acklam + one Halley step, lower tail (~1e-15)."""
+    if p <= 0.0:
+        return -np.inf
+    if p >= 1.0:
+        return np.inf
+    if p > 0.5:
+        return -ndtri(1.0 - p)
+    if p < 0.02425:
+        q = math.sqrt(-2.0 * math.log(p))
+        x = (((((_C[0] * q + _C[1]) * q + _C[2]) * q + _C[3]) * q + _C[4]) * q + _C[5]) / \
+            ((((_D[0] * q + _D[1]) * q + _D[2]) * q + _D[3]) * q + 1.0)
+    else:
+        q = p - 0.5
+        r = q * q
+        x = (((((_A[0] * r + _A[1]) * r + _A[2]) * r + _A[3]) * r + _A[4]) * r + _A[5]) * q / \
+            (((((_B[0] * r + _B[1]) * r + _B[2]) * r + _B[3]) * r + _B[4]) * r + 1.0)
+    e = ndtr(x) - p
+    u = e * _SQRT2PI * math.exp(0.5 * x * x)
+    return x - u / (1.0 + 0.5 * x * u)
+
+
+@njit(cache=True)
+def chol3(S, L):
+    for i in range(3):
+        for j in range(i + 1):
+            s = S[i, j]
+            for k in range(j):
+                s -= L[i, k] * L[j, k]
+            if i == j:
+                if s <= 0.0:
+                    return False
+                L[i, i] = math.sqrt(s)
+            else:
+                L[i, j] = s / L[j, j]
+    return True
+
+
+@njit(cache=True)
+def log_orthant_prob(m, S, gx, gw):
+    """log P(w > 0) for w ~ N(m, S), 3-d (Genz transform on a tensor GL grid).
+    Constraints with marginal z > 6 are dropped while P is not tiny."""
+    zs = np.empty(3)
+    for i in range(3):
+        zs[i] = m[i] / math.sqrt(S[i, i])
+    if zs.min() > 6.0:
+        return 0.0
+    o = np.argsort(zs)
+    mm = np.empty(3)
+    SS = np.empty((3, 3))
+    for i in range(3):
+        mm[i] = m[o[i]]
+        for j in range(3):
+            SS[i, j] = S[o[i], o[j]]
+    L = np.zeros((3, 3))
+    if not chol3(SS, L):
+        return -np.inf
+    x1 = mm[0] / L[0, 0]
+    if x1 < -37.0:
+        return -np.inf
+    e1 = ndtr(x1)
+    n = gx.shape[0]
+    zsorted = zs[o]
+    if x1 > -3.0 and zsorted[1] > 6.0:
+        return math.log(e1)
+    if x1 > -3.0 and zsorted[2] > 6.0:
+        acc = 0.0
+        for i in range(n):
+            z1 = -ndtri((1.0 - gx[i]) * e1)
+            acc += gw[i] * ndtr((mm[1] + L[1, 0] * z1) / L[1, 1])
+        return math.log(e1) + math.log(acc) if acc > 0.0 else -np.inf
+    acc = 0.0
+    for i in range(n):
+        z1 = -ndtri((1.0 - gx[i]) * e1)
+        e2 = ndtr((mm[1] + L[1, 0] * z1) / L[1, 1])
+        if e2 <= 0.0:
+            continue
+        inner = 0.0
+        for j in range(n):
+            p = (1.0 - gx[j]) * e2
+            if p < 1e-300:
+                p = 1e-300
+            z2 = -ndtri(p)
+            inner += gw[j] * ndtr((mm[2] + L[2, 0] * z1 + L[2, 1] * z2) / L[2, 2])
+        acc += gw[i] * e2 * inner
+    if acc <= 0.0:
+        return -np.inf
+    return math.log(e1) + math.log(acc)
+
+
+@njit(cache=True)
+def inv3_chol(F, L):
+    """Cholesky (in L) and inverse of a 3x3 SPD matrix: (ok, logdet, Finv)."""
+    Finv = np.zeros((3, 3))
+    if not chol3(F, L):
+        return False, 0.0, Finv
+    logdet = 2.0 * (math.log(L[0, 0]) + math.log(L[1, 1]) + math.log(L[2, 2]))
+    Li = np.zeros((3, 3))
+    for i in range(3):
+        Li[i, i] = 1.0 / L[i, i]
+        for j in range(i):
+            s = 0.0
+            for k in range(j, i):
+                s -= L[i, k] * Li[k, j]
+            Li[i, j] = s / L[i, i]
+    for i in range(3):
+        for j in range(i + 1):
+            acc = 0.0
+            for k in range(i, 3):
+                acc += Li[k, i] * Li[k, j]
+            Finv[i, j] = acc
+            Finv[j, i] = acc
+    return True, logdet, Finv
+
+
+@njit(cache=True, inline="always")
+def cone_ms(c0, c1, c2, Fi):
+    """m = D c, S = D Fi D^T for the cone 0 <= c0 <= c1 <= c2."""
+    m = np.empty(3)
+    m[0], m[1], m[2] = c0, c1 - c0, c2 - c1
+    S = np.empty((3, 3))
+    S[0, 0] = Fi[0, 0]
+    S[0, 1] = S[1, 0] = Fi[0, 1] - Fi[0, 0]
+    S[0, 2] = S[2, 0] = Fi[0, 2] - Fi[0, 1]
+    S[1, 1] = Fi[1, 1] - 2.0 * Fi[0, 1] + Fi[0, 0]
+    S[1, 2] = S[2, 1] = Fi[1, 2] - Fi[1, 1] - Fi[0, 2] + Fi[0, 1]
+    S[2, 2] = Fi[2, 2] - 2.0 * Fi[1, 2] + Fi[1, 1]
+    return m, S
+
+
+@njit(cache=True)
+def normal_eqs(A, y):
+    """A^T A and A^T y (A, y already noise-weighted)."""
+    F = np.zeros((3, 3))
+    r = np.zeros(3)
+    f00 = f10 = f11 = f20 = f21 = f22 = 0.0
+    r0 = r1 = r2 = 0.0
+    for t in range(A.shape[0]):
+        a0, a1, a2, yt = A[t, 0], A[t, 1], A[t, 2], y[t]
+        f00 += a0 * a0
+        f10 += a1 * a0
+        f11 += a1 * a1
+        f20 += a2 * a0
+        f21 += a2 * a1
+        f22 += a2 * a2
+        r0 += a0 * yt
+        r1 += a1 * yt
+        r2 += a2 * yt
+    F[0, 0], F[1, 1], F[2, 2] = f00, f11, f22
+    F[1, 0] = F[0, 1] = f10
+    F[2, 0] = F[0, 2] = f20
+    F[2, 1] = F[1, 2] = f21
+    r[0], r[1], r[2] = r0, r1, r2
+    return F, r
+
+
+@njit(cache=True)
+def marg_loglike(A, y):
+    """Marginal log-likelihood for weighted A, y (unit noise)."""
+    F, r = normal_eqs(A, y)
+    L = np.zeros((3, 3))
+    ok, logdet, Fi = inv3_chol(F, L)
+    if not ok:
+        return -np.inf
+    c0 = Fi[0, 0] * r[0] + Fi[0, 1] * r[1] + Fi[0, 2] * r[2]
+    c1 = Fi[1, 0] * r[0] + Fi[1, 1] * r[1] + Fi[1, 2] * r[2]
+    c2 = Fi[2, 0] * r[0] + Fi[2, 1] * r[1] + Fi[2, 2] * r[2]
+    chi2 = 0.0
+    for t in range(A.shape[0]):
+        d = y[t] - A[t, 0] * c0 - A[t, 1] * c1 - A[t, 2] * c2
+        chi2 += d * d
+    m, S = cone_ms(c0, c1, c2, Fi)
+    return -0.5 * chi2 - 0.5 * logdet + log_orthant_prob(m, S, GL_X, GL_W)
+
+
+@njit(cache=True)
+def _post_with_ldprior(F, r, mb, Pb):
+    """Combine the Gaussian likelihood in c (precision F, F chat = r) with a
+    Gaussian prior on beta(c) = (c0/c2, c1/c2) ~ N(mb, Pb^-1) (times 1/c2^2, i.e.
+    N(beta) dbeta x flat c2). beta(c) is linearised around the posterior mode
+    (Gauss-Newton, 4 iterations), so the prior becomes a rank-2 Gaussian in c;
+    the residual error is second order in the relative spread of c2 (~1e-4 nats).
+    Returns (ok, c*, F', r', extra) with the marginal
+      -chi2_min/2 + extra - log det F'/2 + log P(cone | c*, F'^-1)."""
+    L = np.zeros((3, 3))
+    ok, ld, Fi = inv3_chol(F, L)
+    chat = Fi @ r
+    if not ok or not chat[2] > 0.0:
+        return False, chat, F, r, 0.0
+    # Gauss-Newton in the small offset delta = c - chat (no large cancelling terms:
+    # chat^T F chat ~ 1e10 for typical light curves, cond(F) ~ 1e6)
+    delta = np.zeros(3)
+    c = chat.copy()
+    Fp = F.copy()
+    for _ in range(5):
+        c2 = c[2]
+        if not c2 > 0.0:
+            return False, chat, F, r, 0.0
+        J = np.zeros((2, 3))
+        J[0, 0] = 1.0 / c2
+        J[0, 2] = -c[0] / (c2 * c2)
+        J[1, 1] = 1.0 / c2
+        J[1, 2] = -c[1] / (c2 * c2)
+        d = np.array([c[0] / c2, c[1] / c2]) - mb          # exact prior residual at c
+        JtP = J.T @ Pb
+        Fp = F + JtP @ J
+        # minimise (delta')^T F delta' + (d + J (delta' - delta))^T Pb (...) over delta'
+        g = JtP @ (d - J @ delta)
+        ok2, ldp, Fpi = inv3_chol(Fp, L)
+        if not ok2:
+            return False, chat, F, r, 0.0
+        delta = -(Fpi @ g)
+        c = chat + delta
+    c2 = c[2]
+    if not c2 > 0.0:
+        return False, chat, F, r, 0.0
+    d = np.array([c[0] / c2, c[1] / c2]) - mb
+    q = delta @ (F @ delta) + d @ (Pb @ d)
+    rp_ = Fp @ c
+    logdetPb = math.log(Pb[0, 0] * Pb[1, 1] - Pb[0, 1] * Pb[1, 0])
+    return True, c, Fp, rp_, -0.5 * q + 0.5 * logdetPb - 2.0 * math.log(c2)
+
+
+@njit(cache=True)
+def marg_loglike_ldprior(A, y, mb, Pb):
+    """marg_loglike with an (exact) Gaussian prior on (beta0, beta1)."""
+    F, r = normal_eqs(A, y)
+    ok, cs, Fp, rp_, extra = _post_with_ldprior(F, r, mb, Pb)
+    if not ok:
+        return -np.inf
+    L = np.zeros((3, 3))
+    ok2, logdet, Fpi = inv3_chol(Fp, L)
+    Fi_ok, _, Fi = inv3_chol(F, L)
+    chat = Fi @ r
+    chi2 = 0.0
+    for t in range(A.shape[0]):
+        d = y[t] - A[t, 0] * chat[0] - A[t, 1] * chat[1] - A[t, 2] * chat[2]
+        chi2 += d * d
+    m, S = cone_ms(cs[0], cs[1], cs[2], Fpi)
+    return -0.5 * chi2 + extra - 0.5 * logdet + log_orthant_prob(m, S, GL_X, GL_W)
+
+
+@njit(cache=True)
+def bernstein_cols(T):
+    """n x 3 Bernstein design matrix from occult_terms output (lex, ldx, edx)."""
+    n = T.shape[1]
+    A = np.empty((n, 3))
+    for i in range(n):
+        lex, ldx, edx = T[0, i], T[1, i], T[2, i]
+        A[i, 0] = 1.0 / 6.0 - (2.0 * lex - 2.0 * ldx - edx)
+        A[i, 1] = 1.0 / 3.0 - 2.0 * (ldx - lex + edx)
+        A[i, 2] = 0.5 - (lex - edx)
+    return A
+
+
+@njit(cache=True)
+def design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt):
+    """Noise-weighted Bernstein design matrix (n x 3): orbit -> occult_terms ->
+    columns -> exposure average over ksup sub-exposures -> rows times wts."""
+    nt = tt.shape[0]
+    z = np.empty(nt)
+    ab = abs(b)
+    inc = math.acos(min(ab / a, 1.0))
+    if ecc < 1.0e-5:
+        _orbit._rsky_circular(tt, t0, per, a, math.sin(inc), 0.25, 1, z)
+    else:
+        _orbit._rsky_eccentric(tt, t0, per, a, inc, ecc, w, 1, z)
+    Af = bernstein_cols(_occult_terms_cut(z, abs(rp), tol, A_half, Gt))
+    n = nt // ksup
+    A = np.zeros((n, 3))
+    inv = 1.0 / ksup
+    for i in range(n):
+        for s in range(ksup):
+            r = i * ksup + s
+            A[i, 0] += Af[r, 0]
+            A[i, 1] += Af[r, 1]
+            A[i, 2] += Af[r, 2]
+        f = wts[i] * inv
+        A[i, 0] *= f
+        A[i, 1] *= f
+        A[i, 2] *= f
+    return A
+
+
+@njit(cache=True, inline="always")
+def a_logjac_from_T14(T14, per, rp, b):
+    """a/R* of a circular orbit with total duration T14 and log|da/dT14|; (nan, 0) if invalid."""
+    Q = (1.0 + rp) ** 2 - b * b
+    x = math.pi * T14 / per
+    if not (Q > 0.0 and 0.0 < x < 0.5 * math.pi):
+        return math.nan, 0.0
+    s = math.sin(x)
+    a = math.sqrt(b * b + Q / (s * s))
+    return a, math.log(Q * math.cos(x) * math.pi / (a * s * s * s * per))
+
+
+@njit(cache=True)
+def to_canonical(X, idx, fixed, t14):
+    """Rows of free parameters (internal coordinates) -> canonical rows
+    (t0, per, rp, a, b, ecc, w_rad) and log-Jacobian. t14: the 'a' slot holds T14."""
+    n = X.shape[0]
+    P = np.empty((n, 7))
+    lj = np.zeros(n)
+    for i in range(n):
+        for k in range(7):
+            P[i, k] = fixed[k]
+        for j in range(idx.shape[0]):
+            P[i, idx[j]] = X[i, j]
+        if t14:
+            a, l = a_logjac_from_T14(P[i, 3], P[i, 1], P[i, 2], abs(P[i, 4]))
+            P[i, 3] = a
+            lj[i] = l
+    return P, lj
+
+
+@njit(cache=True)
+def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
+                  has_ldp=False, mb=np.zeros(2), Pb=np.eye(2)):
+    """log-likelihood + uniform box prior (lo < canonical < hi; 0 <= b < 1 + rp;
+    0 <= ecc < 1) + log-Jacobian of the T14 map, for every row of X."""
+    P, lj = to_canonical(X, idx, fixed, t14)
+    n = X.shape[0]
+    out = np.empty(n)
+    for i in range(n):
+        ok = True
+        for k in range(7):
+            v = P[i, k]
+            if not (v == v and lo[k] < v < hi[k]):
+                ok = False
+        t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
+        if not (ok and 0.0 <= b < 1.0 + rp and 0.0 <= ecc < 1.0 and per > 0.0 and rp > 0.0
+                and a > 1.0):
+            out[i] = -np.inf
+            continue
+        A = design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
+        if has_ldp:
+            out[i] = marg_loglike_ldprior(A, yw, mb, Pb) + lj[i]
+        else:
+            out[i] = marg_loglike(A, yw) + lj[i]
+    return out
+
+
+@njit(cache=True)
+def c_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp=False, mb=np.zeros(2),
+                    Pb=np.eye(2)):
+    """For canonical rows P: mean chat (n x 3) and covariance Fi (n x 3 x 3) of
+    the (untruncated) Gaussian of c given the geometry."""
+    n = P.shape[0]
+    C = np.empty((n, 3))
+    S = np.empty((n, 3, 3))
+    L = np.zeros((3, 3))
+    for i in range(n):
+        A = design(tt, ksup, wts, P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5],
+                   P[i, 6], tol, A_half, Gt)
+        F, r = normal_eqs(A, yw)
+        if has_ldp:
+            okp, cs, Fp, rp_, _ = _post_with_ldprior(F, r, mb, Pb)
+            if okp:
+                F, r = Fp, rp_
+        ok, ld, Fi = inv3_chol(F, L)
+        for k in range(3):
+            C[i, k] = Fi[k, 0] * r[0] + Fi[k, 1] * r[1] + Fi[k, 2] * r[2]
+            for j in range(3):
+                S[i, k, j] = Fi[k, j]
+    return C, S
