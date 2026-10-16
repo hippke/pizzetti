@@ -102,16 +102,69 @@ def rsky(t, tc, per, a, inc, ecc, omega, transittype):
         tp = tc - per * (pi / 2.0 - omega) / 2.0 / pi
         _rsky_circular(t, tp, per, a, si, omega / (2.0 * pi), transittype, d)
         return d
-    f = _true_anomaly(t, tc, per, ecc, omega)
+    _rsky_eccentric(t, tc, per, a, inc, ecc, omega, transittype, d)
+    return d
+
+
+@njit(cache=True)
+def _rsky_eccentric(t, tc, per, a, inc, ecc, omega, transittype, d):
+    """Eccentric orbit, same conventions as the former f-based loop, but
+
+    * Kepler's equation is solved by Newton warm-started from the previous
+      sample (second-order predictor in the mean-anomaly step), stopping when the
+      quadratic-convergence bound e / (2 (1 - e)) dE^2 < 1e-15 or
+      |dE| < 1e-15 max(1, |E|); a sample whose residual is not < 1e-12 is redone
+      with the cold-start solver ``eccentric_anomaly``;
+    * the separation is computed from E without tan/arctan, in the
+      cancellation-free form z^2 = (r cos(f+w))^2 + (r sin(f+w) cos i)^2.
+    """
+    n = t.shape[0]
+    si = np.sin(inc)
+    ci = np.cos(inc)
+    sq1e2 = np.sqrt(1.0 - ecc * ecc)
+    f0 = pi / 2.0 - omega
+    E0 = 2.0 * np.arctan(np.sqrt((1.0 - ecc) / (1.0 + ecc)) * np.tan(f0 / 2.0))
+    tp = tc - per * (E0 - ecc * np.sin(E0)) / 2.0 / pi
+    nm = 2.0 * pi / per
+    twopi = 2.0 * pi
+    cw, sw = np.cos(omega), np.sin(omega)
+    C = ecc / (2.0 * (1.0 - ecc))
+    Mr_prev = -10.0
+    E = 0.0
+    sE = 0.0
+    cE = 1.0
     for i in range(n):
-        s = np.sin(f[i] + omega)
-        if transittype == 1 and s * si <= 0.0:
-            d[i] = BIGD
-        elif transittype == 2 and s * si >= 0.0:
+        M = nm * (t[i] - tp)
+        Mr = M - twopi * np.floor(M / twopi)
+        dM = Mr - Mr_prev
+        if abs(dM) < 0.2:
+            g = 1.0 / (1.0 - ecc * cE)
+            E = E + dM * g - 0.5 * ecc * sE * dM * dM * g * g * g
+        else:
+            E = Mr + ecc * np.sin(Mr) if ecc < 0.8 else pi
+        for _ in range(50):
+            s_ = np.sin(E)
+            c_ = np.cos(E)
+            dE = (E - ecc * s_ - Mr) / (1.0 - ecc * c_)
+            E -= dE
+            sE = s_ - c_ * dE
+            cE = c_ + s_ * dE
+            if C * dE * dE < 1e-15 or abs(dE) < 1e-15 * max(1.0, abs(E)):
+                break
+        if not abs(E - ecc * np.sin(E) - Mr) < 1e-12:        # safeguard: cold restart
+            E = eccentric_anomaly(Mr, ecc)
+            sE = np.sin(E)
+            cE = np.cos(E)
+        Mr_prev = Mr
+        rc = a * (cE - ecc)                      # r cos f
+        rs = a * sq1e2 * sE                      # r sin f
+        rsfw = rs * cw + rc * sw                 # r sin(f + w)
+        rcfw = rc * cw - rs * sw                 # r cos(f + w)
+        x = rsfw * si
+        if (transittype == 1 and x <= 0.0) or (transittype == 2 and x >= 0.0):
             d[i] = BIGD
         else:
-            d[i] = a * (1.0 - ecc * ecc) / (1.0 + ecc * np.cos(f[i])) * np.sqrt(1.0 - s * s * si * si)
-    return d
+            d[i] = np.sqrt(rcfw * rcfw + (rsfw * ci) ** 2)
 
 
 @njit(cache=True)
