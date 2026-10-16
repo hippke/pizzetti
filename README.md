@@ -34,8 +34,10 @@ For an Earth-sized planet crossing a Sun-like star, the series covers **96–98 
 in-transit points (central transit: 98 %; averaged over impact parameters: 96 %). The few points that touch the stellar limb use an exact, vectorised Mandel & Agol solver
 (uniform, linear and quadratic laws) or, for the other laws, power series about first and second contact with
 coefficients computed once per light curve (accurate to ~1e-15, 15-22x faster per sample than quadrature, radius
-ratios up to ~0.2). Short light curves and larger occulters use a Green's-theorem quadrature with a
-Gauss–Jacobi rule for the endpoint singularity at the limb (~1e-16).
+ratios up to ~0.2). Building these expansions costs about 10 µs per exponent and series term,
+so they are used only when enough samples lie near the limb (e.g. ≳ 430 for rp = 0.1). Light
+curves with fewer limb samples, and larger occulters, use a Green's-theorem quadrature with a
+Gauss–Jacobi rule for the endpoint singularity at the limb (~1e-16, ~1 µs per limb sample and non-integer exponent).
 
 ## Proven correctness
 
@@ -77,6 +79,87 @@ Notebooks: [drop-in replacement in an emcee fit](examples/01_batman_dropin_emcee
 [power-2 super-Earth](examples/02_power2_superearth.ipynb).
 
 ![corner plots](examples/inference/results/corner_kepler_paper.png)
+
+## Limb darkening integrated out: `MarginalTransitModel`
+
+`MarginalTransitModel` fits a transit or secondary eclipse with the limb darkening and the
+out-of-transit flux **integrated out analytically**. The sampler only explores the geometry
+(t0, per, rp, a, b, optionally ecc, w), and the limb darkening is drawn afterwards for every
+posterior sample.
+
+**The Bernstein transform.** Write the unnormalised quadratic intensity profile in the degree-2
+Bernstein basis of μ:
+
+    I(μ) = c0 (1−μ)² + c1 · 2μ(1−μ) + c2 μ²
+
+Three facts follow:
+
+- **The physical region is a cone.** Kipping's (2013) conditions for a positive profile that
+  darkens towards the limb become `0 ≤ c0 ≤ c1 ≤ c2`. His triangle sampling coordinates (q1, q2)
+  turn out to be Bernstein coefficients, so a flat prior on c over the cone is Kipping's prior
+  up to a known weight.
+- **The flux is linear in c**, baseline included: `m = A(θ) c`, where A holds three basis light
+  curves for the geometry θ. pizzetti computes them in one pass (`occult_terms`).
+- **The Gaussian integral over the cone is closed-form** except for the probability that a
+  trivariate normal lies in an orthant. That term is evaluated deterministically (Genz), so the
+  likelihood is smooth in θ:
+
+      log L(θ) = −½ χ²_min(θ) − ½ log det F(θ) + log P(c ∈ cone) + const,   F = AᵀA/σ²
+
+**The sampler.** Without the limb darkening and baseline, the posterior has 4–5 dimensions and is
+close to Gaussian. `model.fit()` uses that with **profile importance sampling**:
+- it finds the maximum and the profile shape;
+- it draws from a heavy-tailed fit to them;
+- it corrects the draws with exact importance weights (Pareto-smoothed, with k̂ and ESS
+  diagnostics);
+- it falls back to emcee automatically when the diagnostics fail.
+
+There is no burn-in and no autocorrelation.
+
+```python
+model = pizzetti.MarginalTransitModel(params, t, y, yerr, free=["t0", "per", "rp", "a", "b"])
+result = model.fit()                      # profile IS, emcee fallback
+print(result.summary())                   # rp, a, b, ... and the limb-darkening coefficients
+result.corner()                           # weighted draws
+
+sampler = model.EnsembleSampler(32)       # or emcee directly, on the 5-D geometry only
+```
+
+Example 01's data, each method run to convergence (50 τ), on a loaded machine
+([notebook 03](examples/03_marginal_emcee_vs_is.ipynb)). The posteriors agree within 0.11 σ.
+
+| | likelihood evaluations | wall time | effective samples / s |
+|---|---|---|---|
+| `TransitModel` + emcee (7-D) | 752 k | 39 s | 37 |
+| `MarginalTransitModel` + emcee (5-D) | 336 k | 10.6 s | 248 (6.7×) |
+| `MarginalTransitModel.fit()` | 17.8 k | 1.0 s | 5830 (157×) |
+
+**Other laws.** `params.limb_dark` selects the law, each with its own physical region:
+
+| law | physical region |
+|---|---|
+| uniform, linear | 1- and 2-D cones |
+| quadratic, square-root | the cone above (square-root: quadratic in √μ) |
+| logarithmic | a cone; the μ ln μ basis is computed here (pizzetti's `occult` has no logarithmic law) |
+| power-2 | a cone at fixed α; α may also be free |
+| nonlinear | a curved region, handled with an exact physicality test and importance weights |
+
+**Secondary eclipses:** use `transittype="secondary"`. They are marginalised over the planet flux
+fp ≥ 0 and the baseline.
+
+**Priors:** `ld_prior="physical"` (default) is flat over the law's physical region. `"flat"`
+drops the constraint. A Gaussian prior on (u1, u2) is exact for the quadratic law, and any prior
+can be passed as a callable.
+
+**Extras:** supersampling and per-point errors work as in `TransitModel`. emcee and scipy are
+optional: `pip install pizzetti[fit]`.
+
+**Cost of one likelihood evaluation** (n = 1316): quadratic 15–20 µs (fused numba path),
+uniform/linear 40–60 µs, square-root and power-2 ~0.3 ms, nonlinear ~0.6 ms,
+logarithmic ~1.3 ms. The non-quadratic laws are limited by their limb samples (see
+[performance](docs/performance.md)).
+
+Not supported yet: inverse transits (rp < 0) and the exponential law.
 
 ## Speed against batman
 
@@ -158,7 +241,8 @@ z_c = pizzetti.series_cut(0.1, "quadratic", [0.4, 0.25])   # series used for z <
 - Circular and eccentric orbits, supersampling (`supersample_factor`, `exp_time`), secondary
   eclipses (`transittype="secondary"`, `fp`, `t_secondary`) and inverse transits (`rp < 0`).
 - Not supported: the `logarithmic`, `exponential` and `custom` laws. They are not sums of powers
-  of μ, so `pizzetti` raises `NotImplementedError` for them.
+  of μ, so `pizzetti` raises `NotImplementedError` for them. (`MarginalTransitModel` does fit the
+  logarithmic law; it builds the μ ln μ term from power-law fluxes.)
 
 ## Examples and inference
 

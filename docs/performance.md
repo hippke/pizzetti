@@ -62,3 +62,23 @@ faster for small planets when few points are in transit.
 - Points near the limb cost about 10 ns with the exact solver (quadratic family) and 0.6–0.7 µs
   with the quadrature (other laws).
 - Circular orbits use a branch-free sine polynomial in turns, which vectorises.
+
+## Marginal likelihood (`MarginalTransitModel`)
+
+One likelihood evaluation, n = 1316, rp = 0.1, 196 samples near the limb (single thread, loaded
+machine, so the numbers are approximate):
+
+| law | per evaluation | where the time goes |
+|---|---|---|
+| quadratic | 15–20 µs | fused numba path: orbit 4 µs, `occult_terms` 7 µs, 3×3 algebra |
+| uniform | ~40 µs | general path: Python overhead (~20 µs) |
+| linear | ~60 µs | general path: Python overhead (~30 µs) |
+| square-root | ~330 µs | one μ^½ flux: ~22 µs call overhead + ~1.1 µs per limb sample (quadrature) |
+| power-2 | ~370 µs | as square-root, plus `exp`/`log` per interior sample |
+| nonlinear | ~610 µs | two non-integer exponents (μ^½, μ^{3/2}) |
+| logarithmic | ~1270 µs | μ ln μ from four power-law fluxes (5-point difference in the exponent) |
+
+For the non-quadratic laws the samples near the limb dominate. With fewer than about
+4.5 × (number of series terms) limb samples, i.e. ≲ 430 for rp = 0.1, `occult` uses the
+quadrature rather than the contact expansions, because building the expansions for a new rp
+costs about as much as the quadrature (~180 µs here).

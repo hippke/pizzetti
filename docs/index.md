@@ -14,6 +14,10 @@ or high-order quadrature solution.
 - **Accurate:** verified against a 40-digit reference to 2 × 10⁻⁹ for every supported law,
   including the contact points.
 - **Compatible:** the same `TransitParams` / `TransitModel` interface as batman.
+- **Limb darkening integrated out:** `MarginalTransitModel` marginalises the limb darkening and
+  the baseline analytically over their physical region (a cone in the Bernstein basis) and
+  samples the geometry by profile importance sampling, typically 40× fewer likelihood
+  evaluations than emcee on the full model ([details](marginal.md)).
 
 ```python
 import pizzetti as batman   # existing batman code runs unchanged
@@ -26,6 +30,7 @@ installation
 quickstart
 batman
 method
+marginal
 accuracy
 performance
 api

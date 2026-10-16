@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- `MarginalTransitModel`: transit and secondary-eclipse likelihood with the limb darkening and
+  the baseline flux integrated out analytically. In the Bernstein basis the physical
+  limb-darkening region is a cone (quadratic law: 0 <= c0 <= c1 <= c2, Kipping 2013), and the
+  Gaussian integral over it is closed-form up to a deterministic orthant probability.
+  - Laws: uniform, linear, quadratic, square-root, logarithmic (μ ln μ basis from power-law
+    fluxes), power-2 (α fixed or free), nonlinear (Bernstein basis in √μ, exact physical prior
+    by importance weights).
+  - `ld_prior`: "physical" (default), "flat", Gaussian (quadratic law), or a callable.
+  - `fit()`: profile importance sampling with PSIS diagnostics, falling back to emcee; it
+    returns emcee-like flat samples plus the weighted draws.
+  - `EnsembleSampler`: an emcee subclass that samples only the geometry.
+  - On example 01: 42× fewer likelihood evaluations than `TransitModel` + emcee, with the same
+    posterior.
+  - New optional extra: `pip install pizzetti[fit]` (emcee, scipy).
+- `occult_terms` / `quadratic_from_terms`: the three quadratic-family basis fluxes in one pass.
+- Eccentric orbits: faster `rsky`.
+- Example 03: marginal model with emcee and with `fit()`, compared with `TransitModel` and batman.
+
 ## 0.2.1
 
 - Pizzetti.jl: `evaluate!` skips runs of 64-sample blocks that lie entirely off the star

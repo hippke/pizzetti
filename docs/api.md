@@ -12,4 +12,14 @@
 .. autofunction:: pizzetti.series_cut
 
 .. autodata:: pizzetti.SERIES_TOL
+
+.. autofunction:: pizzetti.occult_terms
+
+.. autofunction:: pizzetti.quadratic_from_terms
+
+.. autoclass:: pizzetti.MarginalTransitModel
+   :members: fit, log_prob, expand, EnsembleSampler
+
+.. autoclass:: pizzetti.FitResult
+   :members: summary, corner
 ```

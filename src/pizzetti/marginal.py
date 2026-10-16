@@ -18,11 +18,20 @@ Layer 2, one call (profile importance sampling with emcee fallback)::
     result = model.fit()
     result.samples, result.labels, result.summary(), result.diagnostics
 
+Laws: uniform, linear, quadratic, square-root, logarithmic, power-2 (alpha fixed
+or free) and nonlinear, plus secondary eclipses (``transittype="secondary"``).
+The coefficients are linear in the flux; in a Bernstein basis the physical region
+(positive, limb-darkened profile) is a cone, and the Gaussian integral over it is
+closed-form up to an orthant probability (quadratic: 0 <= c0 <= c1 <= c2,
+Kipping 2013). The nonlinear law's region is curved: it is applied exactly by
+importance weights when the coefficients are drawn.
+
 Priors: uniform within ``bounds`` on the free parameters (plus 0 <= b < 1 + rp,
 0 <= ecc < 1), an optional vectorised ``log_prior`` callback on the physical
-parameters, and Kipping's uniform prior on (q1, q2) with a flat prior on the
-baseline flux f0. ``ld_prior`` adds a prior on (u1, u2): Gaussian priors
-exactly (inside the likelihood), arbitrary callables by importance reweighting.
+parameters, and ``ld_prior``: "physical" (default; flat over the law's physical
+region x flat baseline f0 -- Kipping's (q1, q2) prior for the quadratic law),
+"flat" (no constraint), a Gaussian dict (quadratic law, exact) or a callable
+(importance reweighting).
 
 emcee and scipy are only needed for sampling (``pip install pizzetti[fit]``).
 """
@@ -619,6 +628,7 @@ class FitResult:
         self.diagnostics = diagnostics
 
     def summary(self):
+        """Table of median and 16th/84th-percentile offsets for every column."""
         q = np.percentile(self.samples, [16, 50, 84], axis=0)
         lines = [f"{'':5s} {'median':>14s} {'-1sigma':>11s} {'+1sigma':>11s}"]
         for j, name in enumerate(self.labels):
@@ -672,7 +682,8 @@ def _sampler_class():
 
         def get_chain(self, expand=True, ld="q", seed=None, **kwargs):
             """As emcee's get_chain. expand=True (default): physical parameters +
-            LD + f0, shape (..., ndim + 3). With flat=True the LD prior weights are
+            limb-darkening (or eclipse) coefficients + f0; the column names are
+            in ``self.labels`` after the call. With flat=True the LD prior weights are
             applied by resampling (equal-weight rows); with flat=False the rows keep
             the chain structure and are unweighted (weights: get_ld_weights)."""
             ch = super().get_chain(**kwargs)
