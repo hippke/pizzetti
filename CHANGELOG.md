@@ -38,6 +38,8 @@
 - `occult_terms` / `quadratic_from_terms`: the three quadratic-family basis fluxes in one pass.
 - Eccentric orbits: faster `rsky`.
 - Example 03: marginal model with emcee and with `fit()`, compared with `TransitModel` and batman.
+- Example 04: tutorial that fits one light curve with `fit()` for every limb-darkening law and compares the geometry, the
+  intensity profiles and the residuals. Example 03's scope note now lists all supported laws.
 
 ## 0.2.1
 
