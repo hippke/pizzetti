@@ -78,6 +78,16 @@ def _gibbs_cone_one(mu, cov, rng_u, sweeps):
     return c
 
 
+def systematic_resample(w, n, rng):
+    """Indices of n equal-weight draws from weights w (systematic resampling:
+    each index appears floor(n w_i) or ceil(n w_i) times -- no extra Monte Carlo
+    duplication, unlike multinomial resampling with replacement)."""
+    cw = np.cumsum(w)
+    cw /= cw[-1]
+    u = (rng.random() + np.arange(n)) / n
+    return np.minimum(np.searchsorted(cw, u), len(w) - 1)
+
+
 def _draw_c(C, S, rng):
     """One truncated-Gaussian draw of c per row (vectorised rejection, Gibbs fallback)."""
     n = C.shape[0]
@@ -320,7 +330,7 @@ class MarginalTransitModel:
         labels = self.labels + ldl + ["f0"]
         self.last_ld_ess = float(1.0 / np.sum(w ** 2))
         if resample:
-            i = rng.choice(len(w), size=len(w), p=w)
+            i = systematic_resample(w, len(w), rng)
             return out[i], labels, np.full(len(w), 1.0 / len(w))
         return out, labels, w
 
@@ -405,13 +415,15 @@ class MarginalTransitModel:
             diag.update(method="emcee" if method == "emcee" else "emcee (fallback)",
                         converged=conv, steps=int(sampler.iteration), tau=tau.tolist())
         diag["n_eval"] = int(self.n_eval)
-        # LD + baseline for the weighted geometry samples; combine weights, resample
-        m = min(len(w), max(n, 2000))
-        idx = rng.choice(len(w), size=m, p=w)
-        S_, labels, ws = self.expand(Xw[idx], ld=ld, rng=rng, resample=False)
-        diag["ld_reweight_ess"] = float(1.0 / np.sum(ws ** 2))
-        j = rng.choice(m, size=m, p=ws)
-        return FitResult(S_[j], labels, weighted=(S_, ws), diagnostics=diag)
+        # LD + baseline for every weighted geometry draw; one combined weight, then a
+        # single systematic resampling to equal weight (no double resampling)
+        S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
+        diag["ld_reweight_ess"] = float(1.0 / np.sum(wl ** 2))
+        wc = w * wl
+        wc /= wc.sum()
+        diag["ess_total"] = float(1.0 / np.sum(wc ** 2))
+        j = systematic_resample(wc, len(wc), rng)
+        return FitResult(S_[j], labels, weighted=(S_, wc), diagnostics=diag)
 
     def fixed_physical_free(self):
         X = self.fixed[self.idx].copy()[None, :]
@@ -429,7 +441,9 @@ class MarginalTransitModel:
 
 class FitResult:
     """Result of ``MarginalTransitModel.fit``: equal-weight ``samples`` (emcee-like
-    flat array) with ``labels``; ``weighted`` = (samples, weights) before resampling."""
+    flat array, systematic resampling) with ``labels``; ``weighted_samples`` and
+    ``weights`` are the exact weighted draws (preferred for histograms / corner plots:
+    resampled draws repeat values in proportion to their weights)."""
 
     def __init__(self, samples, labels, weighted, diagnostics):
         self.samples = samples
@@ -445,8 +459,9 @@ class FitResult:
         return "\n".join(lines)
 
     def corner(self, **kwargs):
+        """Corner plot of the weighted draws (no resampling duplicates)."""
         import corner
-        return corner.corner(self.samples, labels=self.labels, **kwargs)
+        return corner.corner(self.weighted_samples, weights=self.weights, labels=self.labels, **kwargs)
 
 
 _SAMPLER_CLASS = None
