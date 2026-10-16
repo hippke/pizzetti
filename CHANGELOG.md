@@ -26,6 +26,15 @@
   - Accuracy: ≤ 1e-12 against quadrature. The log-likelihood is unchanged within 3e-8 nats;
     at α = 1 exactly, the new column is more accurate than the old `occult_terms`-based one.
   - One-call fits on 7 transits now take 0.4–1.7 s for every law.
+- Nonlinear law, physical prior: the probability of the curved physical region is now part of
+  the likelihood. It is computed by line integration with fixed quasi-random points
+  (`_physnl`, ~0.003 nats, smooth in the geometry), and the coefficients are drawn by
+  rejection. Profile importance sampling now works at low S/N (300 ppm, 3 transits), where the
+  previous scheme (unconstrained likelihood, physicality applied afterwards) left a degenerate
+  geometry posterior.
+- Profile importance sampling: adaptive refinement of the b-grid (`refine_tol`,
+  `max_refine`). On 8 Kepler Q3 light curves × 3 seeds: 24/24 successful (k̂ ≤ 0.46), against
+  2 failures before (Kepler-2 LC, k̂ 0.70 / 1.03).
 - `occult_terms` / `quadratic_from_terms`: the three quadratic-family basis fluxes in one pass.
 - Eccentric orbits: faster `rsky`.
 - Example 03: marginal model with emcee and with `fit()`, compared with `TransitModel` and batman.

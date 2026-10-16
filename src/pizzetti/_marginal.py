@@ -17,6 +17,7 @@ from numba import njit
 
 from . import _orbit
 from ._powbasis import alpha_column, columns_kernel
+from ._physnl import log_prob_physical_line
 from .terms import _occult_terms_cut
 
 # 12-point Gauss-Legendre with the endpoint-smoothing map u = t^2 (3 - 2t)
@@ -727,7 +728,7 @@ def t0_from_tsec(tsec, per, ecc, w):
 def gen_batch(P, lj, al, check, lo, hi, has_alpha, alo, ahi, rowpan, tt, ksup, wts, yw, ttype,
               tol, A_half, Gt, dvec, W, gams, sertabs, ptol, CHEB, LENS, VALID, YCS, PLO, PHI,
               ju, jw, has, D, cone, moments, amode, rowpan2, CH2, LE2, VA2, YC2, PL2, PH2, AL2,
-              AH2, NR2):
+              AH2, NR2, curved, Z4, B3, Zbig):
     """amode: power-2 law with free alpha (al), 2-D panels (rowpan2 into CH2 ...).
     For every canonical row of P (log-Jacobian lj, exponent al, panel index rowpan
     into the stacked panels): the marginal log-likelihood + lj, -inf outside the box
@@ -775,6 +776,10 @@ def gen_batch(P, lj, al, check, lo, hi, has_alpha, alo, ahi, rowpan, tt, ksup, w
             okc, c, Fi, ld_, ch_ = _ne_solve(A, yw)
             C[i] = c
             S[i] = Fi
+        elif curved:
+            okc, c, Fi, ld_, ch_ = _ne_solve(A, yw)
+            if okc:
+                out[i] = -0.5 * ch_ - 0.5 * ld_ + log_prob_physical_line(c, Fi, Z4, B3, Zbig) + lj[i]
         else:
             out[i] = marg_loglike_genT(A, yw, D, cone) + lj[i]
     return out, C, S

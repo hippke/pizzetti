@@ -23,8 +23,8 @@ or free) and nonlinear, plus secondary eclipses (``transittype="secondary"``).
 The coefficients are linear in the flux; in a Bernstein basis the physical region
 (positive, limb-darkened profile) is a cone, and the Gaussian integral over it is
 closed-form up to an orthant probability (quadratic: 0 <= c0 <= c1 <= c2,
-Kipping 2013). The nonlinear law's region is curved: it is applied exactly by
-importance weights when the coefficients are drawn.
+Kipping 2013). The nonlinear law's region is curved; its probability is computed
+by line integration (``_physnl``) and enters the likelihood in the same way.
 
 Priors: uniform within ``bounds`` on the free parameters (plus 0 <= b < 1 + rp,
 0 <= ecc < 1), an optional vectorised ``log_prior`` callback on the physical
@@ -40,7 +40,7 @@ import math
 import numpy as np
 from numba import njit
 
-from . import _laws, _orbit, _powbasis
+from . import _laws, _orbit, _physnl, _powbasis
 from . import _marginal as K
 from . import _series
 from .terms import _A_HALF
@@ -248,6 +248,7 @@ class MarginalTransitModel:
         # fast fused path: quadratic primary transit with a physical (or Gaussian) prior
         self.fast = (law == "quadratic" and not self.secondary and self.physical)
         self.cone = self.physical and self.law.D is not None      # orthant in the likelihood
+        self.curved = self.physical and self.law.D is None and not self.secondary  # nonlinear
         self.Dmat = np.ascontiguousarray(self.law.D if self.law.D is not None else np.eye(self.law.K))
         # fused general path (numba batch): every law but the fast quadratic one
         self._fused = not self.fast
@@ -436,10 +437,11 @@ class MarginalTransitModel:
                 self.k, self.wts, self.yw, self.ttype, self.tol, _A_HALF, _series._GTAB,
                 self._dvec, self._W, self._gams, sertabs, _laws._TOL, CHEB, LENS, VALID,
                 YCS, PLO, PHI, ju, jw, has, self.Dmat, self.cone, moments)
+        tail = (self.curved, _physnl.Z4_QMC, _physnl.B3_GRID, _physnl.Z4_BIG)
         if not self._amode:
-            return K.gen_batch(*args, False, _NO_ROWPAN2, *_NO_ASTACK)
+            return K.gen_batch(*args, False, _NO_ROWPAN2, *_NO_ASTACK, *tail)
         rowpan2 = self._alpha_rowpanels(rp, al)
-        return K.gen_batch(*args, True, rowpan2, *self._astack)
+        return K.gen_batch(*args, True, rowpan2, *self._astack, *tail)
 
     # -- generic (power-2 with free alpha) design ---------------------------------
     def _design_row(self, prow, alpha):
@@ -542,29 +544,17 @@ class MarginalTransitModel:
             c = self._draw_cone(C, S, rng)
         else:
             L = np.linalg.cholesky(S)
-            if self.physical and self.law.D is None:
-                # nonlinear, physical: M draws per row; the row weight is the mean of
-                # (physical indicator x prior weight) over its draws, and one physical draw
-                # is selected in proportion (exact importance sampling within each row)
-                M = 64
-                cm = C[:, None, :] + np.einsum("nij,nmj->nmi", L, rng.standard_normal((len(C), M, Kc)))
-                ok = self.law.is_physical(cm.reshape(-1, Kc), np.repeat(al, M)).reshape(len(C), M)
-                f0m = np.einsum("nk,nmk->nm", disk, cm)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    wm = np.where(ok, f0m / self.law.central(cm.reshape(-1, Kc)).reshape(len(C), M) ** Kc, 0.0)
-                self.last_physical_frac = float(np.mean(ok))
-                rowsum = wm.sum(axis=1)
-                pick = np.array([rng.choice(M, p=wm[i] / rowsum[i]) if rowsum[i] > 0 else 0
-                                 for i in range(len(C))])
-                c = cm[np.arange(len(C)), pick]
+            if self.curved:
+                # nonlinear, physical: the region probability is in the likelihood, so c is
+                # drawn from its Gaussian truncated to the (curved) physical region, by
+                # rejection with the exact test
+                c, acc = self._draw_curved(C, L, al, rng)
+                self.last_physical_frac = acc
             else:
                 c = C + np.einsum("nij,nj->ni", L, rng.standard_normal(C.shape))
         f0 = np.einsum("nk,nk->n", disk, c)
         I1 = self.law.central(c)
-        if self.physical and self.law.D is None:
-            with np.errstate(divide="ignore"):
-                logw = np.log(rowsum / M)
-        elif self.physical:
+        if self.physical:
             # flat in c over the cone -> flat in the law's coefficients x flat baseline
             logw = np.log(f0) - Kc * np.log(I1)
         else:
@@ -588,6 +578,33 @@ class MarginalTransitModel:
             j = systematic_resample(w, len(w), rng)
             return out[j], labels, np.full(len(w), 1.0 / len(w))
         return out, labels, w
+
+    def _draw_curved(self, C, L, al, rng, chunk=64, max_draws=65536):
+        """One draw per row from N(C, L L^T) truncated to the nonlinear law's physical
+        region (exact test), by rejection; rows without an accepted draw within
+        max_draws candidates are drawn by line sampling (``_physnl.sample_physical``).
+        Returns (draws, acceptance rate of
+        the first chunk, i.e. the mean physical probability over the rows)."""
+        n, Kc = C.shape
+        out = np.full((n, Kc), np.nan)
+        todo = np.arange(n)
+        tried = 0
+        rate = np.nan
+        while todo.size and tried < max_draws:
+            cand = C[todo, None, :] + np.einsum("nij,nmj->nmi", L[todo],
+                                                rng.standard_normal((todo.size, chunk, Kc)))
+            ok = self.law.is_physical(cand.reshape(-1, Kc), None).reshape(todo.size, chunk)
+            if tried == 0:
+                rate = float(ok.mean())
+            tried += chunk
+            has = ok.any(axis=1)
+            first = np.argmax(ok, axis=1)
+            out[todo[has]] = cand[has, first[has]]
+            todo = todo[~has]
+            chunk = min(4 * chunk, 8192)
+        for i in todo:                       # tiny physical probability: line sampling
+            out[i] = _physnl.sample_physical(C[i], L[i] @ L[i].T, rng)
+        return out, rate
 
     def _draw_cone(self, C, S, rng):
         D = self.law.D

@@ -201,7 +201,7 @@ def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
 def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, rng=None,
                drop=12.0, step_sd=1.0, lo_wall=0.0, hi_wall=None, max_grid=60, batch=2000,
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
-               mix_stage=True, khat_ok=0.5):
+               mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -214,6 +214,16 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     * PSIS-smoothed weights with the exact log posterior.
     Defensive options for the b proposal: ``b_temper`` < 1 uses exp(b_temper * l)
     (wider tails), ``b_uniform`` > 0 mixes in a uniform density over the grid range.
+    ``refine_tol``: after the grid is built, intervals with probability mass are
+    refined where the conditional mean at the midpoint differs from its linear
+    interpolation by more than ``refine_tol`` conditional sd (Mahalanobis); at most
+    ``max_refine`` extra conditional fits (None: no refinement). Near a wall the
+    conditional optimum moves non-linearly in b (it depends on b^2) and the
+    geometric grid steps are largest there (Kepler-2 LC: 0.55 sd interpolation error).
+    ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
+    neighbouring grid point's sd; "map" ``h_sd`` x the conditional sd at the MAP for
+    every grid point (smoother log det Sigma(b) for strongly curved conditionals, but
+    tested worse: the grid can stop early, Kepler-1 LC).
     """
     rng = np.random.default_rng() if rng is None else rng
     scale = np.asarray(scale, float)
@@ -221,6 +231,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     rest = [i for i in range(d) if i != prof]
     theta_map, lp_map, nev = find_map(logp_batch, theta0, scale, nelder_mead=nelder_mead)
     nev_map = nev
+
+    sd_ref = [None]                       # conditional sd at the MAP (h_ref="map")
 
     def cond_fit(bv, x0, cov_prev=None):
         """maximise over the other parameters at fixed b = bv (warm start x0).
@@ -262,6 +274,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                 H, k = hessian(lp_rest, mu, 1e-3 * sc)
                 cov = np.linalg.inv(-H)
                 sd = np.sqrt(np.clip(np.diag(cov), 1e-300, None))
+            elif h_ref == "map" and sd_ref[0] is not None:
+                sd = sd_ref[0]
             else:
                 sd = sc
             H, k2 = hessian(lp_rest, mu, h_sd * sd)     # same relative step everywhere
@@ -297,6 +311,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                     n_grid=0, complete=False, n_eval_map=int(nev_map),
                     grid_lpmax=np.zeros(1), grid_logdet=np.zeros(1))
     nev += f0[4]
+    sd_ref[0] = np.sqrt(np.clip(np.diag(f0[2]), 1e-300, None))
     grid[theta_map[prof]] = f0
     lref = f0[1] + 0.5 * f0[3]
     for direction in (-1, 1):
@@ -333,6 +348,31 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             bv, x0, cov_prev = bn, f[0], f[2]
             if hit_wall or (f[1] + 0.5 * f[3] - lref) < -drop:
                 break
+    # adaptive refinement: the proposal interpolates mu(b), Sigma(b) linearly between grid
+    # points, so insert midpoints where that interpolation is off by > refine_tol sd
+    if refine_tol is not None and len(grid) > 1:
+        todo = list(zip(sorted(grid)[:-1], sorted(grid)[1:]))
+        n_ref = 0
+        while todo and n_ref < max_refine:
+            b0, b1 = todo.pop(0)
+            g0, g1 = grid[b0], grid[b1]
+            if max(g0[1] + 0.5 * g0[3], g1[1] + 0.5 * g1[3]) - lref < -drop:
+                continue                     # no probability mass in this interval
+            bm = 0.5 * (b0 + b1)
+            pred = 0.5 * (g0[0] + g1[0])
+            f = cond_fit(bm, pred, 0.5 * (g0[2] + g1[2]))
+            n_ref += 1
+            if f is None:
+                continue
+            nev += f[4]
+            dlt = f[0] - pred
+            try:
+                err = float(np.sqrt(dlt @ np.linalg.solve(f[2], dlt)))
+            except np.linalg.LinAlgError:
+                continue
+            grid[bm] = f
+            if err > refine_tol:
+                todo += [(b0, bm), (bm, b1)]
     bs = np.array(sorted(grid))
     lb_all = {b: grid[b][1] + 0.5 * grid[b][3] for b in bs}
     end_lo_ok = (lo_wall is not None and bs[0] <= lo_wall) or (lb_all[bs[0]] - lref < -drop)

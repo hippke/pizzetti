@@ -89,6 +89,10 @@ def _reference_loglike(m, X):
         A = m._design_row(P[i], al[i])
         ok, c, Fi, logdet, chi2 = _marginal._qr_solve(A, m.yw)
         lp = -0.5 * chi2 - 0.5 * logdet
+        if m.curved:
+            from pizzetti import _physnl
+            lp += _physnl.log_prob_physical_line(c, Fi, _physnl.Z4_QMC, _physnl.B3_GRID,
+                                                 _physnl.Z4_BIG)
         if m.cone:
             lp = _marginal.marg_loglike_gen(A, m.yw, m.Dmat, True)
         out[i] = lp + lj[i]

@@ -142,7 +142,7 @@ Example 01's data, each method run to convergence (50 τ), on a loaded machine
 | quadratic, square-root | the cone above (square-root: quadratic in √μ) |
 | logarithmic | a cone; the μ ln μ basis is computed here (pizzetti's `occult` has no logarithmic law) |
 | power-2 | a cone at fixed α; α may also be free |
-| nonlinear | a curved region, handled with an exact physicality test and importance weights |
+| nonlinear | a curved region; its probability is computed by line integration |
 
 **Secondary eclipses:** use `transittype="secondary"`. They are marginalised over the planet flux
 fp ≥ 0 and the baseline.

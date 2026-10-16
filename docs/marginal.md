@@ -51,7 +51,7 @@ free of Monte Carlo noise. The quadratic law has a fused numba path: orbit, basi
 | square-root | 3 | the same cone in √μ |
 | logarithmic | 3 | polyhedral cone |
 | power-2 | 2 (α fixed or free) | 0 ≤ c ≤ 1 cone at fixed α |
-| nonlinear | 5 | curved convex region: exact physicality test + importance weights |
+| nonlinear | 5 | curved convex region: its probability is computed by line integration |
 | secondary eclipse | 2 | fp ≥ 0 |
 
 Notes:
@@ -59,13 +59,21 @@ Notes:
   α-derivative of μ^α, taken by a 5-point difference of power-law fluxes. Its accuracy is
   8.7 × 10⁻¹² against a 30-digit reference.
 - **Nonlinear law:** it uses a Bernstein basis in √μ. The power basis is ill-conditioned:
-  cond(F) ~ 10¹³, compared with ~10⁹ for the Bernstein basis, and the solve uses QR. The
-  physical region is not polyhedral. The likelihood therefore integrates over all coefficients,
-  and the physical prior is applied when the coefficients are drawn: 64 draws per sample, kept
-  with weight equal to their physical fraction. This is exact, but it needs enough
-  signal-to-noise: at 100 ppm and 3 transits only ~12 % of the draws are physical, and the
-  geometry posterior without the constraint becomes broad. At modest S/N, use a
-  Gaussian or fixed limb darkening for this law.
+  cond(F) ~ 10¹³, compared with ~10⁹ for the Bernstein basis.
+  - The physical region (I(0) ≥ 0, and I′(s) ≥ 0 on [0, 1] with s = √μ) is a curved convex
+    cone, not a polyhedral one.
+  - Its probability under the Gaussian of the coefficients takes the place of the orthant
+    term: log L = (unconstrained marginal) + log P(physical).
+  - P is computed by line integration. Along the largest-variance direction of the coefficients,
+    a line meets the region in an interval, found exactly from the cubic I′. The line contributes
+    Φ(hi) − Φ(lo), and the other four directions use 256 fixed quasi-random points. The estimate is
+    deterministic and smooth in the geometry, accurate to ~0.003 nats, and costs ~45 µs.
+  - Afterwards the coefficients are drawn from the Gaussian truncated to the region, by
+    rejection with the exact test.
+  - With the constraint in the likelihood, the geometry posterior stays well defined at low S/N:
+    `fit()` succeeds by importance sampling (k̂ 0.03–0.33) down to 300 ppm with 3 simulated
+    transits. Before, the unconstrained geometry posterior was degenerate there and importance
+    sampling failed.
 - **`ld_prior="flat"`** removes the physical constraint and is flat in the absolute
   linear coefficients. This choice is always proper; a flat prior in the normalised
   coefficients is not, for example for the nonlinear law.
@@ -91,7 +99,10 @@ the prior uniform in a). `fit()` proceeds in four steps:
 1. It finds the maximum and the profile of the posterior.
 2. It draws from a heavy-tailed proposal fitted to that profile.
 3. It corrects the draws with exact importance weights, Pareto-smoothed and checked with k̂
-   and the effective sample size.
+   and the effective sample size. The grid is refined where interpolating the conditional
+   mean between grid points would be off by more than 0.25 conditional sd (near the b = 0 wall
+   it moves non-linearly). If k̂ is still too high, a second stage adds a multivariate t fitted
+   to the weighted draws.
 4. It falls back to emcee, run to 50 τ with Δτ < 1 %, if the diagnostics fail.
 
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
