@@ -8,8 +8,9 @@ Fast limb-darkened transit light curves with a proven error bound
 While the occultor is inside the stellar disk, the flux is `w^γ` times a
 polynomial in `v = 1/(1 - z²)` (Pizzetti's mean-value expansion), with a closed-form
 bound on the truncation error. Near and across the limb: the exact Mandel & Agol
-solution (quadratic family), contact expansions built from Gauss hypergeometric
-functions, or Green's-theorem quadrature.
+solution (quadratic family), a fixed-node sinh-trapezoid rule and its Chebyshev
+interpolants, contact expansions built from Gauss hypergeometric functions, or
+Green's-theorem quadrature.
 
 Main entry points: [`occult`](@ref), [`Occultor`](@ref), [`light_curve`](@ref),
 [`transit_poly`](@ref) (Limbdark.jl-compatible), [`flux_gradient`](@ref).
@@ -26,7 +27,7 @@ export Occultor, occult, occult!, evaluate!, method
 export quadratic_flux, blocked_quadrature, hyp2f1_unit
 export blocked_flux, blocked_derivatives, flux_gradient, flux_gradient_law, flux_gradient_quadratic, coefficient_jacobian
 export transit_poly, transit_poly!
-export ProvenLimb, occult_certified, occult_interval
+export TrapLimb, ProvenLimb, occult_certified, occult_interval
 export TransitParams, impact_parameter, eccentric_anomaly, rsky, light_curve, light_curve!
 
 # ---- number-type helpers (extended for dual numbers and intervals) ----
@@ -46,6 +47,7 @@ include("quadratic.jl")
 include("quadrature.jl")
 include("hyp.jl")
 include("contact.jl")
+include("trap.jl")
 include("proven.jl")
 include("occult.jl")
 include("derivatives.jl")

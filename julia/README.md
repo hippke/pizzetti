@@ -11,9 +11,12 @@ Pizzetti.jl implements the methods of Hippke & Agol (in prep.) and of the Python
   curve guarantees a prescribed tolerance (default `1e-9`). Cost: one square root, one division and
   a dozen multiply-adds per sample, in a SIMD loop.
 - **Near and across the limb.** The exact Mandel & Agol (2002) solution for the quadratic family;
-  for the other laws, power series about first and second contact built from Gauss hypergeometric
-  functions (`~1e-15`), optionally split into pieces with a **proven** bound (Theorem 3), or
-  Green's-theorem quadrature with a Gauss–Jacobi first segment (`~1e-16`).
+  for the other laws and `p < 0.3`, a fixed-node sinh-trapezoid rule for the limb integral written
+  as a complete integral (no set-up), or, for light curves with at least 150 limb samples, Chebyshev
+  interpolants built from it through the connection formula at second contact (~40 µs per light
+  curve; both `~1e-15`; paper Section 5.3). Also available: power series about first and second
+  contact built from Gauss hypergeometric functions (`~1e-15`), optionally split into pieces with a
+  **proven** bound (Theorem 3), and Green's-theorem quadrature with a Gauss–Jacobi first segment (`~1e-16`).
 - **Exact derivatives.** With ForwardDiff, dual numbers flow through orbits and light curves; the
   flux derivatives with respect to `z` and `p` are the closed-form hypergeometric expressions of the
   paper (Section 5.4), not derivatives of truncated series or of quadrature rules.
@@ -69,12 +72,14 @@ Requirements: Julia ≥ 1.10, SpecialFunctions. ForwardDiff and IntervalArithmet
 f = occult(z, p, law)                       # vector of separations
 o = Occultor(p, law)                        # set-up once per (p, law) ...
 f = o.(z)                                   # ... then evaluate (or evaluate!(out, o, z))
-method(o, 0.95)                             # :series, :quadratic, :contact, :proven or :quadrature
+method(o, 0.95)                             # :series, :quadratic, :interpolate, :trapezoid, :contact, :proven or :quadrature
 series_cut(p, law; series_tol = 1e-9)       # z_c: the series is used, with a proven bound, for z ≤ z_c
 ```
 
 Keywords: `series_tol` (proven bound of the interior series; `0` switches it off), `limb`
-(`:auto`, `:fast`, `:quadrature`, `:proven`), `M` (series order, odd; raise it for `BigFloat`).
+(`:auto`, `:trapezoid`, `:interpolate`, `:fast` = contact expansions, `:quadrature`, `:proven`), `M`
+(series order, odd; raise it for `BigFloat`). The trapezoid rules are used for Float64; dual numbers
+and `BigFloat` keep the exact-derivative and quadrature paths.
 
 ### Light curves
 
@@ -166,12 +171,15 @@ Single thread, Intel Xeon 2.8 GHz, Julia 1.13 (`benchmark/benchmarks.jl`, result
 | | quadratic | power-2 | nonlinear |
 |---|---|---|---|
 | interior series (SIMD) | 2.3 ns | 5.5–5.9 ns | 3.3 ns |
+| limb: trapezoid rule (direct) | — | 260–440 ns | 290–440 ns |
+| limb: interpolants | — | 41 ns | 54–58 ns |
 | contact expansions | — | 90 ns | 154 ns |
 | quadrature (Gauss–Jacobi) | — | ~1.7 µs | ~2.8 µs |
 | exact quadratic solution | 71–75 ns | — | — |
 
-Set-up per light curve: 5–11 µs (series cut and coefficients); contact expansions 0.12–0.8 ms
-(used only for light curves with enough limb samples); proven pieces 10–47 ms.
+Set-up per light curve: 5–11 µs (series cut and coefficients); limb interpolants 36–55 µs;
+contact expansions 0.12–0.8 ms; proven pieces 10–47 ms. (Trapezoid and interpolant rows: Intel
+Xeon cloud instance, Julia 1.13.1.)
 
 `evaluate!` skips runs of 64-sample blocks in which no sample lies on the star (`|z| ≥ 1 + p`,
 flux exactly 1). This matters for long light curves with few points in transit. For 10⁵ sorted

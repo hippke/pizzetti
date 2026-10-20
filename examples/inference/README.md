@@ -21,7 +21,7 @@ python benchmark_calls.py        # cost per likelihood evaluation, a new posteri
 python benchmark_wall.py         # wall-clock time of 2000-step runs
 ```
 
-## Results (Intel Xeon 2.8 GHz, single thread)
+## Results (Intel Xeon cloud instance, single thread; Python 3.13, numba 0.68, batman 2.5.3, Julia 1.13.1)
 
 | | hot Jupiter (quadratic) | super-Earth (power-2) |
 |---|---|---|
@@ -30,15 +30,13 @@ python benchmark_wall.py         # wall-clock time of 2000-step runs
 | chains step-by-step identical for | 846 steps | 6 steps |
 | largest model error over the posterior, batman | 9e-9 | 1.9e-6 |
 | largest model error over the posterior, pizzetti | 7e-10 | 5e-10 |
-| likelihood evaluation, batman | 0.130 ms | 1.10 ms |
-| likelihood evaluation, pizzetti | 0.029 ms (4.5x) | 0.57 ms (1.9x) |
-| likelihood evaluation, batman with `max_err=0.01` | — | 6.1 ms (error still 4e-8) |
-| 2000-step emcee run, batman / pizzetti | 9.8 s / 3.0 s | 67 s / 34 s |
-| likelihood / gradient (7 parameters), Pizzetti.jl | 0.039 / 0.40 ms | 0.41 / 4.1 ms |
+| likelihood evaluation, batman | 0.079 ms | 0.67 ms |
+| likelihood evaluation, pizzetti | 0.018 ms (4.4x) | 0.20 ms (3.4x) |
+| likelihood evaluation, batman with `max_err=0.01` | — | 3.8 ms (error still 4e-8) |
+| 2000-step emcee run, batman / pizzetti | 5.6 s / 1.6 s | 41 s / 12 s |
+| likelihood / gradient (7 parameters), Pizzetti.jl | 0.026 / 0.24 ms | 0.22 / 3.2 ms |
 
-In these fits 50-66 % of the samples are in transit, so the off-star block skipping (0.2.1) changes
-little here; the timings were re-measured on a machine about 20 % slower than the earlier ones, and the
-batman/pizzetti ratios are unchanged within noise. `benchmark_calls.py` uses `results/posterior_samples.json`
+In these fits 50-66 % of the samples are in transit. `benchmark_calls.py` uses `results/posterior_samples.json`
 (jittered by 1e-4) when no stored chains are present.
 
 MCSE: Monte Carlo standard error of the difference of the medians, from the integrated autocorrelation
@@ -46,9 +44,10 @@ times. The posteriors agree within their Monte Carlo noise. The chains, which dr
 identical until a model difference changes an acceptance decision: batman's power-2 integrator (1 ppm
 tolerance) differs from the reference by 1.9e-6, 1.3 % of the noise, and the chains part after 6 steps.
 
-In the super-Earth case the power-2 exponent alpha changes at every step, so every call builds the
-coefficient tables of the Gauss functions and the contact expansions for the 330 limb samples anew; this
-is about a third of pizzetti's time. The Julia numbers are from `julia/benchmark/inference_cases.jl`
+In the super-Earth case the power-2 exponent alpha changes at every step, so every call rebuilds the
+weights of the trapezoid rule and the limb interpolants (paper Section 5.3, ~40 us); with alpha held
+fixed the likelihood takes 0.14 ms (4.7x faster than batman). Before the trapezoid rule, the contact
+expansions' hypergeometric tables were rebuilt instead, and the likelihood took 0.32 ms. The Julia numbers are from `julia/benchmark/inference_cases.jl`
 (same light curves and posterior samples, `results/posterior_samples.json`).
 
 ![corner plots](results/corner_kepler_paper.png)

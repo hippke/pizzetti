@@ -67,11 +67,11 @@ with pizzetti, with identical likelihoods, starting positions and random numbers
 |---|---|---|
 | largest difference of the posterior medians | 0.08 σ | 0.04 σ |
 | model error over the posterior, batman / pizzetti | 9 × 10⁻⁹ / 7 × 10⁻¹⁰ | 1.9 × 10⁻⁶ / 5 × 10⁻¹⁰ |
-| one likelihood evaluation, batman / pizzetti | 0.130 / 0.029 ms (**4.5×**) | 1.10 / 0.57 ms (**1.9×**) |
-| 2000-step emcee run, batman / pizzetti | 9.8 / 3.0 s | 67 / 34 s |
+| one likelihood evaluation, batman / pizzetti | 0.079 / 0.018 ms (**4.4×**) | 0.67 / 0.20 ms (**3.4×**) |
+| 2000-step emcee run, batman / pizzetti | 5.6 / 1.6 s | 41 / 12 s |
 
 The posteriors agree within their Monte Carlo noise. To come close to pizzetti's accuracy for the
-power-2 law, batman needs `max_err=0.01`, at 6.1 ms per evaluation (still off by 4 × 10⁻⁸). The
+power-2 law, batman needs `max_err=0.01`, at 3.8 ms per evaluation (still off by 4 × 10⁻⁸). The
 Julia version computes the gradient of either likelihood with respect to all seven parameters in
 about ten likelihood evaluations ([julia/](julia)).
 

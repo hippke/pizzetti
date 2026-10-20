@@ -21,7 +21,9 @@
     # :auto switches to the contact expansions for long light curves only
     law = Power2(0.6, 0.6)
     @test !Occultor(0.1, law; nlimb = 10).usecontact
-    @test Occultor(0.1, law; nlimb = 1000).usecontact
+    @test Occultor(0.1, law; nlimb = 10).usetrap && !Occultor(0.1, law; nlimb = 10).trap.interp
+    @test Occultor(0.1, law; nlimb = 1000).trap.interp           # :auto: interpolants for long light curves
+    @test !Occultor(0.35, law; nlimb = 10^5).usetrap            # beyond TRAP_PMAX: contact expansions or quadrature as before
     @test !Occultor(0.6, law; limb = :fast).usecontact          # large occulters: quadrature
     # certification report
     f, cert = occult_certified(collect(range(0, 1.3, length = 1001)), 0.25, law; series_tol = 1e-12)

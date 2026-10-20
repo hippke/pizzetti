@@ -49,7 +49,7 @@ SIN_MIN = 0.02
 P_MAX = 0.3
 #: lower end of the inside piece (lam = 1 - k); A and B are singular at
 #: lam = 1 - 1/(4 p^2) (the occultor rim through the stellar centre)
-LAM_MIN = -0.5
+LAM_MIN = -1.0
 
 
 @njit(cache=True, fastmath=True, error_model="numpy")

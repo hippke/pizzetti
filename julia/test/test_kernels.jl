@@ -69,12 +69,13 @@
         @test P0 ≈ blocked_quadrature(z, p, [0.0], [1.0]) atol = 1e-15
         @test P1 ≈ blocked_quadrature(z, p, [1.0], [1.0]) atol = 1e-15
     end
-    # :auto: contact expansions when enough limb samples per j-term
+    # :auto (p < 0.3): the fixed-node rule for short light curves, its interpolants from
+    # INTERP_BREAK_EVEN limb samples on; :fast still selects the contact expansions
     law = Power2(0.6, 0.6)
-    @test !Occultor(0.02, law; nlimb = 100).usecontact
-    @test Occultor(0.02, law; nlimb = 400).usecontact
-    @test !Occultor(0.1, law; nlimb = 400).usecontact
-    @test Occultor(0.1, law; nlimb = 1000).usecontact
+    @test !Occultor(0.02, law; nlimb = 100).trap.interp && !Occultor(0.02, law; nlimb = 100).usecontact
+    @test Occultor(0.02, law; nlimb = 400).trap.interp
+    @test Occultor(0.1, law; nlimb = 1000).trap.interp
+    @test Occultor(0.1, law; limb = :fast).usecontact && !Occultor(0.1, law; limb = :fast).usetrap
     # scalar fast path of the quadratic family
     for p in (0.05, 0.5, 1.5), z in (0.0, 0.3, 0.9, 1.2)
         @test occult(z, p, Quadratic(0.4, 0.25)) == Occultor(p, Quadratic(0.4, 0.25); series_tol = 0)(z) ||

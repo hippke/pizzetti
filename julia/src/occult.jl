@@ -67,12 +67,17 @@ Precomputed light-curve solution for radius ratio `p` and limb-darkening `law`
   to be at most `series_tol` (Theorem 2). `series_tol = 0` disables it.
 * other on-star samples: the exact Mandel & Agol (2002) solution for the quadratic
   family (uniform, linear, quadratic, polynomial of degree ≤ 2); otherwise
+  - `limb = :trapezoid`: the fixed-node sinh-trapezoid rule (Section 5.3; ~1e-15, no set-up),
+  - `limb = :interpolate`: its Chebyshev interpolants (~1e-15, ~40 µs set-up),
   - `limb = :fast`: contact expansions (Section 5.2; ~1e-15, a posteriori estimate),
   - `limb = :quadrature`: Green's-theorem quadrature (~1e-13),
-  - `limb = :auto` (default): `:fast` when there are enough limb samples (`nlimb`, or
-    counted from `samples`) to amortise its set-up (about 8.5 per j-term of the
-    hypergeometric tables: 270 for p = 0.02, 820 for p = 0.1), `:quadrature` otherwise.
-  The contact expansions are used for `p < 0.5` and Float64 only.
+  - `limb = :auto` (default): for `p < 0.3`, `:interpolate` from `INTERP_BREAK_EVEN` = 150
+    limb samples on (`nlimb`, or counted from `samples`), `:trapezoid` otherwise; for larger
+    occultors (or when the band inside the disk has no valid contour), `:fast` when there are
+    enough limb samples to amortise its set-up (about 8.5 per j-term of the hypergeometric
+    tables), `:quadrature` otherwise.
+  The trapezoid rules are used for `p < 0.3`, the contact expansions for `p < 0.5`, both for
+  Float64 only.
 
 All parts are generic in the number type: dual numbers (ForwardDiff), BigFloat
 (then the limb uses quadrature with nodes of full precision).
@@ -93,6 +98,8 @@ struct Occultor{T<:Real,L<:LimbDarkening,F<:AbstractFloat}
     sa::Vector{Vector{T}}
     usecontact::Bool
     contact::ContactExpansion
+    usetrap::Bool
+    trap::TrapLimb
     useproven::Bool
     proven::ProvenLimb
     rules::QuadRules{F}
@@ -107,7 +114,8 @@ const _NO_PROVEN = ProvenLimb(0.0, Float64[], zeros(0, 2), Int[], Float64[], zer
 function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Symbol = :auto, nlimb::Integer = 0,
                   M::Integer = SERIES_M, samples = nothing)
     (isodd(M) && M >= 1) || throw(ArgumentError("the series order M must be odd"))
-    limb in (:auto, :fast, :quadrature, :proven) || throw(ArgumentError("limb must be :auto, :fast, :quadrature or :proven"))
+    limb in (:auto, :fast, :quadrature, :proven, :trapezoid, :interpolate) ||
+        throw(ArgumentError("limb must be :auto, :fast, :quadrature, :proven, :trapezoid or :interpolate"))
     α0, c0 = power_terms(law)
     T = promote_type(typeof(float(p)), eltype(α0), eltype(c0))
     p = abs(T(p))
@@ -162,8 +170,21 @@ function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Sy
     proven = _NO_PROVEN
     mode = limb
     mode == :proven && zc < 0 && (mode = :fast)      # interior series disabled: nothing to match
+    # fixed-node rule / interpolants (Section 5.3): :auto for p < 0.3 unless the band inside
+    # the disk has no valid contour, in which case the contact expansions are used as before
+    usetrap = false
+    trap = _NO_TRAP
+    if !quad && T === Float64 && 0 < p < TRAP_PMAX && mode in (:auto, :trapezoid, :interpolate)
+        pf = Float64(p)
+        if mode != :auto || !(zc > pf && band_gamma(pf, zc) < 0)
+            γf = Float64.(γ)
+            interp = (mode == :interpolate || (mode == :auto && nlimb >= INTERP_BREAK_EVEN)) && interp_supported(γf)
+            trap = TrapLimb(pf, γf, Float64.(c), zc, interp)
+            usetrap = true
+        end
+    end
     jl = T === Float64 && p < 0.5 ? limb_jmax(Float64(p), zc) : CONTACT_JC
-    if !quad && T === Float64 && p < 0.5 && (mode == :fast || mode == :proven ||
+    if !quad && !usetrap && T === Float64 && p < 0.5 && (mode == :fast || mode == :proven ||
                                             (mode == :auto && nlimb >= CONTACT_BREAK_EVEN * jl))
         if mode == :proven
             tabs = lens_tables(γ, jl)
@@ -186,7 +207,7 @@ function Occultor(p::Real, law::LimbDarkening; series_tol = SERIES_TOL, limb::Sy
     rules = quad_rules(γ, _float(T))
     dterms = Ref(DTerm[])                               # filled on demand (dual numbers)
     Occultor{T,typeof(law),_float(T)}(p, law, γ, c, total, zc, quad, u1, u2, A0, A1, sγ, sa, usecontact, contact,
-                                      useproven, proven, rules, limb, dterms, nlimb)
+                                      usetrap, trap, useproven, proven, rules, limb, dterms, nlimb)
 end
 
 @inline function _wpow(w, g)
@@ -217,7 +238,7 @@ end
     f
 end
 
-"Which method `o(z)` uses at separation z: :out, :full, :series, :quadratic, :contact or :quadrature."
+"Which method `o(z)` uses at separation z: :out, :full, :series, :quadratic, :contact, :interpolate, :trapezoid or :quadrature."
 function method(o::Occultor, z)
     z = abs(z)
     p = o.p
@@ -226,6 +247,11 @@ function method(o::Occultor, z)
     z <= o.zc && return :series
     o.quad && return :quadratic
     o.useproven && !isnan(o.proven(Float64(z))) && return :proven
+    if o.usetrap
+        zf = Float64(z)
+        o.trap.interp && !isnan(_interp_eval(o.trap, zf)) && return :interpolate
+        isnan(_direct_eval(o.trap, zf, _trap_scratch(o.trap)...)) || return :trapezoid
+    end
     if o.usecontact
         r = o.contact(Float64(z))
         isnan(r) || return :contact
@@ -310,6 +336,10 @@ function _limb_eval(o::Occultor, z, ::Type{S}) where {S}
     end
     if o.useproven && S === Float64
         r = o.proven(Float64(z))
+        isnan(r) || return 1 - r / o.total
+    end
+    if o.usetrap && S === Float64
+        r = o.trap(Float64(z))
         isnan(r) || return 1 - r / o.total
     end
     if o.usecontact && S === Float64
@@ -413,6 +443,29 @@ function _evaluate_block!(out, o::Occultor{Float64}, z)
         _series_pass!(out, o, z)
     end
     one_p = 1 + o.p
+    if o.usetrap
+        # limb samples in one batch (scratch arrays shared by the samples)
+        idx = Int[]
+        @inbounds for i in eachindex(z)
+            zi = abs(z[i])
+            (zi > zc) & (zi < one_p) && push!(idx, i)
+        end
+        if !isempty(idx)
+            zs = [abs(z[i]) for i in idx]
+            bl = similar(zs)
+            trap_blocked!(bl, o.trap, zs)
+            @inbounds for q in eachindex(idx)
+                out[idx[q]] = isnan(bl[q]) ? o(zs[q]) : 1 - bl[q] / o.total
+            end
+        end
+        @inbounds for i in eachindex(z)
+            zi = abs(z[i])
+            if !(zi <= zc) && !((zi > zc) & (zi < one_p))
+                out[i] = zi >= one_p ? 1.0 : o(zi)
+            end
+        end
+        return out
+    end
     @inbounds for i in eachindex(z)
         zi = abs(z[i])
         if !(zi <= zc)

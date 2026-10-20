@@ -19,6 +19,13 @@
     samples; `"trapezoid"`, `"interpolate"` force one, `"contact"` the former expansions.
   - Per-call overhead for the non-quadratic laws 40 -> 15 us (cached per-exponent plans), and
     a fused, block-skipping interior pass as for the quadratic law.
+  - The inside interpolant now reaches lam = -1 (was -1/2; still 0.3 of the way to the
+    singularity at the occultor rim through the stellar centre), so no band samples fall back
+    to the slower direct contour rule for p <= 0.2.
+- Pizzetti.jl: the same limb methods (`src/trap.jl`, `limb = :trapezoid`, `:interpolate`; `:auto`
+  picks them for p < 0.3). Light curves of the square-root, nonlinear and power-2 laws 1.1–10x
+  faster, the Kepler power-2 likelihood of the inference example 0.36 -> 0.22 ms; gradients
+  unchanged (dual numbers keep the exact-derivative path). 5993 tests pass.
 
 - `MarginalTransitModel`: transit and secondary-eclipse likelihood with the limb darkening and
   the baseline flux integrated out analytically. In the Bernstein basis the physical
