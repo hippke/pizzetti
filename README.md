@@ -5,7 +5,7 @@
 [![Python](https://github.com/hippke/pizzetti/actions/workflows/python.yml/badge.svg)](https://github.com/hippke/pizzetti/actions/workflows/python.yml)
 [![Julia](https://github.com/hippke/pizzetti/actions/workflows/julia.yml/badge.svg)](https://github.com/hippke/pizzetti/actions/workflows/julia.yml)
 [![Examples](https://github.com/hippke/pizzetti/actions/workflows/examples.yml/badge.svg)](https://github.com/hippke/pizzetti/actions/workflows/examples.yml)
-[![Docs](https://readthedocs.org/projects/pizzetti/badge/?version=latest)](https://pizzetti.readthedocs.io)
+[![Docs](https://img.shields.io/badge/docs-docs%2F-blue.svg)](docs/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 **Fast limb-darkened transit light curves, with an elementary series and a proven error bound.**
@@ -87,7 +87,7 @@ emcee fits the likelihood is 3.4–4.4× faster than batman's, and 2–3.5× for
 | | |
 |---|---|
 | [Tutorials](examples/) | ten Python notebooks and five Julia scripts, from a first light curve to certified, differentiable models |
-| [Documentation](https://pizzetti.readthedocs.io) | method, accuracy, performance and API |
+| [Documentation](docs/) | method, accuracy, performance and API |
 | [Paper reproduction](examples/paper) | one command per table and figure of the paper |
 | [Proofs](docs/proofs) | self-contained proofs of the theorems, and [validation notebooks](validation) |
 | [Changelog](CHANGELOG.md) | |
