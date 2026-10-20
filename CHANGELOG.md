@@ -2,6 +2,10 @@
 
 ## 0.3.0 (Pizzetti.jl 0.2.0)
 
+- Fix: `import pizzetti` no longer needs scipy. The quasi-random points of the nonlinear-law
+  physical prior (`_physnl`) are built on first use; CI now also checks the import without the
+  optional extras, and installs `[fit]` and setuptools (batman needs distutils on Python ≥ 3.12)
+  for the tests.
 - Documentation and examples reorganised:
   - README shortened to an overview; details moved to the documentation.
   - `examples/`: a tutorial curriculum of ten notebooks (01 first light curve … 10 linear-basis

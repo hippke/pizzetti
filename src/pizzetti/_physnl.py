@@ -47,8 +47,18 @@ def qmc_normal4(n=256, seed=20261016):
     return np.ascontiguousarray(ndtri(np.clip(u, 1e-12, 1 - 1e-12)))
 
 
-Z4_QMC = qmc_normal4()
-Z4_BIG = qmc_normal4(4096, 20261017)          # retry set when no line of Z4_QMC hits the region
+_QMC_SETS = {"Z4_QMC": (256, 20261016),
+             "Z4_BIG": (4096, 20261017)}       # Z4_BIG: retry set when no line of Z4_QMC hits the region
+
+
+def __getattr__(name):
+    """Z4_QMC and Z4_BIG are built on first use, so that importing pizzetti does not need
+    scipy (an optional dependency, ``pizzetti[fit]``)."""
+    if name in _QMC_SETS:
+        v = qmc_normal4(*_QMC_SETS[name])
+        globals()[name] = v
+        return v
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @njit(cache=True, inline="always")

@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e ".[fit]" batman-package corner matplotlib mpmath jupyter nbconvert ipykernel
+      - run: pip install -e ".[fit]" batman-package setuptools corner matplotlib mpmath jupyter nbconvert ipykernel
       - name: Execute the tutorial notebooks (smoke mode)
         env:
           PIZZETTI_SMOKE: "1"

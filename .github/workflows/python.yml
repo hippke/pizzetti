@@ -18,5 +18,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e . pytest mpmath batman-package
+      - run: pip install -e .
+      - name: Import without the optional extras
+        run: python -c "import pizzetti; print(pizzetti.__version__)"
+      # setuptools provides distutils, which batman imports, on Python >= 3.12
+      - run: pip install -e ".[fit]" pytest mpmath batman-package setuptools
       - run: pytest -q tests

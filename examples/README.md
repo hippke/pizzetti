@@ -6,6 +6,7 @@ first notebook you run also compiles pizzetti's numba kernels (about a minute, c
 
 ```bash
 pip install "pizzetti[fit]" batman-package corner matplotlib mpmath jupyter
+# Python >= 3.12: batman also needs `pip install setuptools`
 jupyter lab examples/
 ```
 
