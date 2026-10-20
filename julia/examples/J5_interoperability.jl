@@ -1,13 +1,21 @@
-# # Pizzetti.jl next to Limbdark.jl (Agol, Luger & Foreman-Mackey 2020)
+# # J5 · Interoperability: Limbdark.jl, and the Python package
 #
+# Level: intermediate · Prerequisites: J1 · Runtime: ~2 min
+#
+# Part 1 compares Pizzetti.jl with Limbdark.jl (Agol, Luger & Foreman-Mackey 2020), whose
+# interface it shares for polynomial limb darkening. Part 2 checks that Pizzetti.jl and the
+# Python package `pizzetti` produce the same orbits and light curves, from test vectors written
+# by the Python package (testdata/python_lightcurves.json).
+#
+# ## Part 1: Limbdark.jl
 # Pizzetti provides Limbdark.jl's interface for polynomial limb darkening,
 #     I(μ) = 1 - Σ_n u_n (1 - μ)^n,   transit_poly(r, b, u_n),   transit_poly!(r, b, u_n, dfdrbu),
 # so the two can be swapped. This script compares fluxes and gradients on a grid and
 # times both. Limbdark.jl is the analytic solution of Agol et al. (2020) for polynomial laws;
 # Pizzetti uses the interior series (proven to 1e-9 by default) and, near the limb, the exact
-# quadratic solution (degree ≤ 2) or the contact expansions/quadrature (higher degree).
+# quadratic solution (degree ≤ 2) or the trapezoid rule and its interpolants (higher degree).
 #
-# Run with:  julia --project=. 05_limbdark.jl
+# Run with:  julia --project=. J5_interoperability.jl
 
 using Pizzetti, Printf
 import Limbdark
@@ -57,3 +65,32 @@ t3 = @belapsed limbdark_lc!($out2, $ts, $z)
 @printf("10 000 samples: Pizzetti %.3f ms; Limbdark %.3f ms (transit_poly), %.3f ms (re-used structure)\n",
         1e3t1, 1e3t2, 1e3t3)
 @printf("largest difference of the two light curves: %.1e\n", maximum(abs.(out .- out2)))
+
+# ## Part 2: the same light curves as the Python package
+# The test vectors contain Keplerian orbits (circular and eccentric), five laws and radius
+# ratios 0.009-0.3, computed by Python `pizzetti` with the interior series switched off and
+# quadrature at the limb, so that they are independent of the series truncation.
+using JSON
+d = JSON.parsefile(joinpath(@__DIR__, "..", "..", "testdata", "python_lightcurves.json"))
+println()
+for cs in d["cases"]
+    P = cs["params"]
+    prm = TransitParams(t0 = P["t0"], per = P["per"], rp = P["rp"], a = P["a"], inc = P["inc"], ecc = P["ecc"],
+                        w = P["w"], u = Float64.(P["u"]), limb_dark = P["limb_dark"])
+    t = Float64.(cs["t"])
+    dz = maximum(abs.(rsky(t, prm) .- Float64.(cs["z"])))
+    df = maximum(abs.(light_curve(t, prm) .- Float64.(cs["flux"])))
+    @printf("%-10s rp = %-6g e = %-4g  max |Δz| = %.1e  max |ΔF| (default settings) = %.1e\n",
+            P["limb_dark"], P["rp"], P["ecc"], dz, df)
+end
+# Python's `TransitParams` fields (`inc`, `ecc`, `w`, `u`, `limb_dark`) are accepted as keywords,
+# so parameters can be moved between the two languages without translation.
+
+# ## What you learned
+# - `Pizzetti.transit_poly` / `transit_poly!` are drop-in replacements for Limbdark.jl's, with the
+#   same fluxes and gradients;
+# - Pizzetti.jl and Python pizzetti agree on orbits to rounding and on fluxes to within the
+#   series tolerance.
+#
+# This completes the Julia tutorials; the Python notebooks in ../../examples cover fitting with
+# `MarginalTransitModel`, error control and performance in more depth.

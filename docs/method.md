@@ -75,12 +75,30 @@ Points with $z_c<z<1+p$ use a reference algorithm:
   Foreman-Mackey 2020). The rare unconverged lanes fall back to an early-exit scalar iteration.
   The arccos and area terms use factored forms whose cancelling sums are exact, so the solution
   stays accurate to ~10⁻¹⁴ even within 10⁻¹⁵ of the contact points.
-- **Square-root, nonlinear and power-2 laws:** Green's theorem with the radial primitive
-  $F(r)=\int_0^r(1-s^2)^\gamma s\,\mathrm ds$. The blocked flux is a closed-form term on the stellar
-  limb plus a one-dimensional integral along the occultor's rim inside the star. The integral is
-  evaluated by composite Gauss–Legendre quadrature, with segments that grow geometrically away from
-  the nearest singularity of $(1-r^2)^{\gamma+1}$ and a square-root substitution at the limb
-  crossing. The accuracy is ≤ 3 × 10⁻¹¹.
+- **Square-root, nonlinear and power-2 laws, rp < 0.3 (default):** by Green's theorem the blocked
+  flux is a closed-form term plus a one-dimensional integral along the occultor's rim. Written in
+  the variable $s=\operatorname{asinh}(\tan\theta)$, related to Bartky's transformation of
+  complete elliptic integrals, this limb integral is a *complete* integral whose integrand is
+  analytic in the strip $|\operatorname{Im}s|<\pi/2$ for every modulus. A trapezoid rule with
+  fixed nodes therefore converges geometrically and uniformly up to both contacts, and the
+  exponents of the law enter only precomputed weights. A pole of the integrand is removed by its
+  residue; while the occultor is inside the disk, the integral is taken along a complex contour.
+  The accuracy is ≤ 6 × 10⁻¹⁶ against a 40-digit reference, at 170–300 ns per sample with no
+  set-up (`limb="trapezoid"`).
+- **Chebyshev interpolants** of this rule (`limb="interpolate"`) serve long light curves. The
+  singular part at second contact is the same integral at the complementary modulus (a
+  connection formula), so the interpolants need no special functions; they cost about 40 µs to
+  build per light curve and 30–100 ns per sample. By default (`limb="fast"`) pizzetti uses the
+  interpolants from 150 limb samples on and the direct rule below.
+- **Contact expansions** (`limb="contact"`): power series about the two contacts with
+  hypergeometric coefficients (paper, Section 5.2), accurate to ~10⁻¹⁵; they are the default for
+  rp ≥ 0.3 where they meet the tolerance. Their certified form (`limb="proven"`) carries a proven
+  error bound, so that the whole light curve is certified (`return_certified=True` reports which
+  samples are).
+- **Green's-theorem quadrature** (`limb="quadrature"`): composite Gauss quadrature of the rim
+  integral, with segments that grow geometrically away from the nearest singularity of
+  $(1-r^2)^{\gamma+1}$, a Gauss–Jacobi first segment and a square-root substitution at the limb
+  crossing; ~10⁻¹⁶. It is the fallback for large occultors with short light curves.
 
 A complete light curve therefore combines the series, for the bulk of the transit, with one of
-these reference algorithms for ingress and egress.
+these algorithms for ingress and egress.

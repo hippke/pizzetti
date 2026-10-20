@@ -109,7 +109,7 @@ To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb
 darkening and baseline as extra columns.
 
-Example 01's data with each method run to convergence ([notebook 03](https://github.com/hippke/pizzetti/blob/main/examples/03_marginal_emcee_vs_is.ipynb)):
+A TESS-like hot Jupiter with each method run to convergence ([tutorial 06](https://github.com/hippke/pizzetti/blob/main/examples/06_marginal_transit_model.ipynb)):
 
 | | likelihood evaluations | wall time | effective samples / s |
 |---|---|---|---|

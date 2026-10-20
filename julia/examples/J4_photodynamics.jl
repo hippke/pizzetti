@@ -1,4 +1,6 @@
-# # Photodynamics: NbodyGradient + Pizzetti
+# # J4 · Photodynamics: NbodyGradient + Pizzetti
+#
+# Level: advanced · Prerequisites: J1, J2 · Runtime: ~3 min
 #
 # A two-planet system near the 2:1 resonance shows transit-timing variations (TTVs).
 # NbodyGradient.jl (Agol, Hernandez & Langford 2021) integrates the N-body problem and
@@ -10,7 +12,7 @@
 # rule then gives the derivative of every light-curve sample with respect to every initial
 # condition: the gradient of a photodynamical likelihood.
 #
-# Run with:  julia --project=. 03_photodynamics.jl   (writes figures/)
+# Run with:  julia --project=. J4_photodynamics.jl   (writes figures/)
 
 using Pizzetti, NbodyGradient, ForwardDiff, Plots, Printf, LinearAlgebra
 ENV["GKSwstype"] = "100"
@@ -125,7 +127,7 @@ for (j, name) in ((2, "planet b"), (3, "planet c"))
     lin = hcat(ones(length(e)), e) \ tc
     scatter!(plt1, e, 1440 .* (tc .- (lin[1] .+ lin[2] .* e)), label = name, ms = 4)
 end
-savefig(plt1, joinpath(@__DIR__, "figures", "03_ttv.png"))
+savefig(plt1, joinpath(@__DIR__, "figures", "J4_ttv.png"))
 
 k = 8
 tcb = tp.ttbv[1, 2, k]
@@ -135,5 +137,13 @@ plot!(plt2[1], 24 .* (t[sel] .- tcb), 1e6 .* (F[sel] .- 1), lw = 2, label = "pla
       ylabel = "flux - 1 (ppm)")
 plot!(plt2[2], 24 .* (t[sel] .- tcb), 1e6 .* J[sel, slot(1), 3] .* 1e-5, lw = 2, color = :darkred,
       label = "ΔF for Δm_c = 1e-5 M⊙ (chain rule)", xlabel = "hours from mid-transit", ylabel = "ppm")
-savefig(plt2, joinpath(@__DIR__, "figures", "03_transit_sensitivity.png"))
+savefig(plt2, joinpath(@__DIR__, "figures", "J4_transit_sensitivity.png"))
 println("figures written to ", joinpath(@__DIR__, "figures"))
+
+# ## What you learned
+# - NbodyGradient supplies transit times, sky velocities and impact parameters with their
+#   derivatives; Pizzetti supplies F and ∂F/∂z; the chain rule joins them;
+# - this gives the gradient of a photodynamical light curve with respect to every initial
+#   condition and mass, ready for gradient-based fitting or HMC.
+#
+# Next: J5_interoperability.jl.

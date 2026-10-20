@@ -14,19 +14,22 @@ faster.
 
 ## Light curves against batman
 
-The numbers come from `python benchmarks/benchmark.py` (10⁵ points, about 30 % in transit, Intel
-Xeon 2.8 GHz, numba 0.68, single thread):
+The numbers come from `python benchmarks/benchmark.py` (10⁵ points, about 35 % in transit, Intel
+Xeon, numba 0.68, batman 2.5.3, single thread):
 - "flux only": consecutive calls change only `rp` and `u`;
-- "full": every call also changes the orbit.
+- "full": every call also changes the orbit, as in a fit.
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 2.42 ms | 0.15 ms | 16.7× | 5.96 ms | 0.40 ms | 14.9× |
-| quadratic | 0.1 | 3.01 ms | 0.32 ms | 9.5× | 6.57 ms | 0.61 ms | 10.8× |
-| nonlinear | 0.0092 | 3.13 ms | 1.07 ms | 2.9× | 6.69 ms | 1.41 ms | 4.8× |
-| nonlinear | 0.1 | 57.1 ms | 2.73 ms | 20.9× | 67.4 ms | 3.87 ms | 17.4× |
-| power2 | 0.0092 | 2.00 ms | 0.83 ms | 2.4× | 5.25 ms | 1.16 ms | 4.5× |
-| power2 | 0.1 | 35.9 ms | 1.77 ms | 20.2× | 39.7 ms | 2.13 ms | 18.7× |
+| quadratic | 0.0092 | 1.74 ms | 0.11 ms | 16.3× | 4.02 ms | 0.31 ms | 13.0× |
+| quadratic | 0.1 | 2.07 ms | 0.24 ms | 8.7× | 4.31 ms | 0.42 ms | 10.2× |
+| nonlinear | 0.0092 | 2.26 ms | 0.29 ms | 7.8× | 4.44 ms | 0.49 ms | 9.1× |
+| nonlinear | 0.1 | 38.3 ms | 0.85 ms | 44.9× | 40.4 ms | 0.91 ms | 44.3× |
+| power2 | 0.0092 | 1.06 ms | 0.26 ms | 4.0× | 3.26 ms | 0.47 ms | 6.9× |
+| power2 | 0.1 | 23.6 ms | 0.53 ms | 44.7× | 25.9 ms | 0.76 ms | 34.0× |
+
+batman's numerical laws (nonlinear, power-2) run at its default `max_err` of 1 ppm; pizzetti stays
+below 10⁻⁹.
 
 ### Low transit duty cycle
 
@@ -35,32 +38,35 @@ Long light curves have few points in transit. With `python benchmarks/benchmark.
 
 | law | rp | batman | pizzetti | speed-up | batman (full) | pizzetti (full) | speed-up |
 |---|---|---|---|---|---|---|---|
-| quadratic | 0.0092 | 0.63 ms | 0.09 ms | 7.1× | 4.36 ms | 0.35 ms | 12.3× |
-| quadratic | 0.1 | 0.69 ms | 0.11 ms | 6.5× | 4.40 ms | 0.38 ms | 11.6× |
-| nonlinear | 0.0092 | 0.39 ms | 0.54 ms | 0.7× | 4.11 ms | 0.85 ms | 4.8× |
-| nonlinear | 0.1 | 5.77 ms | 1.64 ms | 3.5× | 9.45 ms | 1.91 ms | 5.0× |
-| power2 | 0.0092 | 0.25 ms | 0.50 ms | 0.5× | 4.00 ms | 0.82 ms | 4.9× |
-| power2 | 0.1 | 3.74 ms | 1.19 ms | 3.2× | 7.54 ms | 1.66 ms | 4.5× |
+| quadratic | 0.0092 | 0.43 ms | 0.06 ms | 6.9× | 2.72 ms | 0.26 ms | 10.6× |
+| quadratic | 0.1 | 0.48 ms | 0.08 ms | 6.2× | 2.82 ms | 0.26 ms | 10.8× |
+| nonlinear | 0.0092 | 0.29 ms | 0.16 ms | 1.8× | 2.58 ms | 0.38 ms | 6.8× |
+| nonlinear | 0.1 | 3.90 ms | 0.22 ms | 17.5× | 6.19 ms | 0.43 ms | 14.5× |
+| power2 | 0.0092 | 0.18 ms | 0.15 ms | 1.2× | 2.49 ms | 0.34 ms | 7.3× |
+| power2 | 0.1 | 2.46 ms | 0.25 ms | 9.8× | 4.90 ms | 0.48 ms | 10.3× |
 
-In the same setting the quadratic flux was 0.24 ms (rp = 0.0092) and 0.26 ms (rp = 0.1) before blocks
-without on-star samples were skipped. The nonlinear and power-2 laws do not skip yet: they still
-evaluate their series at every sample, which is why batman, which skips off-star samples, is
-faster for small planets when few points are in transit.
+## In a fit
+
+In complete emcee fits (orbit, light curve and χ² at every step, all parameters changing), one
+likelihood evaluation is 4.4× faster than batman's for a TESS-like hot Jupiter (quadratic law)
+and 3.4× for a Kepler-like super-Earth (power-2 law with free α); for grazing transits, which
+have no interior phase, the gain is 2–3.5× (`examples/inference`, `examples/paper/grazing.py`).
 
 ## Notes
 
-- Quadratic family: the series is evaluated branch-free in blocks of 64 samples. A block in which
-  no sample lies on the star (all separations ≥ 1 + rp, flux exactly 1) is filled with 1 and skipped
-  (about 0.4 ns per sample); only points near the limb are gathered for the reference solver.
-  The flux is identical to that of the unblocked evaluation, because a sample is skipped only if it
-  fails the test `z < 1 + rp` that already selected its flux of 1.
-- Nonlinear, square-root and power-2 laws: the series is still evaluated for all samples (about
-  1 ns each, more with `exp` / `log`) and selected.
+- The series is evaluated branch-free in blocks of 64 samples for every law. A block in which
+  no sample lies on the star (all separations ≥ 1 + rp, flux exactly 1) is filled with 1 and
+  skipped (about 0.4 ns per sample); only points near the limb are gathered for the limb solver.
+  The flux is identical to that of the unblocked evaluation, because a sample is skipped only if
+  it fails the test `z < 1 + rp` that already selected its flux of 1.
 - For the power-2 law with an arbitrary exponent, each interior point needs one `exp` and one `log`
   (about 20 ns), because numba cannot vectorise them. The quarter powers of the nonlinear and
   square-root laws are computed with square roots instead.
-- Points near the limb cost about 10 ns with the exact solver (quadratic family) and 0.6–0.7 µs
-  with the quadrature (other laws).
+- Points near the limb cost about 10 ns with the exact solver (quadratic family). For the other
+  laws: 170–300 ns with the direct trapezoid rule (no set-up), 30–100 ns with its interpolants
+  (about 40 µs set-up per light curve, all exponents), against 0.6–1 µs with the quadrature.
+  `limb="fast"` switches to the interpolants from 150 limb samples on.
+- The per-call overhead of the non-quadratic laws is about 15 µs (cached per-exponent plans).
 - Circular orbits use a branch-free sine polynomial in turns, which vectorises.
 
 ## Marginal likelihood (`MarginalTransitModel`)
@@ -82,6 +88,5 @@ One power-law column costs about 12 µs:
 - ~5 µs for 280 limb samples (contact expansions evaluated across samples, so the loops
   vectorise; ~18 ns each).
 
-The same 280 samples cost ~300 µs with the quadrature, which is what `occult` uses for light
-curves with fewer than ~430 limb samples. The panel scheme removes the per-light-curve set-up
-that `occult` would pay (~180 µs per exponent).
+The same 280 samples cost ~300 µs with the quadrature and ~50 µs with `occult`'s default
+interpolants (set-up included); the panel scheme avoids even that per-light-curve set-up.

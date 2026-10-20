@@ -1,4 +1,6 @@
-# # Gradient-based fit of a super-Earth with the power-2 law
+# # J2 · Gradients: a gradient-based fit of a super-Earth with the power-2 law
+#
+# Level: intermediate · Prerequisites: J1 · Runtime: ~2 min
 #
 # Kepler-like data: 30 transits at 1-min cadence, p = 0.02, power-2 limb darkening with
 # both coefficients free. The likelihood is differentiated with ForwardDiff through the
@@ -6,7 +8,7 @@
 # We compare a gradient-free optimiser with L-BFGS, check the gradient against finite
 # differences, and get parameter uncertainties from the Hessian (Laplace approximation).
 #
-# Run with:  julia --project=. 02_gradient_fit.jl
+# Run with:  julia --project=. J2_gradients.jl
 
 using Pizzetti, ForwardDiff, Optim, Random, LinearAlgebra, Printf
 
@@ -73,3 +75,11 @@ println("\nparameter      best fit      ± (Hessian)     truth")
 for i in 1:7
     @printf("%-8s %14.8g  %12.3g  %12.8g\n", names[i], θbest[i], sqrt(Σ[i, i]) * scale[i], θtrue[i])
 end
+
+# ## What you learned
+# - the whole model (orbit, light curve, χ²) is differentiable with ForwardDiff, and the
+#   gradient of a seven-parameter likelihood costs about ten likelihoods;
+# - L-BFGS with exact gradients needs far fewer likelihood calls than Nelder-Mead;
+# - the Hessian at the optimum gives Laplace-approximation uncertainties.
+#
+# Next: J3_precision_and_rigour.jl, or J4_photodynamics.jl for gradients through an N-body code.

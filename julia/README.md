@@ -138,19 +138,22 @@ transit_poly!(r, b, u_n, dfdrbu)        # flux, and dfdrbu = [∂F/∂r, ∂F/�
 
 `examples/` (run from that folder with `julia --project=. <file>`):
 
-| script | content |
-|---|---|
-| `01_quickstart.jl` | laws, methods per sample, light curves with exposure time, derivatives, BigFloat |
-| `02_gradient_fit.jl` | Kepler-like super-Earth with the power-2 law: gradient check, Nelder–Mead vs L-BFGS with ForwardDiff, Hessian uncertainties |
-| `03_photodynamics.jl` | two planets near 2:1 with NbodyGradient.jl: transit times, impact parameters and sky velocities with their derivatives, chained with Pizzetti's exact ∂F/∂z into the derivative of every light-curve sample with respect to every initial orbital element and mass; checked against finite differences of the whole pipeline |
-| `04_certified.jl` | certified light curves, interval enclosures, Theorem 2 against BigFloat |
-| `05_limbdark.jl` | fluxes and gradients against Limbdark.jl, timing |
+| script | level | content |
+|---|---|---|
+| [`J1_quickstart.jl`](examples/J1_quickstart.jl) | beginner | laws as sums of powers of μ, the `Occultor`, which method computes which sample (`:interpolate`, `:trapezoid`, …), `evaluate!`, light curves with exposure time and eccentric orbits, first derivatives and BigFloat |
+| [`J2_gradients.jl`](examples/J2_gradients.jl) | intermediate | Kepler-like super-Earth with the power-2 law: gradient check, Nelder–Mead vs L-BFGS with ForwardDiff, Hessian uncertainties |
+| [`J3_precision_and_rigour.jl`](examples/J3_precision_and_rigour.jl) | advanced | certified light curves, interval enclosures, Theorem 2 against BigFloat, converged BigFloat references |
+| [`J4_photodynamics.jl`](examples/J4_photodynamics.jl) | advanced | two planets near 2:1 with NbodyGradient.jl: transit times, impact parameters and sky velocities with their derivatives, chained with Pizzetti's exact ∂F/∂z into the derivative of every light-curve sample with respect to every initial orbital element and mass; checked against finite differences of the whole pipeline |
+| [`J5_interoperability.jl`](examples/J5_interoperability.jl) | intermediate | fluxes, gradients and timing against Limbdark.jl; the same orbits and light curves as the Python package |
 
-![photodynamics](examples/figures/03_transit_sensitivity.png)
+The scripts are in the [Literate.jl](https://github.com/fredrikekre/Literate.jl) format, so
+`Literate.notebook("J1_quickstart.jl")` turns any of them into a Jupyter notebook.
+
+![photodynamics](examples/figures/J4_transit_sensitivity.png)
 
 ## Accuracy and tests
 
-`test/` (2820 tests, `] test Pizzetti`):
+`test/` (5993 tests, `] test Pizzetti`):
 
 - against the **independent references** of [`testdata/`](../testdata): the blocked integral by
   tanh-sinh quadrature of the area integral (no series, no Green's theorem, no hypergeometric

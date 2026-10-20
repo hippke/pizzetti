@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (Pizzetti.jl 0.2.0)
 
+- Documentation and examples reorganised:
+  - README shortened to an overview; details moved to the documentation.
+  - `examples/`: a tutorial curriculum of ten notebooks (01 first light curve … 10 linear-basis
+    light curves) with level, prerequisites and run time, replacing the four former notebooks;
+    all run in CI in a fast smoke mode (`PIZZETTI_SMOKE=1`, workflow `examples.yml`).
+  - `examples/paper/`: one script per table and figure of the paper.
+  - `julia/examples/`: five Literate-style scripts J1–J5 (quickstart, gradients, precision and
+    rigour, photodynamics, interoperability with Limbdark.jl and the Python package).
+  - Documentation numbers and limb methods brought up to date.
 - Faster limb for the square-root, nonlinear and power-2 laws (radius ratios < 0.3): 2–8x per
   light curve against 0.2.1, same accuracy (~1e-15 against the quadrature).
   - New module `_trap`: the limb integral written as a complete integral (no split, no

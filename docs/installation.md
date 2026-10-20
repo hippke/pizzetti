@@ -2,13 +2,14 @@
 
 ```bash
 pip install pizzetti                      # once released on PyPI
-pip install git+https://github.com/user/repo
+pip install git+https://github.com/hippke/pizzetti
+pip install "pizzetti[fit] @ git+https://github.com/hippke/pizzetti"   # with emcee and scipy for MarginalTransitModel
 ```
 
 From a clone, including the test and documentation extras:
 
 ```bash
-git clone https://github.com/user/repo pizzetti
+git clone https://github.com/hippke/pizzetti
 cd pizzetti
 pip install -e ".[test,docs]"
 ```
@@ -31,3 +32,13 @@ pytest -m perf -s        # timings against batman (printed)
 ```bash
 sphinx-build -b html docs docs/_build/html
 ```
+
+## Julia
+
+```julia
+] add https://github.com/hippke/pizzetti:julia
+```
+
+The package `Pizzetti` and its examples are described in
+[`julia/README.md`](https://github.com/hippke/pizzetti/tree/main/julia).
+

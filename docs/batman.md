@@ -24,7 +24,7 @@ import pizzetti as batman
 | | batman | pizzetti |
 |---|---|---|
 | quadratic / linear | Mandel & Agol with Hastings polynomials for K, E (errors ~2e-8) | interior series (proven ≤ 1e-9) + exact vectorised solver (≤ 1e-14) |
-| power-2, nonlinear, square-root | numerical integration over annuli, step from `max_err` (errors ~1e-7 at the tightest setting) | interior series (proven ≤ 1e-9) + Green's-theorem quadrature (≤ 3e-11) |
+| power-2, nonlinear, square-root | numerical integration over annuli, step from `max_err` (errors ~1e-7 at the tightest setting) | interior series (proven ≤ 1e-9) + fixed-node trapezoid rule or its interpolants at the limb (~1e-15) |
 | `logarithmic`, `exponential`, `custom` | supported | not supported (`NotImplementedError`): not sums of powers of μ |
 | `max_err`, `fac` | control the integration step | accepted and ignored; accuracy is set by `series_tol` |
 | `nthreads` | OpenMP | accepted; pizzetti runs single-threaded (a warning is issued for `nthreads > 1`) |

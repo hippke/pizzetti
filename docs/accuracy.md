@@ -19,7 +19,9 @@ The results:
 |---|---|
 | full model, every law | < 2 × 10⁻⁹ (test bound) |
 | exact quadratic-family solver | ≤ 7 × 10⁻¹⁵ |
-| limb quadrature (power-2, nonlinear, square-root) | ≤ 3 × 10⁻¹¹ |
+| limb: fixed-node trapezoid rule and its interpolants (rp < 0.3) | ≤ 6 × 10⁻¹⁶ |
+| limb: contact expansions | ~10⁻¹⁵ (a-posteriori estimate); `limb="proven"`: ≤ `series_tol`, proven |
+| limb: quadrature | ~10⁻¹⁶ |
 | interior series (default `series_tol`) | ≤ 10⁻⁹, proven |
 
 ## The series bound

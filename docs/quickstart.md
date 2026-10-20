@@ -68,6 +68,11 @@ z = np.linspace(0, 1.2, 1000)
 f = pizzetti.occult(z, 0.1, [0.4, 0.25], "quadratic")
 ```
 
+For the other laws, `limb=` selects the algorithm near the limb: `"fast"` (default), `"trapezoid"`,
+`"interpolate"`, `"contact"`, `"proven"` or `"quadrature"` (see [Method](method.md));
+`return_certified=True` also returns which samples carry a proven error bound. The tutorials in
+the repository's `examples/` folder walk through all of this.
+
 `pizzetti.series_cut` returns the separation $z_c$ up to which the interior series is used. Its
 flux error is rigorously below `series_tol` there:
 
@@ -76,4 +81,5 @@ z_c = pizzetti.series_cut(0.1, "quadratic", [0.4, 0.25], series_tol=1e-9)
 ```
 
 Pass `series_tol=0` to `occult` or `TransitModel` to switch the series off. This gives the
-reference solution (exact for the quadratic family, quadrature for the other laws).
+reference solution (exact for the quadratic family, the limb algorithms of [Method](method.md) for
+the other laws; `limb="quadrature"` selects Green's-theorem quadrature).

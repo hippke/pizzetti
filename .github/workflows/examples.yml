@@ -1,0 +1,51 @@
+name: Examples
+
+on:
+  push:
+    paths: ["src/**", "examples/**", "julia/src/**", "julia/examples/**", "pyproject.toml", ".github/workflows/examples.yml"]
+  pull_request:
+    paths: ["src/**", "examples/**", "julia/src/**", "julia/examples/**", "pyproject.toml", ".github/workflows/examples.yml"]
+  workflow_dispatch:
+
+jobs:
+  notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -e ".[fit]" batman-package corner matplotlib mpmath jupyter nbconvert ipykernel
+      - name: Execute the tutorial notebooks (smoke mode)
+        env:
+          PIZZETTI_SMOKE: "1"
+          MPLBACKEND: Agg
+        run: |
+          mkdir -p /tmp/executed
+          for nb in examples/*.ipynb; do
+            echo "::group::$nb"
+            jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=900 \
+              --output-dir /tmp/executed "$nb"
+            echo "::endgroup::"
+          done
+
+  julia-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the examples environment
+        run: julia --project=julia/examples -e 'using Pkg; Pkg.instantiate()'
+      - name: Run the tutorial scripts
+        env:
+          GKSwstype: "100"
+        working-directory: julia/examples
+        run: |
+          for s in J*.jl; do
+            echo "::group::$s"
+            julia --project=. "$s"
+            echo "::endgroup::"
+          done
