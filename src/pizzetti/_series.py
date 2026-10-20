@@ -306,3 +306,76 @@ def series_general(zb, m, gams, T, out):
                 P = P * v + T[i, l]
             s += _wpow(w, gams[i]) * P
         out[j] = 1.0 - s
+
+
+#: block length of the fused pass
+BLK = 64
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def select_quarter(z, aq, ah, a3q, ag, g, A0, A1, z_c, one_k, out, bcnt):
+    """Fused, branch-free pass for the exponents {1/4, 1/2, 3/4} (as _series_select of
+    occult for the quadratic law): out[i] = series flux where |z| <= z_c, 1 elsewhere;
+    blocks without on-star samples are filled with 1. bcnt[b] = samples of block b with
+    z_c < |z| < 1 + k; returns their total."""
+    n = z.shape[0]
+    tot = 0
+    for b in range((n + BLK - 1) // BLK):
+        lo = b * BLK
+        hi = min(lo + BLK, n)
+        zr = z[lo:hi]
+        fr = out[lo:hi]
+        on = 0
+        for q in range(hi - lo):
+            on += 1 if (abs(zr[q]) < one_k) else 0
+        if on == 0:
+            for q in range(hi - lo):
+                fr[q] = 1.0
+            bcnt[b] = 0
+            continue
+        cnt = 0
+        for q in range(hi - lo):
+            zi = abs(zr[q])
+            z2 = zi * zi
+            w = max(1.0 - z2, 1e-12)
+            v = 1.0 / w
+            s = np.sqrt(w)
+            qq = np.sqrt(s)
+            f = A0 + A1 * z2 - qq * _h12(aq, v) - s * _h12(ah, v) - s * qq * _h12(a3q, v)
+            fr[q] = f if zi <= z_c else 1.0
+            cnt += 1 if (zi > z_c) & (zi < one_k) else 0
+        bcnt[b] = cnt
+        tot += cnt
+    return tot
+
+
+@njit(cache=True, fastmath=True, error_model="numpy")
+def select_pow(z, aq, ah, a3q, ag, g, A0, A1, z_c, one_k, out, bcnt):
+    """As select_quarter, for one arbitrary exponent g (power-2 law)."""
+    n = z.shape[0]
+    tot = 0
+    for b in range((n + BLK - 1) // BLK):
+        lo = b * BLK
+        hi = min(lo + BLK, n)
+        zr = z[lo:hi]
+        fr = out[lo:hi]
+        on = 0
+        for q in range(hi - lo):
+            on += 1 if (abs(zr[q]) < one_k) else 0
+        if on == 0:
+            for q in range(hi - lo):
+                fr[q] = 1.0
+            bcnt[b] = 0
+            continue
+        cnt = 0
+        for q in range(hi - lo):
+            zi = abs(zr[q])
+            z2 = zi * zi
+            w = max(1.0 - z2, 1e-12)
+            v = 1.0 / w
+            f = A0 + A1 * z2 - _vexp(g * _vlog(w)) * _h12(ag, v)
+            fr[q] = f if zi <= z_c else 1.0
+            cnt += 1 if (zi > z_c) & (zi < one_k) else 0
+        bcnt[b] = cnt
+        tot += cnt
+    return tot

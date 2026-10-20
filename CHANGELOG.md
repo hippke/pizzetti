@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Faster limb for the square-root, nonlinear and power-2 laws (radius ratios < 0.3): 2–8x per
+  light curve against 0.2.1, same accuracy (~1e-15 against the quadrature).
+  - New module `_trap`: the limb integral written as a complete integral (no split, no
+    incomplete integrals), evaluated by a fixed-node trapezoid rule in s = asinh(tan th). The
+    integrand is analytic in |Im s| < pi/2 for every modulus (the Landen/AGM structure), so the
+    rule converges uniformly up to the contacts; the nodes do not depend on z, so the
+    exponents only enter precomputed weights. The pole b = x is removed by its residue term.
+    Inside the disk (z_c < z < 1 - p) the same integral is taken along a complex contour.
+  - New module `_interp`: per-curve Chebyshev interpolants of these rules. The singular part at
+    second contact follows from the connection formula J = A + lam^nu B with
+    B = -k^-nu J(k; ...) / sin(pi nu): the same integral at the complementary modulus. Set-up
+    ~40 us per light curve (the hypergeometric contact tables took 0.1–1.7 ms), ~10 ns per
+    sample and exponent.
+  - `limb="fast"` (default) picks the direct rules or the interpolants by the number of limb
+    samples; `"trapezoid"`, `"interpolate"` force one, `"contact"` the former expansions.
+  - Per-call overhead for the non-quadratic laws 40 -> 15 us (cached per-exponent plans), and
+    a fused, block-skipping interior pass as for the quadratic law.
+
 - `MarginalTransitModel`: transit and secondary-eclipse likelihood with the limb darkening and
   the baseline flux integrated out analytically. In the Bernstein basis the physical
   limb-darkening region is a cone (quadratic law: 0 <= c0 <= c1 <= c2, Kipping 2013), and the
