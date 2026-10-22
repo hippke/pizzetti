@@ -97,6 +97,10 @@ emcee fits the likelihood is 3.4–4.4× faster than batman's, and 2–3.5× for
 The interior series is the two-dimensional form of the mean-value expansion of **Paolo Pizzetti**
 (1860–1918), Italian geodesist and mathematician (*Rend. Lincei* 18, 1909).
 
+## Contributing
+
+All my repositories embrace collaboration between humans and AI. Contributions are welcome, whether they are written by you, by an AI assistant, or by both together, and they will be handled promptly. Please open an [issue](https://github.com/hippke/pizzetti/issues) or a pull request.
+
 ## Citing
 
 Please cite the accompanying paper (Hippke et al., in prep.) and Mandel & Agol (2002); see
