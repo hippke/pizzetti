@@ -25,7 +25,7 @@ that is accurate to 10⁻¹⁵ (other laws).
 import pizzetti as batman   # existing batman code runs unchanged
 ```
 
-Tutorials (ten notebooks from a first light curve to certified models, and five Julia scripts)
+Tutorials (ten notebooks from a first light curve to certified models, and six Julia scripts)
 are in the repository's [`examples/`](https://github.com/hippke/pizzetti/tree/main/examples) folder.
 
 ```{toctree}

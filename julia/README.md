@@ -145,6 +145,7 @@ transit_poly!(r, b, u_n, dfdrbu)        # flux, and dfdrbu = [∂F/∂r, ∂F/�
 | [`J3_precision_and_rigour.jl`](examples/J3_precision_and_rigour.jl) | advanced | certified light curves, interval enclosures, Theorem 2 against BigFloat, converged BigFloat references |
 | [`J4_photodynamics.jl`](examples/J4_photodynamics.jl) | advanced | two planets near 2:1 with NbodyGradient.jl: transit times, impact parameters and sky velocities with their derivatives, chained with Pizzetti's exact ∂F/∂z into the derivative of every light-curve sample with respect to every initial orbital element and mass; checked against finite differences of the whole pipeline |
 | [`J5_interoperability.jl`](examples/J5_interoperability.jl) | intermediate | fluxes, gradients and timing against Limbdark.jl; the same orbits and light curves as the Python package |
+| [`J6_bartky.jl`](examples/J6_bartky.jl) | advanced | the limb integral in Bartky's variable (paper Section 5.3) step by step: the complete integral, the strip of analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk, the connection formula behind the interpolants, a generic version for BigFloat references, cost |
 
 The scripts are in the [Literate.jl](https://github.com/fredrikekre/Literate.jl) format, so
 `Literate.notebook("J1_quickstart.jl")` turns any of them into a Jupyter notebook.

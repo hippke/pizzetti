@@ -92,5 +92,5 @@ end
 # - Pizzetti.jl and Python pizzetti agree on orbits to rounding and on fluxes to within the
 #   series tolerance.
 #
-# This completes the Julia tutorials; the Python notebooks in ../../examples cover fitting with
-# `MarginalTransitModel`, error control and performance in more depth.
+# Next: J6_bartky.jl, the limb integral in Bartky's variable. The Python notebooks in
+# ../../examples cover fitting with `MarginalTransitModel`, error control and performance in more depth.

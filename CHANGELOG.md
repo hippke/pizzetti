@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `julia/examples/J6_bartky.jl`: the limb integral in Bartky's variable (paper Section 5.3) step
+  by step, every claim checked numerically: the complete integral in the rim angle, the strip of
+  analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk,
+  the connection formula behind the interpolants, a generic version that gives BigFloat
+  references, and the cost of the package's rules. `julia/src/trap.jl` comments use the paper's
+  notation (ϑ, β, 𝒦, 𝒦_reg, 𝒦_sing).
+
 ## 0.3.0 (Pizzetti.jl 0.2.0)
 
 - Fix: `import pizzetti` no longer needs scipy. The quasi-random points of the nonlinear-law

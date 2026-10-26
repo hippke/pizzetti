@@ -1,17 +1,20 @@
-# Limb flux by a fixed-node sinh-trapezoid rule, and Chebyshev interpolants built from it
-# (paper Section 5.3; port of the Python modules _trap and _interp).
+# Limb flux by a fixed-node trapezoid rule in Bartky's variable, and Chebyshev interpolants
+# built from it (paper Section 5.3, notation as there; port of the Python modules _trap and
+# _interp; examples/J6_bartky.jl walks through every step).
 #
-# On the limb (1 - p < z < 1 + p, z > p) the blocked flux of μ^α is the complete integral
-#     P = -2 √k x^(γ+1) / (2γ+2) J(y; x),   y = 1 - k,   γ = α/2,
-#     J(y; x) = ∫_0^∞ cosh(s)^-(α+3) (1 + y sinh² s)^(-1/2) [1 + c0 cosh² s / (cosh² s - x)] ds,
-# x = 1 - (z-p)², k = x/(4zp), c0 = p² - z². Its integrand is analytic in |Im s| < π/2 for
-# every modulus, so the trapezoid rule on s = n h converges like exp(-π²/h) uniformly up
-# to the contacts; the error of the poles cosh² s = x is subtracted in closed form. The
-# nodes do not depend on z, so the exponents only enter precomputed weights.
-# Inside the disk near the limb (z_c < z < 1 - p, y < 0) the flux is Re J(y - i0), taken
-# along the contour tan θ = sinh(s + iγc).
-# Connection formula: J = A(y) + y^ν B(y), ν = γ + 3/2, B = -k^-ν J(k; -x y/k) / sin(πν)
-# (odd α: y^ν ln y and (-1)^ν/π); A, B and P/k^ν are interpolated per light curve.
+# On the limb (1 - p < z < 1 + p, z > p), with x = 1 - (z-p)², k = x/(4zp), y = 1 - k,
+# c0 = p² - z² and the rim angle ϑ (1 - s = x cos²ϑ), the blocked flux of μ^α is
+#     P = -2 √k x^(α/2+1) / (α+2) 𝒦(y; x),
+#     𝒦(y; x) = ∫_0^∞ cosh(β)^-(α+3) (1 + y sinh² β)^(-1/2) [1 + c0 cosh² β / (cosh² β - x)] dβ,
+# Bartky's variable tan ϑ = sinh β. (In the code: s ≡ β, J ≡ 𝒦, λ ≡ y, γ = α/2.) The integrand
+# is analytic in |Im β| < π/2 for every modulus, so the trapezoid rule on β = n h converges like
+# exp(-π²/h) uniformly up to the contacts; the error of the poles cosh² β = x is subtracted in
+# closed form. The nodes do not depend on z, so the exponents only enter precomputed weights.
+# Inside the disk near the limb (z_c < z < 1 - p, y < 0) the flux is Re 𝒦(y - i0), taken
+# along the contour tan ϑ = sinh(β + iγc).
+# Connection formula: 𝒦 = 𝒦_reg(y) + y^ν 𝒦_sing(y), ν = (α+3)/2,
+# 𝒦_sing = -k^-ν 𝒦(k; -x y/k) / sin(πν) (odd α: y^ν ln y and (-1)^ν/π); 𝒦_reg (code: A),
+# 𝒦_sing (code: B) and P/k^ν are interpolated per light curve.
 
 const TRAP_H = 0.2
 const TRAP_TAIL = 1e-16

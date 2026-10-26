@@ -86,7 +86,7 @@ emcee fits the likelihood is 3.4–4.4× faster than batman's, and 2–3.5× for
 
 | | |
 |---|---|
-| [Tutorials](examples/) | ten Python notebooks and five Julia scripts, from a first light curve to certified, differentiable models |
+| [Tutorials](examples/) | ten Python notebooks and six Julia scripts, from a first light curve to certified, differentiable models |
 | [Documentation](docs/) | method, accuracy, performance and API |
 | [Paper reproduction](examples/paper) | one command per table and figure of the paper |
 | [Proofs](docs/proofs) | self-contained proofs of the theorems, and [validation notebooks](validation) |
