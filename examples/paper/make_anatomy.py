@@ -25,7 +25,8 @@ TAU = 1e-9
 C = 0.6
 # method codes and colours
 OUTSIDE, SERIES, BARTKY, QUAD = 0, 1, 2, 3
-COL = {OUTSIDE: "#f2f2f2", SERIES: "#4477aa", BARTKY: "#ee8866", QUAD: "#999933"}
+COL = {OUTSIDE: "#f0f0f0", SERIES: "#b7d0e8", BARTKY: "#f6c6ae", QUAD: "#dcdca8"}      # fills, both rows
+LINE = {SERIES: "#2f6aa3", BARTKY: "#d4601f", OUTSIDE: "#707070"}                          # light-curve strokes
 LAB = {SERIES: r"interior series $S_M$, error $\leq\tau$ proven", BARTKY: "fixed-node limb rule in Bartky's variable, or its interpolants",
        QUAD: "Green's-theorem quadrature", OUTSIDE: "no overlap, $F=1$"}
 
@@ -49,8 +50,25 @@ def method_map(alpha, zs, ps):
     return m
 
 
+def line_label(ax, x0, y0, d, text, offset_pt):
+    """Text parallel to the line through (x0, y0) with data direction d, shifted by offset_pt
+    points perpendicular to it (positive: to the left of the direction)."""
+    p0 = ax.transData.transform((x0, y0))
+    p1 = ax.transData.transform((x0 + d[0], y0 + d[1]))
+    v = p1 - p0
+    v /= np.hypot(*v)
+    ang = np.degrees(np.arctan2(v[1], v[0]))
+    n = np.array([-v[1], v[0]])
+    if ang > 90 or ang <= -90:          # keep the text readable left to right
+        ang -= 180
+    ax.annotate(text, (x0, y0), xytext=tuple(offset_pt * n), textcoords="offset points",
+                rotation=ang, rotation_mode="anchor", ha="center", va="center")
+
+
 def main():
-    plt.rcParams.update({"font.size": 9, "axes.labelsize": 9, "legend.fontsize": 8})
+    plt.rcParams.update({"font.family": "serif", "font.serif": ["TeX Gyre Termes", "Times New Roman", "Times"],
+                         "mathtext.fontset": "stix", "font.size": 8.5, "axes.labelsize": 8.5,
+                         "axes.titlesize": 8.5, "legend.fontsize": 8.5, "xtick.labelsize": 8, "ytick.labelsize": 8})
     fig, axes = plt.subplots(2, 2, figsize=(7.1, 5.2), gridspec_kw=dict(height_ratios=[1, 1.25]))
     p = 0.1
     z = np.linspace(0, 1.25, 2501)
@@ -61,21 +79,21 @@ def main():
         segs = [(0, zc, SERIES), (zc, 1 + p, BARTKY), (1 + p, z[-1], OUTSIDE)]
         for lo, hi, code in segs:
             sel = (z >= lo) & (z <= hi)
-            ax.plot(z[sel], 1e6 * (f[sel] - 1), color=COL[code] if code != OUTSIDE else "0.55", lw=2.2)
-            ax.axvspan(lo, hi, color=COL[code], alpha=0.25 if code != OUTSIDE else 0.6, lw=0)
+            ax.axvspan(lo, hi, color=COL[code], lw=0, zorder=0)
+            ax.plot(z[sel], 1e6 * (f[sel] - 1), color=LINE[code], lw=2.0, zorder=3)
         ymin = 1e6 * (f.min() - 1)
         for xv, lab in ((zc, r"$z_c$"), (1 - p, r"$1-p$"), (1 + p, r"$1+p$")):
             ax.axvline(xv, color="0.3", lw=0.7, ls=":")
-            ax.text(xv + 0.008, ymin * 1.04, lab, ha="left", va="bottom", fontsize=7.5, rotation=90)
+            ax.text(xv + 0.008, ymin * 1.04, lab, ha="left", va="bottom", fontsize=8, rotation=90)
         ax.set(xlim=(0, z[-1]), xlabel=r"separation $z$ (stellar radii)",
                title=rf"$p={p}$, $c={C}$, $\alpha={alpha}$", ylim=(ymin * 1.08, 900))
         if j == 0:
             ax.set_ylabel(r"$F-1$ (ppm)")
         # annotate regimes
-        ax.text(zc / 2, ymin * 0.45, "interior", ha="center", va="center", fontsize=8)
-        ax.text((zc + 1 - p) / 2, ymin * 0.3, "band", ha="center", fontsize=7.5, rotation=90, va="center")
-        ax.text(0.985, ymin * 0.45, "limb\ncrossing", ha="center", va="center", fontsize=7.5)
-        ax.text(1.185, ymin * 0.45, "no\noverlap", ha="center", va="center", fontsize=7.5)
+        ax.text(zc / 2, ymin * 0.45, "interior", ha="center", va="center")
+        ax.text((zc + 1 - p) / 2, ymin * 0.3, "band", ha="center", rotation=90, va="center")
+        ax.text(0.985, ymin * 0.45, "limb\ncrossing", ha="center", va="center")
+        ax.text(1.185, ymin * 0.45, "no\noverlap", ha="center", va="center")
 
     zs = np.linspace(0, 1.5, 751)
     ps = np.linspace(0.005, 0.5, 200)
@@ -90,11 +108,13 @@ def main():
         zcs = np.array([zcut(pp, alpha) for pp in ps])
         ax.plot(zcs, ps, "k", lw=0.8, ls=":")
         ax.axhline(T.P_MAX, color="k", lw=0.6, ls="-.")
-        ax.text(0.86, 0.165, r"$z=1-p$", fontsize=7.5, rotation=-60, ha="center", va="center")
-        ax.text(1.22, 0.195, r"$z=1+p$", fontsize=7.5, rotation=61, ha="center", va="center")
-        ax.text(0.665, 0.13, r"$z_c(p)$", fontsize=7.5, rotation=-50, ha="center", va="center")
-        ax.text(0.445, 0.405, r"$z=p$", fontsize=7.5, rotation=61, ha="center", va="center")
-        ax.text(1.49, 0.31, r"$p=0.3$", fontsize=7.5, ha="right", va="bottom")
+        fig.canvas.draw()
+        line_label(ax, 1 - 0.21, 0.21, (-1, 1), r"$z=1-p$", -5)
+        line_label(ax, 1 + 0.20, 0.20, (1, 1), r"$z=1+p$", -5)
+        ip = np.searchsorted(ps, 0.23)
+        line_label(ax, zcs[ip], ps[ip], (zcs[ip + 1] - zcs[ip], ps[ip + 1] - ps[ip]), r"$z_c(p)$", 5)
+        line_label(ax, 0.41, 0.41, (1, 1), r"$z=p$", 5)
+        ax.text(1.49, 0.31, r"$p=0.3$", ha="right", va="bottom")
         ax.set(xlim=(0, 1.5), ylim=(0, 0.5), xlabel=r"separation $z$ (stellar radii)", title=rf"$\alpha={alpha}$")
         if j == 0:
             ax.set_ylabel(r"radius ratio $p$")
