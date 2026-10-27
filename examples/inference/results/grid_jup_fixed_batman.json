@@ -1,0 +1,47 @@
+{
+ "case": "jup_fixed",
+ "code": "batman",
+ "label": "Hot Jupiter, power-2, $\\alpha$ fixed",
+ "law": "power2",
+ "fixed_alpha": true,
+ "n_points": 1316,
+ "n_in_transit": 658,
+ "nwalkers": 32,
+ "nsteps": 20000,
+ "ndim": 6,
+ "ncalls": 640032,
+ "ncalls_model": 639299,
+ "wall_s": 315.304476316,
+ "lightcurve_s": 304.5653629930158,
+ "logprob_s": 310.1988880099642,
+ "overhead_s": 10.739113322984167,
+ "emcee_s": 5.10558830603577,
+ "per_call_total_us": 492.63861231313433,
+ "per_call_lc_us": 476.4051922387112,
+ "autocorr": [
+  82.18571572609649,
+  80.02683761902256,
+  161.0859552690551,
+  189.43028965413808,
+  213.95959383745353,
+  92.734352285916
+ ],
+ "acceptance": 0.4723140625,
+ "theta_true": [
+  0.0,
+  3.5,
+  0.1,
+  9.0,
+  0.35,
+  0.6,
+  0.6
+ ],
+ "names": [
+  "t0",
+  "per",
+  "rp",
+  "a",
+  "b",
+  "ld1"
+ ]
+}

@@ -1,0 +1,47 @@
+{
+ "case": "se_fixed",
+ "code": "batman",
+ "label": "Super-Earth, power-2, $\\alpha$ fixed",
+ "law": "power2",
+ "fixed_alpha": true,
+ "n_points": 10380,
+ "n_in_transit": 6870,
+ "nwalkers": 32,
+ "nsteps": 20000,
+ "ndim": 6,
+ "ncalls": 640032,
+ "ncalls_model": 582098,
+ "wall_s": 386.33036022399983,
+ "lightcurve_s": 372.88648282812755,
+ "logprob_s": 380.35183656103845,
+ "overhead_s": 13.443877395872278,
+ "emcee_s": 5.978523662961379,
+ "per_call_total_us": 603.6110072996348,
+ "per_call_lc_us": 640.590558339193,
+ "autocorr": [
+  154.63350353247873,
+  165.05869340026365,
+  474.3201135271599,
+  659.3535859315905,
+  635.3629225929991,
+  146.88471205497598
+ ],
+ "acceptance": 0.32011093749999997,
+ "theta_true": [
+  0.0,
+  10.0,
+  0.02,
+  20.0,
+  0.2,
+  0.6,
+  0.6
+ ],
+ "names": [
+  "t0",
+  "per",
+  "rp",
+  "a",
+  "b",
+  "ld1"
+ ]
+}

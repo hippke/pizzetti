@@ -1,0 +1,49 @@
+{
+ "case": "se_free",
+ "code": "pizzetti",
+ "label": "Super-Earth, power-2, $\\alpha$ free",
+ "law": "power2",
+ "fixed_alpha": false,
+ "n_points": 10380,
+ "n_in_transit": 6870,
+ "nwalkers": 32,
+ "nsteps": 20000,
+ "ndim": 7,
+ "ncalls": 640032,
+ "ncalls_model": 560146,
+ "wall_s": 113.28013642699989,
+ "lightcurve_s": 97.3829084121403,
+ "logprob_s": 105.15527521010699,
+ "overhead_s": 15.897228014859593,
+ "emcee_s": 8.124861216892896,
+ "per_call_total_us": 176.99136359900737,
+ "per_call_lc_us": 173.85272484698686,
+ "autocorr": [
+  261.1304319950809,
+  278.97707234884126,
+  688.3544840092005,
+  829.0716383964317,
+  860.9302405597768,
+  489.7199581465801,
+  501.41631788603513
+ ],
+ "acceptance": 0.2569,
+ "theta_true": [
+  0.0,
+  10.0,
+  0.02,
+  20.0,
+  0.2,
+  0.6,
+  0.6
+ ],
+ "names": [
+  "t0",
+  "per",
+  "rp",
+  "a",
+  "b",
+  "ld1",
+  "ld2"
+ ]
+}

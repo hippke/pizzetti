@@ -1,0 +1,47 @@
+{
+ "case": "jup_fixed",
+ "code": "pizzetti",
+ "label": "Hot Jupiter, power-2, $\\alpha$ fixed",
+ "law": "power2",
+ "fixed_alpha": true,
+ "n_points": 1316,
+ "n_in_transit": 658,
+ "nwalkers": 32,
+ "nsteps": 20000,
+ "ndim": 6,
+ "ncalls": 640032,
+ "ncalls_model": 638782,
+ "wall_s": 52.8421932,
+ "lightcurve_s": 42.90927015695752,
+ "logprob_s": 48.36769616096342,
+ "overhead_s": 9.932923043042479,
+ "emcee_s": 4.474497039036578,
+ "per_call_total_us": 82.56179878506074,
+ "per_call_lc_us": 67.1735743288908,
+ "autocorr": [
+  79.33706004474365,
+  79.05603010547628,
+  150.7978251786057,
+  179.92097766123933,
+  207.19545544364146,
+  89.66415005483918
+ ],
+ "acceptance": 0.4722015625,
+ "theta_true": [
+  0.0,
+  3.5,
+  0.1,
+  9.0,
+  0.35,
+  0.6,
+  0.6
+ ],
+ "names": [
+  "t0",
+  "per",
+  "rp",
+  "a",
+  "b",
+  "ld1"
+ ]
+}

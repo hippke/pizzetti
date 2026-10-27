@@ -1,0 +1,177 @@
+[
+ {
+  "case": "jup_quad",
+  "label": "Hot Jupiter, quadratic law",
+  "law": "quadratic",
+  "fixed_alpha": false,
+  "n_points": 1316,
+  "n_in_transit": 658,
+  "ndim": 7,
+  "ncalls": 640032,
+  "dmed_sigma_max": 0.08389581552706445,
+  "dmed_mcse_max": 1.817408407278017,
+  "dwidth_max": 0.060988286602556396,
+  "neff_min": 1094.68509080774,
+  "steps_identical": 846,
+  "model_err": {
+   "batman": 9.127347877502245e-09,
+   "pizzetti": 7.235270160776963e-10
+  },
+  "batman": {
+   "wall": 54.3874840069999,
+   "lc": 47.41043160999186,
+   "overhead": 6.977052397008038,
+   "emcee": 3.886442577005596,
+   "per_call": 84.97619495118978,
+   "per_call_lc": 74.47081843327118
+  },
+  "pizzetti": {
+   "wall": 16.066161727000008,
+   "lc": 9.188918278999722,
+   "overhead": 6.877243448000286,
+   "emcee": 3.6577769300633918,
+   "per_call": 25.102122592307897,
+   "per_call_lc": 14.494979444361627
+  }
+ },
+ {
+  "case": "jup_fixed",
+  "label": "Hot Jupiter, power-2, $\\alpha$ fixed",
+  "law": "power2",
+  "fixed_alpha": true,
+  "n_points": 1316,
+  "n_in_transit": 658,
+  "ndim": 6,
+  "ncalls": 640032,
+  "dmed_sigma_max": 0.016555998617052047,
+  "dmed_mcse_max": 0.7444496937798135,
+  "dwidth_max": 0.015476410795336903,
+  "neff_min": 2392.9751913296755,
+  "steps_identical": 27,
+  "model_err": {
+   "batman": 1.11998587215556e-06,
+   "pizzetti": 7.311400374021559e-10
+  },
+  "batman": {
+   "wall": 315.304476316,
+   "lc": 304.5653629930158,
+   "overhead": 10.739113322984167,
+   "emcee": 5.10558830603577,
+   "per_call": 492.63861231313433,
+   "per_call_lc": 476.4051922387112
+  },
+  "pizzetti": {
+   "wall": 52.8421932,
+   "lc": 42.90927015695752,
+   "overhead": 9.932923043042479,
+   "emcee": 4.474497039036578,
+   "per_call": 82.56179878506074,
+   "per_call_lc": 67.1735743288908
+  }
+ },
+ {
+  "case": "jup_free",
+  "label": "Hot Jupiter, power-2, $\\alpha$ free",
+  "law": "power2",
+  "fixed_alpha": false,
+  "n_points": 1316,
+  "n_in_transit": 658,
+  "ndim": 7,
+  "ncalls": 640032,
+  "dmed_sigma_max": 0.06117261283884595,
+  "dmed_mcse_max": 1.6534245382992965,
+  "dwidth_max": 0.016772742419239872,
+  "neff_min": 648.33444906002,
+  "steps_identical": 34,
+  "model_err": {
+   "batman": 1.7919713438674378e-06,
+   "pizzetti": 7.475448038363197e-10
+  },
+  "batman": {
+   "wall": 299.0206402000001,
+   "lc": 289.83726889205695,
+   "overhead": 9.183371307943162,
+   "emcee": 5.043389624079282,
+   "per_call": 467.1963904929755,
+   "per_call_lc": 479.1506483606442
+  },
+  "pizzetti": {
+   "wall": 80.532181842,
+   "lc": 68.05382380995229,
+   "overhead": 12.478358032047709,
+   "emcee": 7.295632478989091,
+   "per_call": 125.82524286598169,
+   "per_call_lc": 111.71161770008845
+  }
+ },
+ {
+  "case": "se_fixed",
+  "label": "Super-Earth, power-2, $\\alpha$ fixed",
+  "law": "power2",
+  "fixed_alpha": true,
+  "n_points": 10380,
+  "n_in_transit": 6870,
+  "ndim": 6,
+  "ncalls": 640032,
+  "dmed_sigma_max": 0.0676124357967924,
+  "dmed_mcse_max": 2.1987383548017,
+  "dwidth_max": 0.01819933034709842,
+  "neff_min": 776.5181094398738,
+  "steps_identical": 12,
+  "model_err": {
+   "batman": 1.081221278731448e-06,
+   "pizzetti": 4.970565070649968e-10
+  },
+  "batman": {
+   "wall": 386.33036022399983,
+   "lc": 372.88648282812755,
+   "overhead": 13.443877395872278,
+   "emcee": 5.978523662961379,
+   "per_call": 603.6110072996348,
+   "per_call_lc": 640.590558339193
+  },
+  "pizzetti": {
+   "wall": 84.63426131100005,
+   "lc": 71.04521592496872,
+   "overhead": 13.58904538603133,
+   "emcee": 5.656584375940383,
+   "per_call": 132.23442157735872,
+   "per_call_lc": 122.79004672552584
+  }
+ },
+ {
+  "case": "se_free",
+  "label": "Super-Earth, power-2, $\\alpha$ free",
+  "law": "power2",
+  "fixed_alpha": false,
+  "n_points": 10380,
+  "n_in_transit": 6870,
+  "ndim": 7,
+  "ncalls": 640032,
+  "dmed_sigma_max": 0.04399799730954016,
+  "dmed_mcse_max": 0.6309418115413767,
+  "dwidth_max": 0.009012627724043765,
+  "neff_min": 451.6840992698396,
+  "steps_identical": 6,
+  "model_err": {
+   "batman": 1.8715983060024755e-06,
+   "pizzetti": 5.24642440602463e-10
+  },
+  "batman": {
+   "wall": 370.82662199699985,
+   "lc": 358.0573648771824,
+   "overhead": 12.76925711981744,
+   "emcee": 5.968921054956581,
+   "per_call": 579.3876274889378,
+   "per_call_lc": 640.3544006173287
+  },
+  "pizzetti": {
+   "wall": 113.28013642699989,
+   "lc": 97.3829084121403,
+   "overhead": 15.897228014859593,
+   "emcee": 8.124861216892896,
+   "per_call": 176.99136359900737,
+   "per_call_lc": 173.85272484698686
+  }
+ }
+]

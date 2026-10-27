@@ -21,6 +21,29 @@ python benchmark_calls.py        # cost per likelihood evaluation, a new posteri
 python benchmark_wall.py         # wall-clock time of 2000-step runs
 ```
 
+## Inference grid (paper, Table "inference")
+
+`run_grid.py` extends the two cases to the grid of the paper: hot Jupiter and super-Earth with the
+power-2 law, the exponent alpha fixed or free, plus the quadratic-law hot Jupiter. Every run records
+the wall time of the complete emcee run, the time inside the light-curve call (orbit + flux) and the
+remainder (emcee, Python, chi^2).
+
+```bash
+./rungrid.sh                     # the ten runs (~30 min on one core)
+python analyze_grid.py 4000      # results/grid_summary.json, grid_table.tex, corner_<case>_paper.pdf
+```
+
+| fit | N_par | batman total / l.c. / overhead [s] | pizzetti total / l.c. / overhead [s] | speed-up total / l.c. | max dmed/sigma | max dwidth |
+|---|---|---|---|---|---|---|
+| hot Jupiter, quadratic | 7 | 54 / 47 / 7 | 16.1 / 9.2 / 6.9 | 3.4 / 5.2 | 0.08 | 6 % |
+| hot Jupiter, power-2, alpha fixed | 6 | 315 / 305 / 11 | 52.8 / 42.9 / 9.9 | 6.0 / 7.1 | 0.02 | 2 % |
+| hot Jupiter, power-2, alpha free | 7 | 299 / 290 / 9 | 80.5 / 68.1 / 12.5 | 3.7 / 4.3 | 0.06 | 2 % |
+| super-Earth, power-2, alpha fixed | 6 | 386 / 373 / 13 | 84.6 / 71.0 / 13.6 | 4.6 / 5.2 | 0.07 | 2 % |
+| super-Earth, power-2, alpha free | 7 | 371 / 358 / 13 | 113.3 / 97.4 / 15.9 | 3.3 / 3.7 | 0.04 | 1 % |
+
+32 walkers x 20 000 steps = 640 032 likelihood evaluations per run. Freeing alpha costs pizzetti
+45-50 us per call (new series tables, trapezoid weights and interpolants for every new exponent).
+
 ## Results (Intel Xeon cloud instance, single thread; Python 3.13, numba 0.68, batman 2.5.3, Julia 1.13.1)
 
 | | hot Jupiter (quadratic) | super-Earth (power-2) |

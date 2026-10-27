@@ -11,6 +11,7 @@ python examples/paper/validate.py
 
 | Paper | Script | Output | Runtime |
 |---|---|---|---|
+| Fig. `anatomy` (light-curve regimes and the method map in the (z, p) plane) | [`make_anatomy.py`](make_anatomy.py) | `figures/fig_anatomy.pdf` | ~1 min |
 | Fig. `power2` (power-2 light curves and errors) | [`make_figures.py`](make_figures.py) | `figures/fig_power2_lightcurves.pdf` (and `fig_polynomial_limits.pdf`) | ~2 min |
 | Table `bound` (error bound against the true truncation error) | [`validate.py`](validate.py) | `tables/error_bound_binomial.tex`, `tables/error_bound.tex` | ~5 min |
 | Table `powers` (exponents and series orders) | [`validate.py`](validate.py) | `tables/powers.tex` | (same run) |
@@ -20,7 +21,7 @@ python examples/paper/validate.py
 | Table `contact` (contact expansions, proven pieces, quadrature) | [`contact_table.py`](contact_table.py) | `tables/contact.tex` | ~10 min |
 | Table `trap` (fixed-node limb rule and interpolants) | [`limb_table.py`](limb_table.py) | `tables/trap.tex` | ~5 min |
 | Section 5.1, round-off of the series in double precision | [`roundoff.py`](roundoff.py) | `out/roundoff.txt` | ~1 min |
-| Table `inference`, Fig. `inference` (emcee fits, corner plots) | [`../inference`](../inference) | `../inference/results/` | ~25 min |
+| Table `inference`, Fig. `inference` (emcee fits: time budget, posterior agreement, corner plots) | [`../inference`](../inference) (`rungrid.sh`, `analyze_grid.py`) | `../inference/results/grid_*` | ~30 min |
 | Section 6.4, grazing transits | [`grazing.py`](grazing.py) (needs `../inference` results) | `grazing.json` | ~3 min |
 | Theorems 1–3, Appendix B (independent checks of the proofs) | [`../../validation`](../../validation) notebooks | | ~10 min |
 
