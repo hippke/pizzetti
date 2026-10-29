@@ -2,7 +2,7 @@
 
 **Limb-darkened transit light curves from an elementary series with a proven error bound, in Julia.**
 
-Pizzetti.jl implements the methods of Hippke & Agol (in prep.) and of the Python package
+Pizzetti.jl implements the methods of Hippke, Agol & Heller (in prep.) and of the Python package
 [pizzetti](https://github.com/hippke/pizzetti) in Julia:
 
 - **Interior series.** While the occultor lies inside the stellar disk, the flux of any law built
@@ -14,12 +14,12 @@ Pizzetti.jl implements the methods of Hippke & Agol (in prep.) and of the Python
   for the other laws and `p < 0.3`, a fixed-node sinh-trapezoid rule for the limb integral written
   as a complete integral (no set-up), or, for light curves with at least 150 limb samples, Chebyshev
   interpolants built from it through the connection formula at second contact (~40 µs per light
-  curve; both `~1e-15`; paper Section 5.3). Also available: power series about first and second
+  curve; both `~1e-15`; paper Sect. 6.4). Also available: power series about first and second
   contact built from Gauss hypergeometric functions (`~1e-15`), optionally split into pieces with a
   **proven** bound (Theorem 3), and Green's-theorem quadrature with a Gauss–Jacobi first segment (`~1e-16`).
 - **Exact derivatives.** With ForwardDiff, dual numbers flow through orbits and light curves; the
   flux derivatives with respect to `z` and `p` are the closed-form hypergeometric expressions of the
-  paper (Section 5.4), not derivatives of truncated series or of quadrature rules.
+  paper (Sect. 3.2), not derivatives of truncated series or of quadrature rules.
 - **Any precision.** Everything is generic: `BigFloat` light curves (with a higher series order),
   and rigorous `IntervalArithmetic` enclosures of the exact interior flux, including rounding.
 - **Drop-in for Limbdark.jl.** `transit_poly(r, b, u_n)` and `transit_poly!(r, b, u_n, dfdrbu)` with
@@ -106,7 +106,7 @@ F, dFdz, dFdp, dFdu = flux_gradient_law(z, p, law)   # with respect to the law's
 
 Under ForwardDiff the value is computed as usual (series within its proven bound, contact
 expansions, closed forms), and the partial derivatives with respect to `z` and `p` come from
-the exact expressions of the paper's Section 5.4 everywhere, including the interior (where the
+the exact expressions of the paper's Sect. 3.2 everywhere, including the interior (where the
 derivative of the truncated series would only be accurate to ~1e-7 near the cut) and exactly at the
 contact points (where automatic differentiation of the elliptic integrals or of a quadrature rule
 fails). Derivatives with respect to exponents (the power-2 α) are Richardson-extrapolated
@@ -136,19 +136,23 @@ transit_poly!(r, b, u_n, dfdrbu)        # flux, and dfdrbu = [∂F/∂r, ∂F/�
 
 ## Examples
 
-`examples/` (run from that folder with `julia --project=. <file>`):
+Seven tutorial notebooks in [`examples/`](examples), executed and rendered on GitHub. Each is
+also a plain script in the [Literate.jl](https://github.com/fredrikekre/Literate.jl) format
+(same name, `.jl`), which runs from that folder with `julia --project=. <file>`.
 
-| script | level | content |
+| notebook | level | content |
 |---|---|---|
-| [`J1_quickstart.jl`](examples/J1_quickstart.jl) | beginner | laws as sums of powers of μ, the `Occultor`, which method computes which sample (`:interpolate`, `:trapezoid`, …), `evaluate!`, light curves with exposure time and eccentric orbits, first derivatives and BigFloat |
-| [`J2_gradients.jl`](examples/J2_gradients.jl) | intermediate | Kepler-like super-Earth with the power-2 law: gradient check, Nelder–Mead vs L-BFGS with ForwardDiff, Hessian uncertainties |
-| [`J3_precision_and_rigour.jl`](examples/J3_precision_and_rigour.jl) | advanced | certified light curves, interval enclosures, Theorem 2 against BigFloat, converged BigFloat references |
-| [`J4_photodynamics.jl`](examples/J4_photodynamics.jl) | advanced | two planets near 2:1 with NbodyGradient.jl: transit times, impact parameters and sky velocities with their derivatives, chained with Pizzetti's exact ∂F/∂z into the derivative of every light-curve sample with respect to every initial orbital element and mass; checked against finite differences of the whole pipeline |
-| [`J5_interoperability.jl`](examples/J5_interoperability.jl) | intermediate | fluxes, gradients and timing against Limbdark.jl; the same orbits and light curves as the Python package |
-| [`J6_bartky.jl`](examples/J6_bartky.jl) | advanced | the limb integral in Bartky's variable (paper Section 5.3) step by step: the complete integral, the strip of analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk, the connection formula behind the interpolants, a generic version for BigFloat references, cost |
+| [J0 · Install Julia and Pizzetti.jl](examples/J0_install.ipynb) | beginner | juliaup, adding the package, Jupyter (IJulia) or VS Code, the environment of the examples, a first check |
+| [J1 · Pizzetti.jl in ten minutes](examples/J1_quickstart.ipynb) | beginner | laws as sums of powers of μ, the `Occultor`, which method computes which sample (`:interpolate`, `:trapezoid`, …), `evaluate!`, light curves with exposure time and eccentric orbits, first derivatives and BigFloat |
+| [J2 · Gradients](examples/J2_gradients.ipynb) | intermediate | Kepler-like super-Earth with the power-2 law: gradient check, Nelder–Mead vs L-BFGS with ForwardDiff, Hessian uncertainties and correlations |
+| [J3 · Precision and rigour](examples/J3_precision_and_rigour.ipynb) | advanced | certified light curves, interval enclosures, Theorem 2 against BigFloat, converged BigFloat references |
+| [J4 · Photodynamics](examples/J4_photodynamics.ipynb) | advanced | two planets near 2:1 with NbodyGradient.jl: transit times, impact parameters and sky velocities with their derivatives, chained with Pizzetti's exact ∂F/∂z into the derivative of every light-curve sample with respect to every initial orbital element and mass; checked against finite differences of the whole pipeline |
+| [J5 · Interoperability](examples/J5_interoperability.ipynb) | intermediate | fluxes, gradients and timing against Limbdark.jl; the same orbits and light curves as the Python package |
+| [J6 · The limb integral in Bartky's variable](examples/J6_bartky.ipynb) | advanced | paper Sect. 6.4 step by step: the complete integral, the strip of analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk, the connection formula behind the interpolants, a generic version for BigFloat references, cost |
 
-The scripts are in the [Literate.jl](https://github.com/fredrikekre/Literate.jl) format, so
-`Literate.notebook("J1_quickstart.jl")` turns any of them into a Jupyter notebook.
+The examples environment needs Julia ≥ 1.11 (it finds the package through a `[sources]` entry).
+After editing a script, rebuild its notebook with
+`julia --project=. make_notebooks.jl J2` (or without arguments for all of them).
 
 ![photodynamics](examples/figures/J4_transit_sensitivity.png)
 
@@ -213,5 +217,5 @@ where the derivative has a √δ term and both codes are limited by the rounding
 
 ## Citing
 
-Please cite the accompanying paper (Hippke & Agol, in prep.), Mandel & Agol (2002) and, for the
+Please cite the accompanying paper (Hippke, Agol & Heller, in prep.), Mandel & Agol (2002) and, for the
 polynomial interface, Agol, Luger & Foreman-Mackey (2020).

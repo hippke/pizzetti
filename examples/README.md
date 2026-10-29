@@ -60,9 +60,9 @@ Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 �
 - [`paper/`](paper): one script per table and figure of the paper.
 - [`inference/`](inference): the full-length emcee runs of the paper (two data sets × two codes,
   corner plots, timing; ~25 min).
-- [`../julia/examples`](../julia/examples): six Julia scripts (quickstart, gradients with
-  ForwardDiff, precision and rigour, photodynamics with NbodyGradient, interoperability, and the
-  limb integral in Bartky's variable step by step).
+- [`../julia/examples`](../julia/examples): seven Julia notebooks (installation, quickstart,
+  gradients with ForwardDiff, precision and rigour, photodynamics with NbodyGradient,
+  interoperability, and the limb integral in Bartky's variable step by step).
 - [`../validation`](../validation): independent numerical checks of the theorems.
 
 All notebooks are executed in CI in a fast smoke mode (`PIZZETTI_SMOKE=1` shortens MCMC chains and
