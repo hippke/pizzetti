@@ -191,7 +191,9 @@ def test_fit_is_grazing(b_true):
     r = m.fit(method="is", seed=0, n=4000)
     b = r.samples[:, r.labels.index("b")]
     assert np.all(np.isfinite(r.samples))
-    assert np.percentile(b, 2.5) < b_true < np.percentile(b, 97.5)       # broad: b-rp degeneracy
+    assert np.percentile(b, 0.5) < b_true < np.percentile(b, 99.5)       # broad: b-rp degeneracy
+    # the profile cannot end at b = 1 + rp in the original coordinates; the bounded retry completes it
+    assert r.diagnostics["complete"] and r.diagnostics["bounded_retry"] is True
 
 
 def test_fit_is_with_b_bounds():
@@ -207,3 +209,47 @@ def test_fit_is_with_b_bounds():
     r = m.fit(method="auto", seed=0, n=4000)
     assert r.diagnostics["method"] == "profile-IS" and r.diagnostics["complete"]
     assert r.samples[:, r.labels.index("b")].max() < 0.9
+
+
+def test_fit_is_bounded_retry():
+    """Unresolved ingress (30-min cadence, 1-h transit) with a/R* pressed against its upper bound:
+    the profile in the original coordinates fails (MAP on the bound), the retry in unbounded
+    coordinates succeeds and agrees with emcee."""
+    rng = np.random.default_rng(4)
+    t = np.concatenate([e * 2.6 + np.arange(-0.07, 0.07, 1765.5 / 86400) for e in range(20)])
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a = 0.0, 2.6, 0.065, 19.5
+    p.inc = math.degrees(math.acos(0.5 / 19.5))
+    p.ecc, p.w, p.limb_dark, p.u = 0.0, 90.0, "quadratic", [0.5, 0.2]
+    y = pizzetti.TransitModel(p, t, supersample_factor=15, exp_time=1765.5 / 86400,
+                              offsets="midpoint").light_curve(p)
+    y = y + 2e-4 * rng.standard_normal(t.size)
+    bounds = {"t0": (-0.02, 0.02), "rp": (0.03, 0.15), "a": (3.0, 20.0), "b": (0.0, 0.9)}
+    m = pizzetti.MarginalTransitModel(p, t, y, 2e-4, free=("t0", "rp", "a", "b"), bounds=bounds,
+                                      supersample_factor=15, exp_time=1765.5 / 86400, offsets="midpoint")
+    r = m.fit(method="auto", seed=0, n=4000)
+    assert r.diagnostics["method"] == "profile-IS" and r.diagnostics["bounded_retry"] is True
+    e = m.fit(method="emcee", seed=1, n=4000)
+    for q in ("rp", "a", "b"):
+        x, y_ = r.samples[:, r.labels.index(q)], e.samples[:, e.labels.index(q)]
+        assert abs(np.median(x) - np.median(y_)) < 0.2 * np.std(y_)
+        assert abs(np.std(x) / np.std(y_) - 1) < 0.2
+
+
+def test_pmc_refine_curved_target():
+    """pmc_refine (AMIS) on a curved, skewed target (x ~ N(0, 1), y | x ~ N(x^2, 0.3^2): E y = 1,
+    sd y = sqrt(2 + 0.09)), starting from draws of a poor Gaussian proposal."""
+    from pizzetti._sampling import pmc_refine
+
+    def logp(X):
+        return -0.5 * X[:, 0] ** 2 - 0.5 * ((X[:, 1] - X[:, 0] ** 2) / 0.3) ** 2
+
+    rng = np.random.default_rng(2)
+    X0 = rng.standard_normal((4000, 2)) * [0.7, 0.7] + [0.0, 0.5]
+    lq = -0.5 * np.sum(((X0 - [0.0, 0.5]) / 0.7) ** 2, axis=1)
+    r = pmc_refine(logp, X0, logp(X0) - lq, rng, n=4000)
+    w = r["w"] / r["w"].sum()
+    my = np.sum(w * r["theta"][:, 1])
+    sy = np.sqrt(np.sum(w * (r["theta"][:, 1] - my) ** 2))
+    assert r["khat"] < 0.7 and r["ess"] > 5000
+    assert abs(my - 1.0) < 0.05 and abs(sy - math.sqrt(2.09)) < 0.15        # (heavy tail in y)

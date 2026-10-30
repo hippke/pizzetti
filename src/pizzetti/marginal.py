@@ -114,6 +114,108 @@ def _draw_c(C, S, rng):
     return out
 
 
+class _BoundedCoords:
+    """Unbounded coordinates u for the internal coordinates x of a model, for the retry of
+    profile importance sampling when the posterior presses against a prior bound of a
+    parameter other than b (the profiled b has walls of its own): x = lo + (hi - lo) sigmoid(u)
+    for a box, x = lo + exp(u) or hi - exp(u) for a one-sided bound, x = u otherwise. With the T14
+    reparametrisation the bounds on a/R* (and a > b) become bounds on T14 that depend on
+    (per, rp, b) of the same row; T14 is mapped last, after those. log|dx/du| is the Jacobian."""
+
+    def __init__(self, model):
+        self.m = model
+        self.cols = []                          # (column, kind, lo, hi); kind: box/lo/hi/a14
+        for j, q in enumerate(model.free):
+            if q == "b":
+                continue
+            if q == "alpha":
+                lo, hi = model.alpha_lo, model.alpha_hi
+            else:
+                k = CANON.index("t0" if q == "t_secondary" else q)
+                lo, hi = model.lo[k], model.hi[k]
+                if q == "w":
+                    lo, hi = lo / _DEG, hi / _DEG
+                if q in ("per", "rp"):
+                    lo = max(lo, 0.0)
+                if q == "ecc":
+                    lo, hi = max(lo, 0.0), min(hi, 1.0)
+            if q == "a" and model.t14:
+                self.cols.append((j, "a14", max(model.lo[3], 1.0), model.hi[3]))
+            elif np.isfinite(lo) and np.isfinite(hi):
+                self.cols.append((j, "box", lo, hi))
+            elif np.isfinite(lo):
+                self.cols.append((j, "lo", lo, hi))
+            elif np.isfinite(hi):
+                self.cols.append((j, "hi", lo, hi))
+        self.active = bool(self.cols)
+
+    def _t14_range(self, X):
+        """Rows of internal x (T14 slot ignored) -> (T14 at a_hi, T14 at a_lo)."""
+        m = self.m
+        P = m._canonical_physical(m.to_physical(X))         # per, rp, b of the rows
+        per, rp, b = P[:, 1], P[:, 2], P[:, 4]
+        Q = np.clip((1.0 + rp) ** 2 - b * b, 0.0, None)
+        _, _, a_lo, a_hi = next(c for c in self.cols if c[1] == "a14")
+
+        def t14(a):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                r = np.sqrt(Q / np.clip(a * a - b * b, 1e-300, None))
+            return per / math.pi * np.arcsin(np.clip(r, 0.0, 1.0))
+        lo = t14(np.full(len(X), a_hi)) if np.isfinite(a_hi) else np.zeros(len(X))
+        hi = t14(np.full(len(X), a_lo))
+        return lo, hi
+
+    def to_x(self, U):
+        U = np.atleast_2d(np.asarray(U, dtype=float))
+        X = U.copy()
+        lj = np.zeros(len(U))
+        a14 = None
+        for j, kind, lo, hi in self.cols:
+            u = U[:, j]
+            if kind == "box":
+                s = 0.5 * (1.0 + np.tanh(0.5 * u))
+                X[:, j] = lo + (hi - lo) * s
+                lj += np.log((hi - lo) * np.clip(s * (1.0 - s), 1e-300, None))
+            elif kind == "lo":
+                X[:, j] = lo + np.exp(u)
+                lj += u
+            elif kind == "hi":
+                X[:, j] = hi - np.exp(u)
+                lj += u
+            else:
+                a14 = j
+        if a14 is not None:
+            tlo, thi = self._t14_range(X)
+            s = 0.5 * (1.0 + np.tanh(0.5 * U[:, a14]))
+            X[:, a14] = tlo + (thi - tlo) * s
+            lj += np.log(np.clip((thi - tlo) * s * (1.0 - s), 1e-300, None))
+        return X, lj
+
+    def to_u(self, X, margin=1e-6):
+        """Internal x -> u; points on (or beyond) a bound are moved inside by a small margin."""
+        X = np.atleast_2d(np.asarray(X, dtype=float))
+        U = X.copy()
+        for j, kind, lo, hi in self.cols:
+            x = X[:, j]
+            if kind == "box":
+                s = np.clip((x - lo) / (hi - lo), margin, 1.0 - margin)
+                U[:, j] = np.log(s / (1.0 - s))
+            elif kind == "lo":
+                U[:, j] = np.log(np.clip(x - lo, margin * max(abs(lo), 1.0), None))
+            elif kind == "hi":
+                U[:, j] = np.log(np.clip(hi - x, margin * max(abs(hi), 1.0), None))
+            else:
+                tlo, thi = self._t14_range(X)
+                s = np.clip((x - tlo) / (thi - tlo), margin, 1.0 - margin)
+                U[:, j] = np.log(s / (1.0 - s))
+        return U
+
+    def log_prob(self, U):
+        X, lj = self.to_x(U)
+        out = self.m.log_prob_internal(X)
+        return np.where(np.isfinite(out), out + lj, -np.inf)
+
+
 class MarginalTransitModel:
     """Transit (or secondary-eclipse) likelihood with the limb darkening and the
     baseline flux integrated out.
@@ -635,6 +737,11 @@ class MarginalTransitModel:
             logw = np.log(f0) - 3.0 * np.log(c[:, 2])    # flat c -> uniform q x flat f0
             if callable(self.ld_prior):                  # post-hoc reweighting
                 logw = logw + np.asarray(self.ld_prior(u1, u2), dtype=float)
+        # rows without a valid coefficient draw (extreme geometries) get weight 0, as in expand()
+        with np.errstate(invalid="ignore"):
+            logw = np.where(np.isfinite(logw), logw, -np.inf)
+        if not np.isfinite(logw).any():
+            raise RuntimeError("no valid limb-darkening draws for these geometries")
         w = np.exp(logw - logw.max())
         w /= w.sum()
         if ld == "q":
@@ -669,6 +776,85 @@ class MarginalTransitModel:
         return self.to_internal(p0[:, :self.ndim])
 
     # -- Layer 2: one call ------------------------------------------------------
+    def profile_is(self, n=4000, rng=None, x0=None, retry=True, last_resort=True):
+        """Profile importance sampling along b (``_sampling.profile_is``) in internal coordinates.
+
+        The walls of the b profile are b = 0 (the likelihood depends on b^2) or the bounds on b,
+        just inside them (the bounds are strict). If the result is not usable (k-hat >= 0.7 or an
+        incomplete profile) and other free parameters have finite bounds, the sampling is
+        repeated in unbounded coordinates (logit / log of the bounded parameters, with the
+        Jacobian): a posterior pressed against such a bound (e.g. a/R* for an unresolved ingress)
+        breaks the Laplace steps in the original coordinates. Such posteriors are skewed in the new
+        coordinates too, so the retry's draws are refined by population Monte Carlo
+        (``_sampling.pmc_refine``: mixture proposals fitted to the weighted draws), which also
+        covers tails that the Laplace proposal misses without k-hat noticing. The better of the two results is
+        returned; ``theta`` and ``theta_map`` are internal coordinates in either case,
+        ``bounded_retry`` says whether the retry was run (None), used (True) or not (False).
+        If the result is still not usable (e.g. strongly non-Gaussian conditionals at very high
+        S/N), ``last_resort`` refines its weighted draws by the same adaptive importance sampling
+        in the original coordinates (``last_resort_pmc``: True if that result is kept); this is
+        far cheaper than the emcee fallback of ``fit()`` and is kept only if it improves k-hat.
+        """
+        from ._sampling import pmc_refine, profile_is
+        rng = np.random.default_rng() if rng is None else rng
+        x0 = self.to_internal(self.fixed_physical_free())[0] if x0 is None else np.asarray(x0, float)
+        jb = self.free.index("b")
+        lo_b, hi_b = self.lo[4], self.hi[4]
+        walls = dict(lo_wall=max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0),
+                     hi_wall=hi_b - 1e-9 if np.isfinite(hi_b) else None)
+        res = profile_is(self.log_prob_internal, x0, self._default_scales(x0), prof=jb, n=n, rng=rng,
+                         **walls)
+        res["bounded_retry"] = None
+
+        def usable(r):
+            return bool(r["complete"] and r["khat"] < 0.7)
+
+        def finish(r):
+            r["last_resort_pmc"] = None
+            if usable(r) or not last_resort or not np.isfinite(r["khat"]) or np.sum(r["w"] > 0) <= 50:
+                return r
+            pm = pmc_refine(self.log_prob_internal, r["theta"], r["logw"], rng, n=n)
+            r["n_eval"] += pm["n_eval"]
+            r["last_resort_pmc"] = bool(pm["khat"] < r["khat"])
+            if r["last_resort_pmc"]:
+                r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
+                         stage="pmc", pmc=pm["history"])
+            return r
+
+        T = _BoundedCoords(self) if retry else None
+        if usable(res) or T is None or not T.active:
+            return finish(res)
+        start = res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0
+        u0 = T.to_u(start)[0]
+        # scales in u: the x scales divided by |dx/du| at the start, at most 2 (logit units)
+        eps = 1e-6
+        X0, _ = T.to_x(u0[None])
+        su = np.empty_like(u0)
+        sx = self._default_scales(X0[0])
+        for j in range(len(u0)):
+            up = u0.copy()
+            up[j] += eps
+            dx = abs(T.to_x(up[None])[0][0, j] - X0[0, j]) / eps
+            su[j] = min(sx[j] / dx, 2.0) if dx > 0 else sx[j]
+        r2 = profile_is(T.log_prob, u0, su, prof=jb, n=n, rng=rng, **walls)
+        if np.isfinite(r2["khat"]) and np.sum(r2["w"] > 0) > 50:
+            # the Laplace steps are unreliable here (posterior against a bound: flat and skewed
+            # in the transformed coordinates), so the proposal is adapted to the weighted draws
+            pm = pmc_refine(T.log_prob, r2["theta"], r2["logw"], rng, n=n)
+            r2.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
+                      stage="pmc", pmc=pm["history"])
+            r2["n_eval"] += pm["n_eval"]
+        r2["n_eval"] += res["n_eval"]
+        better = usable(r2) or (not usable(res) and r2["complete"] and r2["khat"] < res["khat"])
+        if not better:
+            res["n_eval"] = r2["n_eval"]
+            res["bounded_retry"] = False
+            return finish(res)
+        r2["theta"] = T.to_x(r2["theta"])[0]
+        r2["theta_map"] = T.to_x(r2["theta_map"][None])[0][0]
+        r2["bounded_retry"] = True
+        return finish(r2)
+
     def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
             ld="q", progress=False):
         """Posterior samples in one call.
@@ -678,7 +864,7 @@ class MarginalTransitModel:
         "auto": importance sampling, emcee fallback if k-hat >= 0.7 or the profile is
         incomplete. Returns a ``FitResult``.
         """
-        from ._sampling import hessian, profile_is
+        from ._sampling import hessian
         rng = np.random.default_rng(seed)
         self.n_eval = 0
         x0 = self.to_internal(self.fixed_physical_free())[0]
@@ -686,17 +872,11 @@ class MarginalTransitModel:
         diag = dict(method=None)
         Xw = w = None
         if method in ("is", "auto") and "b" in self.free:
-            jb = self.free.index("b")
-            # walls of the b profile: b = 0 (the likelihood depends on b^2) or the user's bounds,
-            # just inside them (the bounds are strict); a finite upper bound is a wall too
-            lo_b, hi_b = self.lo[4], self.hi[4]
-            lo_wall = max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0)
-            hi_wall = hi_b - 1e-9 if np.isfinite(hi_b) else None
-            res = profile_is(self.log_prob_internal, x0, scale, prof=jb, n=n, rng=rng, lo_wall=lo_wall,
-                             hi_wall=hi_wall)
+            res = self.profile_is(n=n, rng=rng, x0=x0)
             ok = bool(res["complete"] and res["khat"] < 0.7)
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
-                        complete=res["complete"], n_grid=res["n_grid"], is_ok=ok)
+                        complete=res["complete"], n_grid=res["n_grid"], is_ok=ok,
+                        bounded_retry=res["bounded_retry"], last_resort_pmc=res["last_resort_pmc"])
             if ok or method == "is":
                 Xw, w = self.to_physical(res["theta"]), res["w"]
             x0 = res["theta_map"]
@@ -726,6 +906,8 @@ class MarginalTransitModel:
                 if "b" in self.free:
                     P0[bad, self.free.index("b")] = np.abs(P0[bad, self.free.index("b")])
             sampler = _sampler_class()(self, nwalkers, internal=True)
+            # emcee draws its moves from a numpy RandomState: seed it from rng (reproducible fits)
+            sampler.random_state = np.random.RandomState(int(rng.integers(2 ** 32))).get_state()
             old, conv = np.inf, False
             for _ in sampler.sample(P0, iterations=max_steps, progress=progress):
                 if sampler.iteration % 500:

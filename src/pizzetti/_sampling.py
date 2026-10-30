@@ -60,6 +60,8 @@ def psis(logw):
     ok = np.isfinite(logw)
     lw = logw[ok]
     n = lw.size
+    if n == 0:                                   # no finite weight at all
+        return np.full(logw.shape, -np.inf), np.inf
     lw -= lw.max()
     M = int(np.ceil(min(0.2 * n, 3.0 * np.sqrt(n))))
     khat = np.nan
@@ -151,6 +153,92 @@ def _mvt_sample(rng, mu, L, nu, n):
     g = rng.chisquare(nu, n) / nu
     return mu + (z @ L.T) / np.sqrt(g)[:, None]
 
+
+
+def _weighted_gmm(X, w, K, rng, iters=60):
+    """Gaussian mixture fitted to weighted points (EM; w sums to 1). Returns (pi, mu, cov)."""
+    from scipy.special import logsumexp
+    n, d = X.shape
+    C0 = np.cov(X.T, aweights=w).reshape(d, d)
+    reg = 1e-6 * np.diag(np.diag(C0))
+    mu = X[rng.choice(n, size=K, replace=False, p=w)].copy()
+    cov = np.repeat((C0 + reg)[None], K, axis=0)
+    pi = np.full(K, 1.0 / K)
+    for _ in range(iters):
+        lr = np.empty((n, K))
+        for k in range(K):
+            L = np.linalg.cholesky(cov[k])
+            z = np.linalg.solve(L, (X - mu[k]).T).T
+            lr[:, k] = np.log(pi[k]) - np.sum(np.log(np.diag(L))) - 0.5 * np.sum(z * z, axis=1)
+        lr -= logsumexp(lr, axis=1)[:, None]
+        R = np.exp(lr) * w[:, None]
+        Nk = R.sum(0) + 1e-300
+        pi = Nk / Nk.sum()
+        for k in range(K):
+            mu[k] = R[:, k] @ X / Nk[k]
+            D = X - mu[k]
+            cov[k] = (R[:, k][:, None] * D).T @ D / Nk[k] + reg
+    keep = pi > 1e-3
+    return pi[keep] / pi[keep].sum(), mu[keep], cov[keep]
+
+
+def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1.2, defensive=0.15,
+               batch=2000):
+    """Adaptive multiple importance sampling (AMIS) from weighted draws (X, logw).
+
+    Each iteration fits a Gaussian mixture to all weighted draws so far and draws n new points
+    from its Student-t version (covariances x inflate^2) plus a broad defensive t (weight
+    ``defensive``, 2 x the overall sd). All draws of all iterations are kept and weighted against
+    the mixture of all proposals used (deterministic-mixture weights), which is unbiased and much
+    more stable than the weights of a single iteration. For posteriors that a Laplace-based
+    proposal covers badly (skewed or curved conditionals), where k-hat need not see the missing
+    mass. The start draws (X, logw) seed the first fit only. Returns dict(theta, w, logw, khat,
+    ess, n_eval, history)."""
+    from scipy.special import logsumexp
+    logw = np.asarray(logw, float)
+    fail = dict(theta=np.atleast_2d(X), w=np.zeros(len(logw)), logw=np.full(len(logw), -np.inf),
+                khat=np.inf, ess=0.0, n_eval=0, history=[])
+    if np.sum(np.isfinite(logw)) < 10 * (np.atleast_2d(X).shape[1] + 1):
+        return fail                              # too few weighted draws to fit a proposal
+    w = np.exp(logw - np.max(logw[np.isfinite(logw)]))
+    w = np.where(np.isfinite(w), w, 0.0)
+    w /= w.sum()
+    Xs, lps, props, counts = None, None, [], []
+    nev, hist = 0, []
+
+    def lq_all(Y):
+        """log of the deterministic mixture of all proposals so far (weights n_t / N)."""
+        N = float(sum(counts))
+        terms = []
+        for comps, c in zip(props, counts):
+            lq = logsumexp(np.column_stack([np.log(p) + _mvt_logpdf(Y, m, L, nu) for p, m, L in comps]), axis=1)
+            terms.append(np.log(c / N) + lq)
+        return logsumexp(np.column_stack(terms), axis=1)
+
+    for it in range(iters):
+        ess = 1.0 / np.sum(w ** 2)
+        pi, mu, cov = _weighted_gmm(X, w, min(K, max(1, int(ess) // 50)), rng)
+        m0 = w @ X
+        C0 = np.cov(X.T, aweights=w).reshape(X.shape[1], X.shape[1])
+        comps = [(p * (1 - defensive), m, np.linalg.cholesky(c * inflate ** 2)) for p, m, c in zip(pi, mu, cov)]
+        comps.append((defensive, m0, np.linalg.cholesky(C0 * 4.0)))
+        k = rng.multinomial(n, [c[0] for c in comps])
+        Xn = np.vstack([_mvt_sample(rng, m, L, nu, c) for (p, m, L), c in zip(comps, k) if c > 0])
+        lpn = np.concatenate([logp_batch(Xn[i:i + batch]) for i in range(0, len(Xn), batch)])
+        nev += len(Xn)
+        props.append(comps)
+        counts.append(len(Xn))
+        Xs = Xn if Xs is None else np.vstack([Xs, Xn])
+        lps = lpn if lps is None else np.concatenate([lps, lpn])
+        lw, khat = psis(lps - lq_all(Xs))
+        if not np.isfinite(khat) or not np.any(np.isfinite(lw)):
+            fail.update(n_eval=int(nev), history=hist)
+            return fail                          # no usable weights (e.g. all draws outside the prior)
+        w = np.exp(lw)
+        X = Xs
+        hist.append(dict(khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n=int(len(Xs))))
+    return dict(theta=Xs, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n_eval=int(nev),
+                history=hist)
 
 def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
                adapt=2, khat_target=0.5, batch=2000):

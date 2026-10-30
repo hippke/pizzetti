@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Profile importance sampling for posteriors that press against the prior bound of a parameter
+  other than b (e.g. a/R* for an unresolved ingress, or a grazing transit): new method
+  `MarginalTransitModel.profile_is()`, used by `fit()`. If the profile in the original
+  coordinates is not usable (k̂ ≥ 0.7 or incomplete) and free parameters have finite bounds, the
+  sampling is repeated in unbounded coordinates (logit / log of the bounded parameters, with the
+  Jacobian; for a/R* under the T14 reparametrisation, logit of T14 between its values at the
+  bounds of a for the same (P, rp, b)). The Laplace steps stay unreliable there (the posterior is
+  flat and skewed near the bound), so the draws are refined by adaptive multiple importance
+  sampling (`_sampling.pmc_refine`: six iterations of Gaussian-mixture proposals fitted to all
+  weighted draws, deterministic-mixture weights, a broad defensive component). In injection tests
+  in real Kepler/TESS noise the emcee fallback (0.25–2 M evaluations) is replaced by ~50–100 k
+  evaluations (32 of 35 such injections), and the quantiles agree with emcee within its own noise; k̂ alone did not detect the
+  tails the plain retry missed. If the result is still not usable (strongly non-Gaussian
+  conditionals, e.g. near-grazing at very high S/N), the same AMIS refinement runs as a last resort
+  in the original coordinates before the emcee fallback. Runs whose first profile is usable are
+  unchanged.
+- `fit(method="emcee", seed=...)` is reproducible: emcee's RandomState is seeded from `seed`.
+- `expand()` (quadratic fast path): rows without a valid coefficient draw get weight 0 instead of
+  turning all weights into NaN.
+- `psis()` and `pmc_refine()` fail cleanly (k̂ = inf) instead of raising when no weight is finite.
 - Robustness fixes found by extended tests on real light curves (`limb-darken/extended_tests`):
   - The orthant probability of the marginal likelihood is now finite everywhere. Where the
     quadrature underflowed (least-squares limb darkening more than ~37σ outside the physical
