@@ -314,7 +314,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1),
                     khat=np.inf, ess=0.0, n_eval=int(nev), theta_map=theta_map,
                     grid_b=np.array([theta_map[prof]]), grid_logdens=np.zeros(1), stage=0,
-                    n_grid=0, complete=False, n_eval_map=int(nev_map),
+                    n_grid=0, complete=False, n_eval_map=int(nev_map), n_refine=0,
                     grid_lpmax=np.zeros(1), grid_logdet=np.zeros(1))
     nev += f0[4]
     sd_ref[0] = np.sqrt(np.clip(np.diag(f0[2]), 1e-300, None))

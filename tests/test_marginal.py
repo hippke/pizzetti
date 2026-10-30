@@ -174,3 +174,36 @@ def test_profile_is_lazy_refinement():
         mx = np.sum(r["w"] * r["theta"][:, 0])
         assert abs(mb - 0.32776) < 0.01                # truncated-normal mean of b
         assert abs(mx - 4 * np.sum(r["w"] * r["theta"][:, 1] ** 2)) < 0.01
+
+
+@pytest.mark.parametrize("b_true", [0.95, 0.98])
+def test_fit_is_grazing(b_true):
+    """Grazing transits: importance draws beyond b = 1 + rp (zero weight, degenerate design)
+    must not reach the coefficient draws (LinAlgError before the fix). rp is bounded: without
+    an upper bound a grazing posterior is improper (rp, b -> infinity along b - rp = const)."""
+    t = np.linspace(-0.12, 0.12, 2000)
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a = 0.0, 3.0, 0.1, 9.0
+    p.inc = math.degrees(math.acos(b_true / 9.0))
+    p.ecc, p.w, p.limb_dark, p.u = 0.0, 90.0, "quadratic", [0.4, 0.25]
+    y = pizzetti.TransitModel(p, t).light_curve(p) + 3e-4 * np.random.default_rng(0).standard_normal(t.size)
+    m = pizzetti.MarginalTransitModel(p, t, y, 3e-4, free=("t0", "rp", "a", "b"), bounds={"rp": (0.0, 0.3)})
+    r = m.fit(method="is", seed=0, n=4000)
+    b = r.samples[:, r.labels.index("b")]
+    assert np.all(np.isfinite(r.samples))
+    assert np.percentile(b, 2.5) < b_true < np.percentile(b, 97.5)       # broad: b-rp degeneracy
+
+
+def test_fit_is_with_b_bounds():
+    """A posterior cut off by user bounds on b: the bounds are walls of the profile grid, so the
+    grid is complete and IS is used (it fell back to emcee before)."""
+    t = np.linspace(-0.12, 0.12, 2000)
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a = 0.0, 3.0, 0.1, 9.0
+    p.inc = math.degrees(math.acos(0.85 / 9.0))
+    p.ecc, p.w, p.limb_dark, p.u = 0.0, 90.0, "quadratic", [0.4, 0.25]
+    y = pizzetti.TransitModel(p, t).light_curve(p) + 1e-3 * np.random.default_rng(1).standard_normal(t.size)
+    m = pizzetti.MarginalTransitModel(p, t, y, 1e-3, free=("t0", "rp", "a", "b"), bounds={"b": (0.0, 0.9)})
+    r = m.fit(method="auto", seed=0, n=4000)
+    assert r.diagnostics["method"] == "profile-IS" and r.diagnostics["complete"]
+    assert r.samples[:, r.labels.index("b")].max() < 0.9

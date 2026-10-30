@@ -687,7 +687,13 @@ class MarginalTransitModel:
         Xw = w = None
         if method in ("is", "auto") and "b" in self.free:
             jb = self.free.index("b")
-            res = profile_is(self.log_prob_internal, x0, scale, prof=jb, n=n, rng=rng, lo_wall=0.0)
+            # walls of the b profile: b = 0 (the likelihood depends on b^2) or the user's bounds,
+            # just inside them (the bounds are strict); a finite upper bound is a wall too
+            lo_b, hi_b = self.lo[4], self.hi[4]
+            lo_wall = max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0)
+            hi_wall = hi_b - 1e-9 if np.isfinite(hi_b) else None
+            res = profile_is(self.log_prob_internal, x0, scale, prof=jb, n=n, rng=rng, lo_wall=lo_wall,
+                             hi_wall=hi_wall)
             ok = bool(res["complete"] and res["khat"] < 0.7)
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
                         complete=res["complete"], n_grid=res["n_grid"], is_ok=ok)
@@ -711,25 +717,40 @@ class MarginalTransitModel:
             P0 = x0 + 0.1 * sd * rng.standard_normal((nwalkers, self.ndim))
             if "b" in self.free:
                 P0[:, self.free.index("b")] = np.abs(P0[:, self.free.index("b")])
+            # walkers outside the prior (e.g. x0 on a bound) are drawn again, closer to x0
+            for shrink in (0.5, 0.25, 0.1, 0.03, 0.01):
+                bad = ~np.isfinite(self.log_prob_internal(P0))
+                if not bad.any():
+                    break
+                P0[bad] = x0 + shrink * 0.1 * sd * rng.standard_normal((int(bad.sum()), self.ndim))
+                if "b" in self.free:
+                    P0[bad, self.free.index("b")] = np.abs(P0[bad, self.free.index("b")])
             sampler = _sampler_class()(self, nwalkers, internal=True)
             old, conv = np.inf, False
             for _ in sampler.sample(P0, iterations=max_steps, progress=progress):
                 if sampler.iteration % 500:
                     continue
                 tau = sampler.get_autocorr_time(tol=0)
-                if np.all(ntau * tau < sampler.iteration) and np.all(np.abs(old - tau) / tau < 0.01):
+                if (np.all(np.isfinite(tau)) and np.all(ntau * tau < sampler.iteration)
+                        and np.all(np.abs(old - tau) / tau < 0.01)):
                     conv = True
                     break
                 old = tau
             tau = sampler.get_autocorr_time(tol=0)
-            ch = sampler.get_chain(discard=int(5 * np.max(tau)), flat=True, expand=False)
+            # tau is NaN for a parameter that has not moved (e.g. walkers stuck at a bound)
+            burn = int(5 * np.max(tau)) if np.all(np.isfinite(tau)) else sampler.iteration // 2
+            ch = sampler.get_chain(discard=min(burn, sampler.iteration // 2), flat=True, expand=False)
             ch = ch[:: max(1, len(ch) // n)]
             Xw, w = ch, np.full(len(ch), 1.0 / len(ch))
             diag.update(method="emcee" if method == "emcee" else "emcee (fallback)",
                         converged=conv, steps=int(sampler.iteration), tau=tau.tolist())
         diag["n_eval"] = int(self.n_eval)
         # coefficients + baseline for every weighted geometry draw; one combined weight,
-        # then a single systematic resampling to equal weight
+        # then a single systematic resampling to equal weight. Draws with zero weight (outside
+        # the prior, e.g. beyond b = 1 + rp for a grazing transit, where the design is
+        # degenerate) are dropped first.
+        pos = w > 0
+        Xw, w = Xw[pos], w[pos]
         S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
         diag["ld_reweight_ess"] = float(1.0 / np.sum(wl ** 2))
         if self.physical and self.law.D is None:

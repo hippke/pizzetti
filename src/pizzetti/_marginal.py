@@ -87,6 +87,51 @@ def chol3(S, L):
 
 
 @njit(cache=True)
+def log_ndtr(x):
+    """log Phi(x), finite for all x (asymptotic series below x = -20)."""
+    if x > -20.0:
+        return math.log(0.5 * math.erfc(-x / _SQRT2))
+    r = 1.0 / (x * x)
+    return -0.5 * x * x - math.log(-x) - 0.5 * math.log(2.0 * math.pi) + \
+        math.log(1.0 - r + 3.0 * r * r - 15.0 * r * r * r)
+
+
+@njit(cache=True)
+def log_orthant_asym(m, S):
+    """Asymptotic log P(w > 0), w ~ N(m, S), for P too small for the quadrature: the most
+    violated constraint contributes log Phi(z), the others are conditioned on it lying on its
+    boundary (where the tail mass concentrates), recursively. Finite, and decreasing with the
+    violation, so that optimisers and samplers can climb out of a region where the least-squares
+    coefficients are far outside the physical cone (the exact value underflows to 0 there)."""
+    k = m.shape[0]
+    mm = m.copy()
+    SS = S.copy()
+    alive = np.ones(k, np.bool_)
+    out = 0.0
+    for _ in range(k):
+        i, zmin = -1, np.inf
+        for j in range(k):
+            if alive[j]:
+                z = mm[j] / math.sqrt(SS[j, j])
+                if z < zmin:
+                    i, zmin = j, z
+        out += log_ndtr(zmin)
+        alive[i] = False
+        sii = SS[i, i]
+        for j in range(k):
+            if alive[j]:
+                mm[j] -= SS[j, i] / sii * mm[i]
+        for j in range(k):
+            for l_ in range(k):
+                if alive[j] and alive[l_]:
+                    SS[j, l_] -= SS[j, i] * SS[i, l_] / sii
+        for j in range(k):
+            if alive[j] and SS[j, j] <= 0.0:
+                SS[j, j] = 1e-300
+    return out
+
+
+@njit(cache=True)
 def log_orthant_prob(m, S, gx, gw):
     """log P(w > 0) for w ~ N(m, S), 3-d (Genz transform on a tensor GL grid).
     Constraints with marginal z > 6 are dropped while P is not tiny."""
@@ -107,7 +152,7 @@ def log_orthant_prob(m, S, gx, gw):
         return -np.inf
     x1 = mm[0] / L[0, 0]
     if x1 < -37.0:
-        return -np.inf
+        return log_orthant_asym(m, S)
     e1 = ndtr(x1)
     n = gx.shape[0]
     zsorted = zs[o]
@@ -118,7 +163,7 @@ def log_orthant_prob(m, S, gx, gw):
         for i in range(n):
             z1 = -ndtri((1.0 - gx[i]) * e1)
             acc += gw[i] * ndtr((mm[1] + L[1, 0] * z1) / L[1, 1])
-        return math.log(e1) + math.log(acc) if acc > 0.0 else -np.inf
+        return math.log(e1) + math.log(acc) if acc > 0.0 else log_orthant_asym(m, S)
     acc = 0.0
     for i in range(n):
         z1 = -ndtri((1.0 - gx[i]) * e1)
@@ -134,7 +179,7 @@ def log_orthant_prob(m, S, gx, gw):
             inner += gw[j] * ndtr((mm[2] + L[2, 0] * z1 + L[2, 1] * z2) / L[2, 2])
         acc += gw[i] * e2 * inner
     if acc <= 0.0:
-        return -np.inf
+        return log_orthant_asym(m, S)
     return math.log(e1) + math.log(acc)
 
 
@@ -467,7 +512,7 @@ def log_orthant_prob2(m, S, gx, gw):
     l11 = math.sqrt(max(S[1, 1] - l10 * l10, 1e-300))
     x1 = m[0] / l00
     if x1 < -37.0:
-        return -np.inf
+        return log_orthant_asym(m, S)
     e1 = ndtr(x1)
     if x1 > -3.0 and z1 > 6.0:
         return math.log(e1)
@@ -475,7 +520,7 @@ def log_orthant_prob2(m, S, gx, gw):
     for i in range(gx.shape[0]):
         zz = -ndtri((1.0 - gx[i]) * e1)
         acc += gw[i] * ndtr((m[1] + l10 * zz) / l11)
-    return math.log(e1) + math.log(acc) if acc > 0.0 else -np.inf
+    return math.log(e1) + math.log(acc) if acc > 0.0 else log_orthant_asym(m, S)
 
 
 @njit(cache=True)

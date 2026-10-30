@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Robustness fixes found by extended tests on real light curves (`limb-darken/extended_tests`):
+  - The orthant probability of the marginal likelihood is now finite everywhere. Where the
+    quadrature underflowed (least-squares limb darkening more than ~37σ outside the physical
+    cone) it returned -inf, so optimisers and the emcee fallback could not move from a poor
+    start; near the edge of the limb-darkening prior even catalogue-like starting values were
+    affected. An asymptotic form (sequential conditioning on the most violated constraint) takes
+    over there, within ~1 nat of a tilted importance-sampling reference. Finite values are
+    unchanged.
+  - `fit()` raised `LinAlgError` for grazing transits: importance draws beyond b = 1 + rp (zero
+    weight, degenerate design) reached the coefficient draws. They are dropped first.
+  - The emcee fallback of `fit()` crashed when the autocorrelation time was NaN (walkers starting
+    outside the prior); such walkers are now drawn again closer to the start, and a non-finite
+    tau counts as not converged.
+  - User bounds on b are walls of the profile grid (they were ignored, and a grid point placed
+    on a strict bound failed, so posteriors cut off by the bounds fell back to emcee).
 - `TransitModel(..., offsets="batman" | "midpoint")`: placement of the sub-exposures, as already
   in `MarginalTransitModel`. The default stays batman's (equally spaced points including the
   exposure edges, i.e. a midpoint rule over an exposure stretched by k/(k−1), error O(1/k));
