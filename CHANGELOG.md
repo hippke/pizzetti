@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `TransitModel(..., offsets="batman" | "midpoint")`: placement of the sub-exposures, as already
+  in `MarginalTransitModel`. The default stays batman's (equally spaced points including the
+  exposure edges, i.e. a midpoint rule over an exposure stretched by k/(k−1), error O(1/k));
+  "midpoint" uses the midpoints of k equal sub-intervals (error O(1/k²); for Kepler long cadence
+  with k = 15 about 3 ppm instead of 125 ppm).
+- Profile importance sampling: the b-grid refinement is now lazy (`lazy_refine=True`). It runs
+  only when the stage-1 draws from the unrefined grid give k̂ ≥ `khat_ok`. Refining always cost
+  10 extra conditional fits (+24–49 % likelihood evaluations) and did not improve the accuracy.
+  On 12 test light curves × 3 seeds the cost is back to that without refinement in 25 of 36
+  runs, and 9 % lower in total than refining always. `lazy_refine=False` restores the previous
+  behaviour.
 - `julia/examples/J6_bartky.jl`: the limb integral in Bartky's variable (paper Section 5.3) step
   by step, every claim checked numerically: the complete integral in the rim angle, the strip of
   analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk,

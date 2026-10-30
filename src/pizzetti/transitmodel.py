@@ -15,6 +15,20 @@ from .occult import SERIES_TOL, occult, series_cut
 __all__ = ["TransitModel", "TransitParams"]
 
 
+def _exposure_offsets(exp_time, k, mode):
+    """Sub-exposure time offsets (equal weights). "batman": k equally spaced points
+    including the exposure edges, as in batman (a midpoint rule over an exposure stretched
+    by k/(k-1), error O(1/k)); "midpoint": the midpoints of k equal sub-intervals (error
+    O(1/k^2))."""
+    if k <= 1 or exp_time <= 0:
+        return np.zeros(1)
+    if mode == "batman":
+        return np.linspace(-exp_time / 2.0, exp_time / 2.0, k)
+    if mode == "midpoint":
+        return ((np.arange(k) + 0.5) / k - 0.5) * exp_time
+    raise ValueError('offsets must be "batman" or "midpoint"')
+
+
 class TransitParams(object):
     """Physical parameters of the transit (same attributes as batman).
 
@@ -65,6 +79,9 @@ class TransitModel(object):
     :param transittype: "primary" or "secondary"
     :param supersample_factor: number of points per exposure
     :param exp_time: exposure time (same units as ``t``)
+    :param offsets: placement of the points within an exposure: "batman" (default, as
+        batman: equally spaced, including the exposure edges) or "midpoint" (midpoints of
+        equal sub-intervals; more accurate for the same ``supersample_factor``)
     :param series_tol: rigorous bound on the flux error of the interior series
         (absolute flux, default 1e-9); 0 disables the series
     :param limb: "fast" (default), "proven" or "quadrature": method for the
@@ -77,13 +94,16 @@ class TransitModel(object):
     """
 
     def __init__(self, params, t, max_err=1.0, nthreads=1, fac=None, transittype="primary",
-                 supersample_factor=1, exp_time=0.0, series_tol=SERIES_TOL, limb="fast"):
+                 supersample_factor=1, exp_time=0.0, series_tol=SERIES_TOL, limb="fast",
+                 offsets="batman"):
         check_law(params.limb_dark, params.u)
         if transittype not in ("primary", "secondary"):
             raise ValueError('Allowed transit types are "primary" and "secondary".')
         if supersample_factor > 1 and exp_time <= 0.0:
             raise ValueError("Please enter a valid exposure time (exp_time must be greater than 0 "
                              "to calculate super-sampled light curves).")
+        if offsets not in ("batman", "midpoint"):
+            raise ValueError('offsets must be "batman" or "midpoint"')
         if not isinstance(t, np.ndarray):
             raise TypeError("Times t must be a numpy array (not a list).")
         if nthreads not in (None, 1):
@@ -96,8 +116,9 @@ class TransitModel(object):
         self.limb = limb
         self.supersample_factor = int(supersample_factor)
         self.exp_time = exp_time
+        self.offsets = offsets
         if self.supersample_factor > 1:
-            offs = np.linspace(-exp_time / 2.0, exp_time / 2.0, self.supersample_factor)
+            offs = _exposure_offsets(exp_time, self.supersample_factor, offsets)
             self.t_supersample = (offs + self.t.reshape(self.t.size, 1)).flatten()
         else:
             self.t_supersample = self.t

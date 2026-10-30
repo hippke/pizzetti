@@ -201,7 +201,8 @@ def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
 def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, rng=None,
                drop=12.0, step_sd=1.0, lo_wall=0.0, hi_wall=None, max_grid=60, batch=2000,
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
-               mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10):
+               mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
+               lazy_refine=True):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -220,6 +221,10 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     ``max_refine`` extra conditional fits (None: no refinement). Near a wall the
     conditional optimum moves non-linearly in b (it depends on b^2) and the
     geometric grid steps are largest there (Kepler-2 LC: 0.55 sd interpolation error).
+    ``lazy_refine`` (default): refine only if the stage-1 draws from the unrefined grid
+    give k-hat >= ``khat_ok``, then draw stage 1 again from the refined grid (the
+    refinement costs up to ``max_refine`` conditional fits and is not needed where the
+    interpolation is good enough). False refines always, before the first draws.
     ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
     neighbouring grid point's sd; "map" ``h_sd`` x the conditional sd at the MAP for
     every grid point (smoother log det Sigma(b) for strongly curved conditionals, but
@@ -348,9 +353,11 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             bv, x0, cov_prev = bn, f[0], f[2]
             if hit_wall or (f[1] + 0.5 * f[3] - lref) < -drop:
                 break
-    # adaptive refinement: the proposal interpolates mu(b), Sigma(b) linearly between grid
-    # points, so insert midpoints where that interpolation is off by > refine_tol sd
-    if refine_tol is not None and len(grid) > 1:
+    def refine():
+        """Insert midpoints where the linear interpolation of mu(b) between grid
+        points is off by more than refine_tol conditional sd; returns the number of
+        extra conditional fits (at most max_refine)."""
+        nonlocal nev
         todo = list(zip(sorted(grid)[:-1], sorted(grid)[1:]))
         n_ref = 0
         while todo and n_ref < max_refine:
@@ -373,79 +380,96 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             grid[bm] = f
             if err > refine_tol:
                 todo += [(b0, bm), (bm, b1)]
-    bs = np.array(sorted(grid))
-    lb_all = {b: grid[b][1] + 0.5 * grid[b][3] for b in bs}
-    end_lo_ok = (lo_wall is not None and bs[0] <= lo_wall) or (lb_all[bs[0]] - lref < -drop)
-    end_hi_ok = (hi_wall is not None and bs[-1] >= hi_wall) or (lb_all[bs[-1]] - lref < -drop)
-    mus = np.array([grid[b][0] for b in bs])
-    covs = np.array([grid[b][2] for b in bs])
-    lb = np.array([grid[b][1] + 0.5 * grid[b][3] for b in bs])
-    # piecewise-linear proposal density in b (optionally tempered / mixed with uniform)
-    pb = np.exp(b_temper * (lb - lb.max()))
-    seg0 = 0.5 * (pb[1:] + pb[:-1]) * np.diff(bs)
-    pb = (1 - b_uniform) * pb / seg0.sum() + b_uniform / (bs[-1] - bs[0])
-    seg = 0.5 * (pb[1:] + pb[:-1]) * np.diff(bs)
-    Z = seg.sum()
+        return n_ref
 
-    def q_b_logpdf(bv):
-        out = np.full(bv.shape, -np.inf)
-        ok = (bv >= bs[0]) & (bv <= bs[-1])
-        out[ok] = np.log(np.interp(bv[ok], bs, pb) / Z)
-        return out
+    def build():
+        """Proposal from the current grid; stage-1 draws and PSIS weights."""
+        nonlocal nev
+        bs = np.array(sorted(grid))
+        lb_all = {b: grid[b][1] + 0.5 * grid[b][3] for b in bs}
+        end_lo_ok = (lo_wall is not None and bs[0] <= lo_wall) or (lb_all[bs[0]] - lref < -drop)
+        end_hi_ok = (hi_wall is not None and bs[-1] >= hi_wall) or (lb_all[bs[-1]] - lref < -drop)
+        mus = np.array([grid[b][0] for b in bs])
+        covs = np.array([grid[b][2] for b in bs])
+        lb = np.array([grid[b][1] + 0.5 * grid[b][3] for b in bs])
+        # piecewise-linear proposal density in b (optionally tempered / mixed with uniform)
+        pb = np.exp(b_temper * (lb - lb.max()))
+        seg0 = 0.5 * (pb[1:] + pb[:-1]) * np.diff(bs)
+        pb = (1 - b_uniform) * pb / seg0.sum() + b_uniform / (bs[-1] - bs[0])
+        seg = 0.5 * (pb[1:] + pb[:-1]) * np.diff(bs)
+        Z = seg.sum()
 
-    def q_b_sample(m):
-        j = rng.choice(len(seg), size=m, p=seg / Z)
-        u = rng.random(m)
-        y0, y1, x0_, x1 = pb[j], pb[j + 1], bs[j], bs[j + 1]
-        # inverse CDF of a linear density on [x0, x1]
-        dy = y1 - y0
-        with np.errstate(invalid="ignore", divide="ignore"):
-            t = np.where(np.abs(dy) < 1e-12 * np.maximum(y0, 1e-300), u,
-                         (-y0 + np.sqrt(y0 * y0 + u * (y1 * y1 - y0 * y0))) / dy)
-        return x0_ + t * (x1 - x0_)
+        def q_b_logpdf(bv):
+            out = np.full(bv.shape, -np.inf)
+            ok = (bv >= bs[0]) & (bv <= bs[-1])
+            out[ok] = np.log(np.interp(bv[ok], bs, pb) / Z)
+            return out
 
-    def interp_params(bv):
-        k = np.clip(np.searchsorted(bs, bv) - 1, 0, len(bs) - 2)
-        f = ((bv - bs[k]) / (bs[k + 1] - bs[k]))[:, None]
-        mu = mus[k] * (1 - f) + mus[k + 1] * f
-        cov = covs[k] * (1 - f)[:, :, None] + covs[k + 1] * f[:, :, None]
-        return mu, cov
+        def q_b_sample(m):
+            j = rng.choice(len(seg), size=m, p=seg / Z)
+            u = rng.random(m)
+            y0, y1, x0_, x1 = pb[j], pb[j + 1], bs[j], bs[j + 1]
+            # inverse CDF of a linear density on [x0, x1]
+            dy = y1 - y0
+            with np.errstate(invalid="ignore", divide="ignore"):
+                t = np.where(np.abs(dy) < 1e-12 * np.maximum(y0, 1e-300), u,
+                             (-y0 + np.sqrt(y0 * y0 + u * (y1 * y1 - y0 * y0))) / dy)
+            return x0_ + t * (x1 - x0_)
 
-    dr = len(rest)
+        def interp_params(bv):
+            k = np.clip(np.searchsorted(bs, bv) - 1, 0, len(bs) - 2)
+            f = ((bv - bs[k]) / (bs[k + 1] - bs[k]))[:, None]
+            mu = mus[k] * (1 - f) + mus[k + 1] * f
+            cov = covs[k] * (1 - f)[:, :, None] + covs[k + 1] * f[:, :, None]
+            return mu, cov
 
-    def q_prof_sample(m):
-        bsamp = q_b_sample(m)
-        mu, cov = interp_params(bsamp)
-        Ls = np.linalg.cholesky(cov * inflate ** 2)
-        z = rng.standard_normal((m, dr))
-        g = rng.chisquare(nu, m) / nu
-        X = np.empty((m, d))
-        X[:, rest] = mu + np.einsum("nij,nj->ni", Ls, z) / np.sqrt(g)[:, None]
-        X[:, prof] = bsamp
-        return X
+        dr = len(rest)
 
-    def q_prof_logpdf(X):
-        bv = X[:, prof]
-        out = q_b_logpdf(bv)
-        ok = np.isfinite(out)
-        if ok.any():
-            mu, cov = interp_params(bv[ok])
+        def q_prof_sample(m):
+            bsamp = q_b_sample(m)
+            mu, cov = interp_params(bsamp)
             Ls = np.linalg.cholesky(cov * inflate ** 2)
-            xr = X[ok][:, rest]
-            zz = np.linalg.solve(Ls, (xr - mu)[:, :, None])[:, :, 0]
-            qq = np.sum(zz * zz, axis=1)
-            logdet = np.sum(np.log(np.diagonal(Ls, axis1=1, axis2=2)), axis=1)
-            out[ok] += (gammaln((nu + dr) / 2) - gammaln(nu / 2) - 0.5 * dr * np.log(nu * np.pi)
-                        - logdet - 0.5 * (nu + dr) * np.log1p(qq / nu))
-        return out
+            z = rng.standard_normal((m, dr))
+            g = rng.chisquare(nu, m) / nu
+            X = np.empty((m, d))
+            X[:, rest] = mu + np.einsum("nij,nj->ni", Ls, z) / np.sqrt(g)[:, None]
+            X[:, prof] = bsamp
+            return X
 
-    def evaluate(X):
-        return np.concatenate([logp_batch(X[i:i + batch]) for i in range(0, len(X), batch)])
+        def q_prof_logpdf(X):
+            bv = X[:, prof]
+            out = q_b_logpdf(bv)
+            ok = np.isfinite(out)
+            if ok.any():
+                mu, cov = interp_params(bv[ok])
+                Ls = np.linalg.cholesky(cov * inflate ** 2)
+                xr = X[ok][:, rest]
+                zz = np.linalg.solve(Ls, (xr - mu)[:, :, None])[:, :, 0]
+                qq = np.sum(zz * zz, axis=1)
+                logdet = np.sum(np.log(np.diagonal(Ls, axis1=1, axis2=2)), axis=1)
+                out[ok] += (gammaln((nu + dr) / 2) - gammaln(nu / 2) - 0.5 * dr * np.log(nu * np.pi)
+                            - logdet - 0.5 * (nu + dr) * np.log1p(qq / nu))
+            return out
 
-    X = q_prof_sample(n)
-    lp = evaluate(X)
-    nev += n
-    lw, khat = psis(lp - q_prof_logpdf(X))
+        def evaluate(X):
+            return np.concatenate([logp_batch(X[i:i + batch]) for i in range(0, len(X), batch)])
+
+        X = q_prof_sample(n)
+        lp = evaluate(X)
+        nev += n
+        lw, khat = psis(lp - q_prof_logpdf(X))
+        return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat)
+
+    can_refine = refine_tol is not None and len(grid) > 1
+    n_ref = refine() if (can_refine and not lazy_refine) else 0
+    bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = build()
+    if can_refine and lazy_refine and not (khat < khat_ok):
+        # the unrefined proposal is not good enough: refine the grid and draw stage 1 again
+        # (keeping the unrefined draws in a mixture was tested worse: their weights raise
+        # k-hat and trigger stage 2 more often)
+        n_ref = refine()
+        if n_ref:
+            bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = build()
     w = np.exp(lw)
     stage = 1
     if mix_stage and not (khat < khat_ok):
@@ -476,5 +500,6 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     return dict(theta=X, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)),
                 n_eval=int(nev), theta_map=theta_map, grid_b=bs, grid_logdens=lb, stage=stage,
                 n_grid=len(bs), complete=bool(end_lo_ok and end_hi_ok), n_eval_map=int(nev_map),
+                n_refine=int(n_ref),
                 grid_lpmax=np.array([grid[b][1] for b in bs]),
                 grid_logdet=np.array([grid[b][3] for b in bs]))

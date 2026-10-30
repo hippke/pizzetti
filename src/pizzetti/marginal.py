@@ -44,6 +44,7 @@ from . import _laws, _orbit, _physnl, _powbasis
 from . import _marginal as K
 from . import _series
 from .terms import _A_HALF
+from .transitmodel import _exposure_offsets
 
 CANON = K.CANON
 _NO_ROWPAN2 = np.full(1, -1, dtype=np.int64)
@@ -51,16 +52,6 @@ _NO_ASTACK = (np.zeros((1, _powbasis.DEG_A + 1, _powbasis.DEG + 1, 7, _powbasis.
               np.zeros((1, 7), np.int64), np.zeros(1, np.bool_), np.zeros(1), np.full(1, -1.0),
               np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1, np.int64))
 _DEG = math.pi / 180.0
-
-
-def _exposure_offsets(exp_time, k, mode):
-    if k <= 1 or exp_time <= 0:
-        return np.zeros(1)
-    if mode == "batman":
-        return np.linspace(-exp_time / 2.0, exp_time / 2.0, k)
-    if mode == "midpoint":
-        return ((np.arange(k) + 0.5) / k - 0.5) * exp_time
-    raise ValueError('offsets must be "batman" or "midpoint"')
 
 
 @njit(cache=True)

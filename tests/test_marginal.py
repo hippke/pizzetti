@@ -149,3 +149,28 @@ def test_log_prior_and_ld_prior():
     j = r.labels.index("u1")
     assert abs(np.mean(r.samples[:, j]) - 0.3) < 0.03
     assert r.diagnostics["ld_reweight_ess"] > 50
+
+
+def test_profile_is_lazy_refinement():
+    """A curved conditional mean, x | b ~ N(4 b^2, 0.05^2) with b ~ N(0.3, 0.2) on b >= 0:
+    the unrefined grid is good enough, so lazy refinement adds no conditional fits;
+    eager refinement adds some and gives the same posterior."""
+    from pizzetti._sampling import profile_is
+
+    def logp(X):
+        X = np.atleast_2d(X)
+        b, x = X[:, 1], X[:, 0]
+        out = -0.5 * ((b - 0.3) / 0.2) ** 2 - 0.5 * ((x - 4 * b ** 2) / 0.05) ** 2
+        return np.where(b >= 0, out, -np.inf)
+
+    th0, sc = np.array([0.4, 0.3]), np.array([0.05, 0.2])
+    lazy = profile_is(logp, th0, sc, prof=1, n=4000, rng=np.random.default_rng(1))
+    eager = profile_is(logp, th0, sc, prof=1, n=4000, rng=np.random.default_rng(1), lazy_refine=False)
+    assert lazy["khat"] < 0.5 and lazy["n_refine"] == 0
+    assert eager["n_refine"] > 0 and eager["n_eval"] > lazy["n_eval"]
+    for r in (lazy, eager):
+        assert r["complete"]
+        mb = np.sum(r["w"] * r["theta"][:, 1])
+        mx = np.sum(r["w"] * r["theta"][:, 0])
+        assert abs(mb - 0.32776) < 0.01                # truncated-normal mean of b
+        assert abs(mx - 4 * np.sum(r["w"] * r["theta"][:, 1] ** 2)) < 0.01
