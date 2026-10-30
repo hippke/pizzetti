@@ -202,7 +202,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                drop=12.0, step_sd=1.0, lo_wall=0.0, hi_wall=None, max_grid=60, batch=2000,
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
                mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
-               lazy_refine=True):
+               lazy_refine=True, khat_refine=0.7):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -221,10 +221,11 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     ``max_refine`` extra conditional fits (None: no refinement). Near a wall the
     conditional optimum moves non-linearly in b (it depends on b^2) and the
     geometric grid steps are largest there (Kepler-2 LC: 0.55 sd interpolation error).
-    ``lazy_refine`` (default): refine only if the stage-1 draws from the unrefined grid
-    give k-hat >= ``khat_ok``, then draw stage 1 again from the refined grid (the
-    refinement costs up to ``max_refine`` conditional fits and is not needed where the
-    interpolation is good enough). False refines always, before the first draws.
+    ``lazy_refine`` (default): refine only if the final k-hat (after stage 2) is still
+    >= ``khat_refine`` (0.7, where the estimate is unreliable), then sample again from the
+    refined grid. The refinement costs up to ``max_refine`` conditional fits; a poor stage-1
+    proposal is mostly due to non-Gaussian conditionals, which stage 2 handles and refinement
+    does not. False refines always, before the first draws.
     ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
     neighbouring grid point's sd; "map" ``h_sd`` x the conditional sd at the MAP for
     every grid point (smoother log det Sigma(b) for strongly curved conditionals, but
@@ -460,43 +461,50 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         lw, khat = psis(lp - q_prof_logpdf(X))
         return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat)
 
+    def stages(out):
+        """Stage 1 (draws from the profile proposal) and, if k-hat >= khat_ok, stage 2."""
+        nonlocal nev
+        bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = out
+        w = np.exp(lw)
+        stage = 1
+        if mix_stage and not (khat < khat_ok):
+            # stage 2: defensive mixture 0.5 profile proposal + 0.5 multivariate t fitted to the
+            # stage-1 weighted samples (covers near-Gaussian posteriors where the
+            # Laplace-marginal profile l(b) is distorted by non-Gaussian conditionals)
+            m1 = np.sum(w[:, None] * X, axis=0)
+            C1 = (w[:, None] * (X - m1)).T @ (X - m1)
+            C1 = 0.5 * (C1 + C1.T)
+            ev, V = np.linalg.eigh(C1)
+            C1 = (V * np.clip(ev, 1e-30, None)) @ V.T
+            L1 = np.linalg.cholesky(C1 * inflate ** 2)
+            n1 = n // 2
+            X2 = np.vstack([q_prof_sample(n - n1), _mvt_sample(rng, m1, L1, nu, n1)])
+            lp2 = evaluate(X2)
+            nev += n
+            # multiple-importance (balance heuristic) over all 2n samples:
+            # stage-1 draws from q1, stage-2 from 0.5 q1 + 0.5 qt -> overall mixture 0.75 q1 + 0.25 qt
+            Xa = np.vstack([X, X2])
+            lpa = np.concatenate([lp, lp2])
+            lq1 = q_prof_logpdf(Xa)
+            lqt = _mvt_logpdf(Xa, m1, L1, nu)
+            lqa = np.logaddexp(np.log(0.75) + lq1, np.log(0.25) + lqt)
+            lw, khat = psis(lpa - lqa)
+            w = np.exp(lw)
+            X = Xa
+            stage = 2
+        return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok
+
     can_refine = refine_tol is not None and len(grid) > 1
     n_ref = refine() if (can_refine and not lazy_refine) else 0
-    bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = build()
-    if can_refine and lazy_refine and not (khat < khat_ok):
-        # the unrefined proposal is not good enough: refine the grid and draw stage 1 again
-        # (keeping the unrefined draws in a mixture was tested worse: their weights raise
-        # k-hat and trigger stage 2 more often)
+    X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok = stages(build())
+    if can_refine and lazy_refine and not (khat < khat_refine):
+        # last resort before giving up: refine the grid and sample again (the draws so far are
+        # discarded). Most poor stage-1 proposals come from non-Gaussian conditionals, which
+        # stage 2 handles and refinement does not; refining whenever stage 1 is poor was tested
+        # more expensive.
         n_ref = refine()
         if n_ref:
-            bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = build()
-    w = np.exp(lw)
-    stage = 1
-    if mix_stage and not (khat < khat_ok):
-        # stage 2: defensive mixture 0.5 profile proposal + 0.5 multivariate t fitted to the
-        # stage-1 weighted samples (covers near-Gaussian posteriors where the
-        # Laplace-marginal profile l(b) is distorted by non-Gaussian conditionals)
-        m1 = np.sum(w[:, None] * X, axis=0)
-        C1 = (w[:, None] * (X - m1)).T @ (X - m1)
-        C1 = 0.5 * (C1 + C1.T)
-        ev, V = np.linalg.eigh(C1)
-        C1 = (V * np.clip(ev, 1e-30, None)) @ V.T
-        L1 = np.linalg.cholesky(C1 * inflate ** 2)
-        n1 = n // 2
-        X2 = np.vstack([q_prof_sample(n - n1), _mvt_sample(rng, m1, L1, nu, n1)])
-        lp2 = evaluate(X2)
-        nev += n
-        # multiple-importance (balance heuristic) over all 2n samples:
-        # stage-1 draws from q1, stage-2 from 0.5 q1 + 0.5 qt -> overall mixture 0.75 q1 + 0.25 qt
-        Xa = np.vstack([X, X2])
-        lpa = np.concatenate([lp, lp2])
-        lq1 = q_prof_logpdf(Xa)
-        lqt = _mvt_logpdf(Xa, m1, L1, nu)
-        lqa = np.logaddexp(np.log(0.75) + lq1, np.log(0.25) + lqt)
-        lw, khat = psis(lpa - lqa)
-        w = np.exp(lw)
-        X = Xa
-        stage = 2
+            X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok = stages(build())
     return dict(theta=X, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)),
                 n_eval=int(nev), theta_map=theta_map, grid_b=bs, grid_logdens=lb, stage=stage,
                 n_grid=len(bs), complete=bool(end_lo_ok and end_hi_ok), n_eval_map=int(nev_map),

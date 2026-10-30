@@ -7,18 +7,15 @@
   exposure edges, i.e. a midpoint rule over an exposure stretched by k/(k−1), error O(1/k));
   "midpoint" uses the midpoints of k equal sub-intervals (error O(1/k²); for Kepler long cadence
   with k = 15 about 3 ppm instead of 125 ppm).
-- Profile importance sampling: the b-grid refinement is now lazy (`lazy_refine=True`). It runs
-  only when the stage-1 draws from the unrefined grid give k̂ ≥ `khat_ok`. Refining always cost
-  10 extra conditional fits (+24–49 % likelihood evaluations) and did not improve the accuracy.
-  On 12 test light curves × 3 seeds the cost is back to that without refinement in 25 of 36
-  runs, and 9 % lower in total than refining always. `lazy_refine=False` restores the previous
-  behaviour.
-- `julia/examples/J6_bartky.jl`: the limb integral in Bartky's variable (paper Section 5.3) step
-  by step, every claim checked numerically: the complete integral in the rim angle, the strip of
-  analyticity, exp(-π²/h) convergence up to both contacts, the shifted contour inside the disk,
-  the connection formula behind the interpolants, a generic version that gives BigFloat
-  references, and the cost of the package's rules. `julia/src/trap.jl` comments use the paper's
-  notation (ϑ, β, 𝒦, 𝒦_reg, 𝒦_sing).
+- Profile importance sampling: the b-grid refinement is now a last resort (`lazy_refine=True`).
+  It runs only when the final k̂ (after the defensive second stage) is still ≥ `khat_refine`
+  (0.7), and the sampling is then repeated on the refined grid. Refining always cost 10 extra
+  conditional fits (+24–49 % likelihood evaluations) without improving the accuracy, and most
+  poor first-stage proposals come from non-Gaussian conditionals (e.g. Kepler-8 LC, where the
+  Laplace estimate of the b-marginal is off by ±0.5 nats), which the second stage handles and
+  refinement does not. On 12 test light curves × 3 seeds: 16 % fewer evaluations in total
+  than refining always, the same accuracy. `lazy_refine=False` restores the previous behaviour;
+  the result reports `n_refine`.
 
 ## 0.3.0 (Pizzetti.jl 0.2.0)
 
