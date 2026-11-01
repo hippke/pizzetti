@@ -525,6 +525,28 @@ def _shallow_toy(sigma=1e-3, seed=1):
                                          supersample_factor=15, exp_time=exp, offsets="midpoint")
 
 
+def test_bounded_coords_ignore_t14_column():
+    """_conj_factor (e, w) and _BoundedCoords._t14_range (per, rp, b) are called by
+    _BoundedCoords.to_x before the T14 column is set; a T14 of 0 raised ZeroDivisionError in the
+    T14 -> a/R* conversion (bounded retry for an ultra-short-period planet at 30-min cadence)."""
+    m = _shallow_toy()
+    assert m.t14
+    X = m.to_internal(m.fixed_physical_free())
+    X[:, m.free.index("a")] = 0.0
+    assert np.allclose(m._conj_factor(X), 1.0)
+    from pizzetti.marginal import _BoundedCoords
+    lo, hi = _BoundedCoords(m, graze=True)._t14_range(X)          # the T14 slot is ignored there
+    assert np.all(np.isfinite(lo)) and np.all(hi > lo)
+    X[:, m.free.index("a")] = 1e-205                                # T14 -> 0: sin^2 underflows
+    assert np.all(m.log_prob_internal(X) == -np.inf)
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a, p.inc, p.ecc, p.w, p.limb_dark, p.u = 0.0, 3.0, 0.03, 10.0, 89.0, 0.0, 90.0, "quadratic", [0.4, 0.25]
+    m2 = pizzetti.MarginalTransitModel(p, m.t, m.y, 1e-3, free=("t0", "per", "rp", "a", "b"))
+    X2 = m2.to_internal(m2.fixed_physical_free())
+    X2[:, 1] = 0.0                                                   # per = 0 (an optimiser's step)
+    assert np.all(m2.log_prob_internal(X2) == -np.inf)
+
+
 def _kernel_loglike(m, rp, a, b, t0=-0.004):
     from pizzetti import _marginal as K, _series
     from pizzetti.marginal import _A_HALF

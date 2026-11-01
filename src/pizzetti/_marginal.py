@@ -824,10 +824,14 @@ def design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, 
 def a_logjac_from_T14(T14, per, rp, b):
     """a/R* of a circular orbit with total duration T14 and log|da/dT14|; (nan, 0) if invalid."""
     Q = (1.0 + rp) ** 2 - b * b
+    if not (per > 0.0):                     # an optimiser's step to per = 0 (logit / log coordinates)
+        return math.nan, 0.0
     x = math.pi * T14 / per
     if not (Q > 0.0 and 0.0 < x < 0.5 * math.pi):
         return math.nan, 0.0
     s = math.sin(x)
+    if s * s * s < 1e-300:                  # T14 -> 0 (an unbounded a/R*): s^2 underflows, Q / 0 raised
+        return math.nan, 0.0
     a = math.sqrt(b * b + Q / (s * s))
     return a, math.log(Q * math.cos(x) * math.pi / (a * s * s * s * per))
 

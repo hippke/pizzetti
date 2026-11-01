@@ -244,7 +244,9 @@ class _BoundedCoords:
     def _t14_range(self, X):
         """Rows of internal x (T14 slot ignored) -> (T14 at a_hi, T14 at a_lo)."""
         m = self.m
-        P = m._canonical_physical(m.to_physical(X))         # per, rp, b of the rows
+        # per, rp, b of the rows, without the T14 -> a/R* conversion: the T14 slot is not set yet
+        # (a T14 of 0 divided by zero in the numba kernel)
+        P, _ = K.to_canonical(m._geo(np.nan_to_num(np.atleast_2d(X))), m.idx, m.fixed, False)
         per, rp, b = P[:, 1], P[:, 2], P[:, 4]
         Q = np.clip((1.0 + rp) ** 2 - b * b, 0.0, None)
         _, _, a_lo, a_hi = next(c for c in self.cols if c[1] == "a14")
@@ -667,8 +669,11 @@ class MarginalTransitModel:
         return np.ascontiguousarray(A * self.wts[:, None])
 
     def _conj_factor(self, Xi):
-        """g = (1 - e^2) / (1 +- e sin w) of internal rows (b_conj = g b; 1 for a circular orbit)."""
-        P, _ = self._canonical_internal(np.nan_to_num(np.atleast_2d(np.asarray(Xi, dtype=float))))
+        """g = (1 - e^2) / (1 +- e sin w) of internal rows (b_conj = g b; 1 for a circular orbit).
+        Only e and w are needed: no T14 -> a/R* conversion (in _BoundedCoords.to_x the T14 column is
+        not set yet when g is needed, and a T14 of 0 divided by zero in the numba kernel)."""
+        X = np.nan_to_num(np.atleast_2d(np.asarray(Xi, dtype=float)))
+        P, _ = K.to_canonical(self._geo(X), self.idx, self.fixed, False)
         e, w = P[:, 5], P[:, 6]
         return (1.0 - e * e) / (1.0 + (-1.0 if self.secondary else 1.0) * e * np.sin(w))
 

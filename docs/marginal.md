@@ -86,7 +86,7 @@ Notes:
 ```python
 model = pizzetti.MarginalTransitModel(params, t, y, yerr,
                                       free=["t0", "per", "rp", "a", "b"])
-result = model.fit()            # method="auto": profile importance sampling, emcee fallback
+result = model.fit()            # method="auto": profile importance sampling (no MCMC)
 print(result.summary())
 result.samples, result.labels   # emcee-like flat array (geometry + LD + baseline)
 result.weighted_samples, result.weights
@@ -99,11 +99,16 @@ the prior uniform in a). `fit()` proceeds in four steps:
 1. It finds the maximum and the profile of the posterior.
 2. It draws from a heavy-tailed proposal fitted to that profile.
 3. It corrects the draws with exact importance weights, Pareto-smoothed and checked with k̂
-   and the effective sample size. The grid is refined where interpolating the conditional
+   and the effective sample size (accepted for k̂ < 0.5 and an ESS of at least 25% of the draws). The grid is refined where interpolating the conditional
    mean between grid points would be off by more than 0.25 conditional sd (near the b = 0 wall
    it moves non-linearly). If k̂ is still too high, a second stage adds a multivariate t fitted
    to the weighted draws.
-4. It falls back to emcee, run to 50 τ with Δτ < 1 %, if the diagnostics fail.
+4. If the diagnostics fail, it repeats the construction in unbounded coordinates (logit/log of
+   the bounded parameters; β = b/(1 + Rp/R⋆) for grazing posteriors) and, if needed, refines the
+   pooled draws of all attempts by adaptive multiple importance sampling, with a component over the
+   whole prior box, until k̂ < 0.7, the ESS is at least 25% of the draws and the quantiles are
+   stable. It does not fall back to MCMC; `diagnostics["is_ok"]` says whether the draws pass, and
+   `fit()` warns if they do not. Tutorials 11–15 explain each step.
 
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb

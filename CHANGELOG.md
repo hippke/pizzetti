@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bounded retry (`_BoundedCoords.to_x`): `_conj_factor` and `_t14_range` converted the internal rows
+  to canonical ones, including T14 -> a/R*, before the T14 column was set; a T14 of 0 raised
+  ZeroDivisionError in the numba kernel (`fit()` crashed for a K2-131-like ultra-short-period planet at
+  30-min cadence). They now read only the parameters they need (e, w; per, rp, b), and
+  `a_logjac_from_T14` rejects a period of 0 and a T14 so small that sin^2 underflows (the retry's
+  optimiser can step to per -> 0 and T14 -> 0 in log / logit coordinates). Results are unchanged
+  wherever it did not crash.
 - Quadratic marginal likelihood: well conditioned for any transit depth. The normal equations were
   formed in the Bernstein coefficients c, whose three columns are all constant out of transit
   (condition ~ 1 / rp^4): log L carried numerical noise (0.07 nats rms for Kepler-78 b, rp 0.014,

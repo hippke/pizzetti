@@ -1,8 +1,9 @@
 # Tutorials
 
-Ten notebooks, from a first light curve to certified and linear-basis models. Each one starts with
-its level, prerequisites and run time, and ends with what you learned and where to go next. The
-first notebook you run also compiles pizzetti's numba kernels (about a minute, cached afterwards).
+Fifteen notebooks, from a first light curve to certified and linear-basis models and the importance
+sampler behind `fit()`. Each one starts with its level, prerequisites and run time, and ends with
+what you learned and where to go next. The first notebook you run also compiles pizzetti's numba
+kernels (about a minute, cached afterwards).
 
 ```bash
 pip install "pizzetti[fit]" batman-package corner matplotlib mpmath jupyter
@@ -35,8 +36,18 @@ jupyter lab examples/
 | 09 | [Performance](09_performance.ipynb) | cost per sample, duty cycle, reusing models, fixed vs free exponents, grazing transits, batman's `max_err` | ~1 min |
 | 10 | [Linear basis light curves](10_linear_basis_light_curves.ipynb) | `occult_terms`, `quadratic_from_terms`, linear least squares for limb darkening, many wavelength channels | ~20 s |
 
+## Importance sampling
+
+| | Notebook | What you learn | Run time |
+|---|---|---|---|
+| 11 | [Importance sampling from scratch](11_importance_sampling_from_scratch.ipynb) | weights, effective sample size, Pareto k̂ (`psis`), the blind spot of weight diagnostics, defensive mixtures, adaptive IS (`pmc_refine`) on toy densities | ~10 s |
+| 12 | [Why b is hard](12_why_b_is_hard.ipynb) | the wall at b = 0, the skewed marginal and the curved b–a/R★ ridge; a Laplace proposal (`laplace_is`) that passes its diagnostics and misses the tail; what emcee pays | ~30 s |
+| 13 | [Profile importance sampling step by step](13_profile_importance_sampling.ipynb) | `profile_is` taken apart: the grid of conditional optima, ℓ(b), the proposal, the weights, stage 2, defensive draws, refinement; accuracy and cost against emcee | ~30 s |
+| 14 | [When the profile is not enough](14_when_the_profile_is_not_enough.ipynb) | a grazing branch, the acceptance rule (k̂ < 0.5, ESS ≥ 25%), a transit at S/N ≈ 5; bounded retry, flat proposal and adaptive rescue; reading `diagnostics` | ~1 min |
+| 15 | [Trusting the result: IS against MCMC](15_is_against_mcmc.ipynb) | the Monte Carlo noise of IS and of emcee, measured alike; slow tails and short chains; more draws as a cheap check; cost | ~2 min |
+
 Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 → 03 → 05 → 06;
-**methods** 07 → 08 → 09.
+**methods** 07 → 08 → 09; **sampling** 03 → 06 → 11 → 12 → 13 → 14 → 15.
 
 ## Feature coverage
 
@@ -54,6 +65,10 @@ Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 �
 | `occult`, `series_cut`, `limb=` options | 07, 08, 09 |
 | `series_tol`, `limb="proven"`, `return_certified` | 08 |
 | `occult_terms`, `quadratic_from_terms` | 10 |
+| importance weights, ESS, `psis`, `pmc_refine`, `laplace_is` | 11, 12 |
+| `profile_is` (sampler and `MarginalTransitModel` method), `FitResult.diagnostics` | 13, 14 |
+| bounded retry, flat-limb-darkening proposal, adaptive rescue | 14 |
+| comparing samplers: quantile differences, Monte Carlo noise | 13, 15 |
 
 ## More
 
