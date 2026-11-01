@@ -108,7 +108,7 @@ the prior uniform in a). `fit()` proceeds in four steps:
    pooled draws of all attempts by adaptive multiple importance sampling, with a component over the
    whole prior box, until k̂ < 0.7, the ESS is at least 25% of the draws and the quantiles are
    stable. It does not fall back to MCMC; `diagnostics["is_ok"]` says whether the draws pass, and
-   `fit()` warns if they do not. Tutorials 11–15 explain each step.
+   `fit()` warns if they do not. Tutorials 12–16 explain each step.
 
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb

@@ -1,12 +1,12 @@
 # Tutorials
 
-Fifteen notebooks, from a first light curve to certified and linear-basis models and the importance
-sampler behind `fit()`. Each one starts with its level, prerequisites and run time, and ends with
-what you learned and where to go next. The first notebook you run also compiles pizzetti's numba
-kernels (about a minute, cached afterwards).
+Seventeen notebooks, from a first light curve to certified and linear-basis models, the importance
+sampler behind `fit()`, and the Grand Tour from a raw light curve to a posterior. Each one starts
+with its level, prerequisites and run time, and ends with what you learned and where to go next. The
+first notebook you run also compiles pizzetti's numba kernels (about a minute, cached afterwards).
 
 ```bash
-pip install "pizzetti[fit]" batman-package corner matplotlib mpmath jupyter
+pip install "pizzetti[fit]" batman-package corner matplotlib mpmath jupyter lightkurve wotan transitleastsquares
 # Python >= 3.12: batman also needs `pip install setuptools`
 jupyter lab examples/
 ```
@@ -40,14 +40,21 @@ jupyter lab examples/
 
 | | Notebook | What you learn | Run time |
 |---|---|---|---|
-| 11 | [Importance sampling from scratch](11_importance_sampling_from_scratch.ipynb) | weights, effective sample size, Pareto k̂ (`psis`), the blind spot of weight diagnostics, defensive mixtures, adaptive IS (`pmc_refine`) on toy densities | ~10 s |
-| 12 | [Why b is hard](12_why_b_is_hard.ipynb) | the wall at b = 0, the skewed marginal and the curved b–a/R★ ridge; a Laplace proposal (`laplace_is`) that passes its diagnostics and misses the tail; what emcee pays | ~30 s |
-| 13 | [Profile importance sampling step by step](13_profile_importance_sampling.ipynb) | `profile_is` taken apart: the grid of conditional optima, ℓ(b), the proposal, the weights, stage 2, defensive draws, refinement; accuracy and cost against emcee | ~30 s |
-| 14 | [When the profile is not enough](14_when_the_profile_is_not_enough.ipynb) | a grazing branch, the acceptance rule (k̂ < 0.5, ESS ≥ 25%), a transit at S/N ≈ 5; bounded retry, flat proposal and adaptive rescue; reading `diagnostics` | ~1 min |
-| 15 | [Trusting the result: IS against MCMC](15_is_against_mcmc.ipynb) | the Monte Carlo noise of IS and of emcee, measured alike; slow tails and short chains; more draws as a cheap check; cost | ~2 min |
+| 11 | [Your first fit with Importance Sampling (IS)](11_your_first_fit_with_is.ipynb) | a real TESS light curve (WASP-18 b): download with lightkurve, detrending with wotan, `fit()` and a corner plot, step by step | ~1 min |
+| 12 | [Importance sampling from scratch](12_importance_sampling_from_scratch.ipynb) | weights, effective sample size, Pareto k̂ (`psis`), the blind spot of weight diagnostics, defensive mixtures, adaptive IS (`pmc_refine`) on toy densities | ~10 s |
+| 13 | [Why b is hard](13_why_b_is_hard.ipynb) | the wall at b = 0, the skewed marginal and the curved b–a/R★ ridge; a Laplace proposal (`laplace_is`) that passes its diagnostics and misses the tail; what emcee pays | ~30 s |
+| 14 | [Profile importance sampling step by step](14_profile_importance_sampling.ipynb) | `profile_is` taken apart: the grid of conditional optima, ℓ(b), the proposal, the weights, stage 2, defensive draws, refinement; accuracy and cost against emcee | ~30 s |
+| 15 | [When the profile is not enough](15_when_the_profile_is_not_enough.ipynb) | a grazing branch, the acceptance rule (k̂ < 0.5, ESS ≥ 25%), a transit at S/N ≈ 5; bounded retry, flat proposal and adaptive rescue; reading `diagnostics` | ~1 min |
+| 16 | [Trusting the result: IS against MCMC](16_is_against_mcmc.ipynb) | the Monte Carlo noise of IS and of emcee, measured alike; slow tails and short chains; more draws as a cheap check; cost | ~2 min |
+
+## The Grand Tour
+
+| | Notebook | What you learn | Run time |
+|---|---|---|---|
+| 17 | [The Grand Tour](17_the_grand_tour.ipynb) | the whole chain for LHS 3844 b: download (lightkurve), detrending (wotan), the search with [TLS](https://github.com/hippke/tls), the fit with importance sampling, planet radius and stellar density | ~2 min |
 
 Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 → 03 → 05 → 06;
-**methods** 07 → 08 → 09; **sampling** 03 → 06 → 11 → 12 → 13 → 14 → 15.
+**methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17.
 
 ## Feature coverage
 
@@ -65,10 +72,11 @@ Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 �
 | `occult`, `series_cut`, `limb=` options | 07, 08, 09 |
 | `series_tol`, `limb="proven"`, `return_certified` | 08 |
 | `occult_terms`, `quadratic_from_terms` | 10 |
-| importance weights, ESS, `psis`, `pmc_refine`, `laplace_is` | 11, 12 |
-| `profile_is` (sampler and `MarginalTransitModel` method), `FitResult.diagnostics` | 13, 14 |
-| bounded retry, flat-limb-darkening proposal, adaptive rescue | 14 |
-| comparing samplers: quantile differences, Monte Carlo noise | 13, 15 |
+| importance weights, ESS, `psis`, `pmc_refine`, `laplace_is` | 12, 13 |
+| `profile_is` (sampler and `MarginalTransitModel` method), `FitResult.diagnostics` | 11, 14, 15 |
+| bounded retry, flat-limb-darkening proposal, adaptive rescue | 15 |
+| comparing samplers: quantile differences, Monte Carlo noise | 14, 16 |
+| real data: lightkurve download, wotan detrending, TLS search, `FitResult.corner` | 11, 17 |
 
 ## More
 
