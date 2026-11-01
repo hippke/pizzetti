@@ -2,6 +2,114 @@
 
 ## Unreleased
 
+- Quadratic marginal likelihood: well conditioned for any transit depth. The normal equations were
+  formed in the Bernstein coefficients c, whose three columns are all constant out of transit
+  (condition ~ 1 / rp^4): log L carried numerical noise (0.07 nats rms for Kepler-78 b, rp 0.014,
+  80 000 points; 4e-4 nats for rp 0.012 on 6 900 points), systematic errors of up to 0.2 nats at
+  S/N ~5 (rp 0.03) and of 5 to 13 000 nats at rp 0.01 to 0.001, and -inf below rp ~ 3e-4. They are now
+  solved in theta = (f0, c1, c2) (f0 the out-of-transit flux; the two other columns are deficits,
+  computed from the occultation terms without cancellation, exactly 0 out of transit), with scaled
+  columns (`design_theta`, `marg_theta_parts`, `theta_moments`). The cone term is evaluated as
+  int_cone exp(-q / 2) dtheta along rays c = f0 v (f0 analytic, v over the fixed cross-section of the
+  cone by Gauss-Legendre in the principal axes of its Gaussian approximation) where the
+  limb-darkening posterior is broad on the cone, and by the Genz orthant transform (moments from the
+  theta solution) where it is narrow, blended smoothly in between. Against 50-digit references
+  (mpmath; `tests/_mpref.py`): within 4e-5 nats at all tested geometries within ~500 nats of the
+  maximum (posterior draws of 9 light curves of the extended tests, a S/N ~5 simulation from rp 0.03
+  to 1e-6, the fast-vs-general test points), 1e-10 at high S/N; the noise on Kepler-78 b is 1e-8
+  nats. As rp -> 0 log L tends to its finite no-transit limit. A geometry with (nearly) collinear
+  deficit columns (extreme grazing) gets an extremely weak ridge (1e-9 of the scaled diagonal)
+  instead of -inf. The limb-darkening-prior path (`ld_prior`) and the general laws are unchanged.
+- No fallback to MCMC: `fit(method="auto")` (and "is") always returns importance draws. Where the
+  profile is not usable (incomplete, k-hat >= 0.7 or ESS < 0.1 n), `profile_is` pools the weighted
+  draws of all its attempts and runs adaptive importance sampling (AMIS, `_sampling.pmc_refine`)
+  from them in unbounded coordinates (logit / log of the bounded parameters; logit of
+  beta = b_conj / (1 + rp) whenever the bounds allow the whole support 0 <= beta < 1), with a
+  defensive component over the whole prior box, for 3-30 iterations, until k-hat < 0.7, ESS >= 0.1 n
+  and the 2.5-97.5 % quantiles are stable to 0.1 sd (`diagnostics["rescue"]`, `["rescue_iters"]`,
+  `["is_ok"]`; a warning if they still fail). "auto" runs emcee only if b is not free. The five light
+  curves of the extended tests that fell back to emcee (K2-100 b, K2-141 b, Kepler-447 b, WASP-47 e,
+  Kepler-78 b; 0.39-3.3 M evaluations) pass in all 15 runs (3 seeds). With the well-conditioned
+  likelihood (below) the profile itself succeeds for K2-100 b, K2-141 b and Kepler-447 b (53-85 k
+  evaluations, within 0.03-0.17 sigma of the emcee references), and Kepler-10 b needs 9 k instead of
+  53 k; the rescue runs for WASP-47 e (119-123 k, within 0.09-0.27 sigma) and two seeds of Kepler-22 b.
+  The injection campaign (400 injections, 6 hosts, real and white noise) needs neither. A barely
+  detected transit (S/N ~5, posterior over most of the prior) converges in 4 iterations, within
+  0.09 sigma of emcee.
+- `MarginalTransitModel.profile_is(khat_ok=0.5)`: a profile result is usable only for k-hat < 0.5
+  (finite-variance weights; was 0.7), otherwise the further attempts and the rescue follow. On
+  K2-131 b (a grazing branch with b up to 1.3 and rp up to 0.3, 6-8 % of the posterior) two of three
+  seeds were accepted with k-hat 0.65 and 0.69 without a draw on the branch (3.8 sd off in the 97.5 %
+  quantile of rp); with the rescue all three find it (P(b > 1) 6.1-6.9 %, emcee 5.9-8.0 %). 25 of 318
+  runs of the extended tests had a final k-hat in [0.5, 0.7).
+- `profile_is(ess_min=0.25)` (was 0.1): with an ESS of 900 of 4000 draws, Kepler-21 b's tails carried the
+  noise of a few hundred draws (0.37 sd off in the 2.5 % quantile of T14; 0.06 sd with 40 000 draws).
+  The threshold also sets the ESS that the rescue needs to stop.
+- Profile IS draws 10 % extra points from a broad t around its weighted draws (2 x their sd beyond
+  the inflation) and weights all draws against the deterministic mixture (`profile_is(defensive=0.1)`).
+  A proposal that stops short of part of the posterior then gets large weights there, which k-hat
+  sees: K2-141 b with the flat-limb-darkening proposal (grid ending at b = 0.8) had k-hat 0.20 and
+  ESS 1070 -- both acceptable -- and rp off by 1.3 sigma. About 4 % more evaluations.
+- `pmc_refine`: `extra` fixed proposal components, adaptive stopping (`min_iters`, `khat_ok`,
+  `ess_min`, `dq_tol`; `converged` in the result); each proposal's density at each draw is computed
+  once (the cost of the deterministic-mixture weights grew with the cube of the iterations). The
+  defaults reproduce the previous results exactly.
+- Profile IS on long, precise light curves: the first conditional Hessian (finite-difference steps of
+  1e-3 x the default scales) is computed again with steps of 0.1 x the scales if it is not negative
+  definite. The log likelihood carries numerical noise of ~5e-3 nats there (Kepler-10, short
+  cadence, 79 000 points), which dominated the small steps: the profile failed at its first grid
+  point and fell back to emcee (340 k evaluations); it now succeeds (k-hat 0.45, 32 k evaluations,
+  within 0.12 sigma of emcee). Unchanged where the first Hessian was fine.
+- Limb-darkening draws in the cone (`_gibbs_cone_one`, the fallback for rows whose truncated
+  Gaussian is far in the tail): a coordinate whose conditional mean was more than ~8 sd below its
+  wall was drawn below it (the inverse-CDF update saturated at u = 1 - 1e-16), i.e. outside the
+  physical region (negative limb intensity, q1 > 1; 0.3 % of the draws for K2-100 b, long cadence).
+  Such updates now use the upper-tail form, exact to ~37 sd. The geometry posterior is unaffected.
+- emcee in `fit()` (method "emcee" and the "auto" fallback): a walker whose mean log posterior over
+  the last 500 steps is more than max(25, 10 MAD) below the median walker's at two checks in a row
+  (stuck at a local mode the stretch move does not leave) is moved next to another walker, and
+  burn-in and the convergence test start again from there (`diagnostics["walkers_reset"]`;
+  `_sampling.stuck_walkers`, `reset_walkers`). Unchanged, bit for bit, when no walker is stuck. The
+  sampler runs in chunks of 500 steps (the chain no longer allocates `max_steps` up front). Seen in
+  reference emcee runs started from catalogue values: 1-2 of 32 walkers at b = 0.14 for HD 189733 b,
+  1400 below the posterior, widening sd(b) 20-fold.
+- Profile importance sampling is usable only with an effective sample size >= 0.1 n
+  (`profile_is(ess_min=0.1)`, also in `fit()`), besides a complete profile and k-hat < 0.7. A proposal
+  that misses part of the posterior altogether produces no large weights there, so k-hat cannot see
+  it: TrES-2 b (Kepler Q3 long cadence) with the flat-limb-darkening proposal had k-hat 0.4-0.6 but an
+  ESS of 150-250 of 4000 and missed the upper tail of rp (up to 1.4 sigma); it now continues to the
+  bounded retry with AMIS (ESS 15 000, within 0.06 sigma of emcee). No accepted run of the injection
+  campaigns (829) had an ESS below 1000.
+- Prior support for eccentric orbits: the region with a transit is b_conj = b (1 - e^2) / (1 + e sin w)
+  < 1 + rp (mid-eclipse: 1 - e sin w), not b < 1 + rp (pizzetti's b is a cos i). With e sin w > 0 the
+  old support cut off allowed grazing geometries (Kepler-447 b, e = 0.12, w = 98 deg: the posterior was
+  pressed against b = 1 + rp), with e sin w < 0 it admitted geometries without a transit. Circular
+  orbits are unchanged.
+- Grazing transits: if the first profile reaches a grazing geometry (b_conj + rp > 1) and the bounds
+  allow b_conj up to 1 + rp, the bounded retry profiles beta = b_conj / (1 + rp) between the fixed
+  walls 0 and 1 instead of b. The edge b_conj = 1 + rp moves with rp, so a grazing posterior along
+  b - rp = const (at low S/N up to the rp bound) could not be closed in b and fell back to emcee
+  (0.3-1.2 M evaluations); it now takes 70-95 k. A warning is issued if rp has no upper bound (the
+  posterior can then be improper).
+- Profile IS at the limb-darkening cliff: if a complete profile has poor weights, the proposal is
+  built on the posterior with a flat prior over the coefficients (smooth) and the draws are weighted
+  against the physical posterior = flat x P(cone), P <= 1, so the weights stay bounded
+  (`log_prob_internal(..., parts=True)`, `_sampling.profile_is(logp_target=...)`). A start on a
+  strict bound is moved inside the prior first.
+- `MarginalTransitModel(threads=1)`: `threads="all"` or n > 1 parallelises the likelihood for fitting
+  (rows of a batch over threads, or for long light curves the data points of a single row);
+  agreement with `threads=1` to rounding (~1e-11 nats), identical for any n > 1.
+- Fixes found by injection campaigns: a b-grid step outside the support (target -inf for every value
+  of the other parameters) was kept as a grid point with a NaN covariance; it closed the profile end,
+  but every draw in the last interval was then dropped silently, so mass near the edge could be
+  missed without k-hat noticing. Such steps are now rejected (the step is halved). A profile with a
+  single grid point reports failure instead of crashing. A coefficient covariance without a Cholesky
+  factor (a geometry that hardly constrains the limb darkening) gives that draw weight 0 instead of
+  raising (also in the Gibbs fallback of the draw); `fit()` reports the dropped geometry weight as
+  `ld_dropped_weight`. If no geometry constrains the limb darkening at all (a transit too shallow or
+  too grazing to be seen), the coefficients are drawn from the prior (uniform q1, q2) instead of
+  raising (`ld_from_prior`). A nearly singular BFGS seed in the conditional fits of the profile is
+  dropped instead of raising.
 - Profile importance sampling for posteriors that press against the prior bound of a parameter
   other than b (e.g. a/R* for an unresolved ingress, or a grazing transit): new method
   `MarginalTransitModel.profile_is()`, used by `fit()`. If the profile in the original

@@ -7,18 +7,21 @@ makes the observed flux linear in c for fixed geometry: m = A(theta) c. The
 physical conditions (positive, darkening towards the limb; Kipping 2013) are
 exactly the cone 0 <= c0 <= c1 <= c2. With a flat prior on c over the cone,
     log L(theta) = -chi2_min/2 - log det F / 2 + log P(c in cone)  (+ const),
-F = A^T W A, where P is a trivariate normal orthant probability (Genz transform
-on a fixed Gauss-Legendre grid; deterministic and smooth in theta).
+F = A^T W A, where P is a trivariate normal orthant probability. The quadratic fast path
+solves in theta = (f0, c1, c2) (design_theta, marg_theta_parts; well conditioned for any
+transit depth) and evaluates the cone term by a ray integral (broad limb-darkening
+posteriors) or the Genz transform on a fixed Gauss-Legendre grid (narrow ones), blended
+smoothly; deterministic and smooth in theta.
 """
 import math
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 from . import _orbit
 from ._powbasis import alpha_column, columns_kernel
 from ._physnl import log_prob_physical_line
-from .terms import _occult_terms_cut
+from .terms import _occult_terms, _occult_terms_cut, terms_cut
 
 # 12-point Gauss-Legendre with the endpoint-smoothing map u = t^2 (3 - 2t)
 _t, _w = np.polynomial.legendre.leggauss(12)
@@ -252,11 +255,20 @@ def normal_eqs(A, y):
 @njit(cache=True)
 def marg_loglike(A, y):
     """Marginal log-likelihood for weighted A, y (unit noise)."""
+    v, lP = marg_loglike_parts(A, y)
+    return v + lP
+
+
+@njit(cache=True)
+def marg_loglike_parts(A, y):
+    """(marginal log-likelihood without the cone, log P of the cone) for weighted A, y: the
+    likelihood with a flat prior over all coefficients, and the log probability of the
+    physical cone under the conditional Gaussian (log P <= 0)."""
     F, r = normal_eqs(A, y)
     L = np.zeros((3, 3))
     ok, logdet, Fi = inv3_chol(F, L)
     if not ok:
-        return -np.inf
+        return -np.inf, 0.0
     c0 = Fi[0, 0] * r[0] + Fi[0, 1] * r[1] + Fi[0, 2] * r[2]
     c1 = Fi[1, 0] * r[0] + Fi[1, 1] * r[1] + Fi[1, 2] * r[2]
     c2 = Fi[2, 0] * r[0] + Fi[2, 1] * r[1] + Fi[2, 2] * r[2]
@@ -265,7 +277,7 @@ def marg_loglike(A, y):
         d = y[t] - A[t, 0] * c0 - A[t, 1] * c1 - A[t, 2] * c2
         chi2 += d * d
     m, S = cone_ms(c0, c1, c2, Fi)
-    return -0.5 * chi2 - 0.5 * logdet + log_orthant_prob(m, S, GL_X, GL_W)
+    return -0.5 * chi2 - 0.5 * logdet, log_orthant_prob(m, S, GL_X, GL_W)
 
 
 @njit(cache=True)
@@ -335,6 +347,332 @@ def marg_loglike_ldprior(A, y, mb, Pb):
     return -0.5 * chi2 + extra - 0.5 * logdet + log_orthant_prob(m, S, GL_X, GL_W)
 
 
+# ----------------------------------------------------------------------------
+# Quadratic law in theta = (f0, c1, c2): well-conditioned normal equations and the cone integral
+# ----------------------------------------------------------------------------
+# With A_k = kappa_k - D_k (kappa = 1/6, 1/3, 1/2: the disk-integrated basis; D_k the deficits,
+# exactly 0 out of transit) and f0 = kappa . c (the out-of-transit flux), c0 = 6 f0 - 2 c1 - 3 c2,
+#     A c = B theta,  B = [1 - 6 D0, 2 D0 - D1, 3 D0 - D2],  theta = (f0, c1, c2).
+# The columns 2 and 3 of B vanish out of transit and are computed from the occultation terms without
+# cancellation; with the columns scaled to unit norm the normal equations are well conditioned for any
+# depth (in c, cond(F) ~ 1 / rp^4: 0.07 nats of noise in log L for Kepler-78 b, -inf below rp ~ 3e-4).
+# The cone integral I = int_cone exp(-(theta - th)^T G (theta - th) / 2) dtheta is evaluated along rays
+# c = f0 v: f0 analytically (a truncated second moment), v over the fixed triangle T1 (the cone at
+# f0 = 1: vertices (0, 2), (1, 1), (6/5, 6/5) in (v1, v2)) by Gauss-Legendre in the principal axes of
+# the Gaussian approximation of the integrand, outer axis the one along which T1 is longer (in sd).
+# log L = -chi2 / 2 + log I + log 6 - 3/2 log 2 pi; it tends to a finite limit as rp -> 0.
+_LOG2PI = math.log(2.0 * math.pi)
+_TRI = np.array([[0.0, 2.0], [1.0, 1.0], [1.2, 1.2]])
+
+
+@njit(cache=True)
+def theta_cols(T):
+    """n x 3 design in theta = (f0, c1, c2) from occult_terms output (lex, ldx, edx)."""
+    n = T.shape[1]
+    B = np.empty((n, 3))
+    for i in range(n):
+        lex, ldx, edx = T[0, i], T[1, i], T[2, i]
+        B[i, 0] = 1.0 - (12.0 * lex - 12.0 * ldx - 6.0 * edx)
+        B[i, 1] = 6.0 * lex - 6.0 * ldx - 4.0 * edx
+        B[i, 2] = 5.0 * lex - 6.0 * ldx - 2.0 * edx
+    return B
+
+
+@njit(cache=True)
+def _log_m2(alpha, mu):
+    """log int_0^inf x^2 exp(-alpha (x - mu)^2 / 2) dx."""
+    sd = 1.0 / math.sqrt(alpha)
+    z = mu / sd
+    if z > 8.0:
+        return 0.5 * _LOG2PI + math.log(sd) + math.log(mu * mu + sd * sd)
+    if z < -8.0:                     # (z^2 + 1) Phi(z) + z phi(z) ~ 2 phi(z) / |z|^3
+        return 0.5 * _LOG2PI + 3.0 * math.log(sd) - 0.5 * z * z - 0.5 * _LOG2PI + math.log(2.0) - 3.0 * math.log(-z)
+    R = (z * z + 1.0) * ndtr(z) + z * math.exp(-0.5 * z * z) / _SQRT2PI
+    return 0.5 * _LOG2PI + 3.0 * math.log(sd) + math.log(R)
+
+
+@njit(cache=True, inline="always")
+def _lt_mv(L, s, x0, x1, x2):
+    """L^T (s * x) for the lower-triangular 3 x 3 L."""
+    y0, y1, y2 = s[0] * x0, s[1] * x1, s[2] * x2
+    return (L[0, 0] * y0 + L[1, 0] * y1 + L[2, 0] * y2, L[1, 1] * y1 + L[2, 1] * y2, L[2, 2] * y2)
+
+
+@njit(cache=True)
+def _ray_log_g(v1, v2, L, s, eh1, eh2, A0, A1, A2):
+    """log of the f0 integral along the ray c = f0 (1, v1, v2) (see above)."""
+    b0, b1, b2 = _lt_mv(L, s, 1.0, v1, v2)
+    d0, d1, d2 = _lt_mv(L, s, 0.0, v1 - eh1, v2 - eh2)
+    alpha = b0 * b0 + b1 * b1 + b2 * b2
+    mu = (b0 * A0 + b1 * A1 + b2 * A2) / alpha
+    c0 = A1 * d2 - A2 * d1
+    c1 = A2 * d0 - A0 * d2
+    c2 = A0 * d1 - A1 * d0
+    return -0.5 * (c0 * c0 + c1 * c1 + c2 * c2) / alpha + _log_m2(alpha, mu)
+
+
+@njit(cache=True)
+def _nodes(lo, hi, gx, gw, x, lw):
+    """Nodes x and log weights lw for int_lo^hi f(z) dz against the standard normal: Gauss-Legendre
+    on [lo, hi] where the normal is broad there, else substitution by its CDF (lw includes the
+    1 / phi(z)), and by the exponential tangent to it for a window beyond 8 sd."""
+    n = gx.shape[0]
+    if hi - lo < 2.5:
+        for k in range(n):
+            x[k] = lo + (hi - lo) * gx[k]
+            lw[k] = math.log((hi - lo) * gw[k])
+        return
+    flip = lo > 0.0
+    za, zb = (-hi, -lo) if flip else (lo, hi)
+    if zb < -8.0:
+        lam = -zb
+        E = -math.expm1(-lam * (zb - za))
+        for k in range(n):
+            u = -math.log1p(-gx[k] * E) / lam
+            z = zb - u
+            x[k] = -z if flip else z
+            lw[k] = math.log(gw[k] * E / lam) + lam * u
+        return
+    pa, pb = ndtr(za), ndtr(zb)
+    la, lb = log_ndtr(za), log_ndtr(zb)
+    lmass = lb + math.log1p(-math.exp(la - lb))
+    for k in range(n):
+        z = ndtri(pa + gx[k] * (pb - pa))
+        x[k] = -z if flip else z
+        lw[k] = math.log(gw[k]) + lmass + 0.5 * _LOG2PI + 0.5 * z * z
+
+
+@njit(cache=True, inline="always")
+def _lse_add(m, acc, v):
+    """Running log-sum-exp: (max, sum of exp(. - max)) after adding v."""
+    if v == -np.inf:
+        return m, acc
+    if v > m:
+        return v, acc * math.exp(m - v) + 1.0
+    return m, acc + math.exp(v - m)
+
+
+@njit(cache=True)
+def _cone_extent(s, Gs, th):
+    """Smaller extent of the triangle T1 in the whitened coordinates of the Gaussian approximation
+    of the cone integrand (in sd): small for a broad limb-darkening posterior (shallow transit,
+    low S/N), large for a narrow one."""
+    eh1, eh2 = th[1] / th[0], th[2] / th[0]
+    es0, es1, es2 = s[0], s[1] * eh1, s[2] * eh2
+    g0 = Gs[0, 0] * es0 + Gs[0, 1] * es1 + Gs[0, 2] * es2
+    g1 = Gs[1, 0] * es0 + Gs[1, 1] * es1 + Gs[1, 2] * es2
+    g2 = Gs[2, 0] * es0 + Gs[2, 1] * es1 + Gs[2, 2] * es2
+    ege = es0 * g0 + es1 * g1 + es2 * g2
+    f2 = th[0] * th[0]
+    pa = f2 * s[1] * s[1] * (Gs[1, 1] - g1 * g1 / ege)
+    pb = f2 * s[1] * s[2] * (Gs[1, 2] - g1 * g2 / ege)
+    pc = f2 * s[2] * s[2] * (Gs[2, 2] - g2 * g2 / ege)
+    phi = 0.5 * math.atan2(2.0 * pb, pa - pc)
+    cs, sn = math.cos(phi), math.sin(phi)
+    q0 = math.sqrt(max(pa * cs * cs + 2.0 * pb * cs * sn + pc * sn * sn, 1e-300))
+    q1 = math.sqrt(max(pa * sn * sn - 2.0 * pb * cs * sn + pc * cs * cs, 1e-300))
+    lo0 = lo1 = np.inf
+    hi0 = hi1 = -np.inf
+    for i in range(3):
+        dv1, dv2 = _TRI[i, 0] - eh1, _TRI[i, 1] - eh2
+        z0 = q0 * (cs * dv1 + sn * dv2)
+        z1 = q1 * (-sn * dv1 + cs * dv2)
+        lo0, hi0 = min(lo0, z0), max(hi0, z0)
+        lo1, hi1 = min(lo1, z1), max(hi1, z1)
+    return min(hi0 - lo0, hi1 - lo1)
+
+
+@njit(cache=True)
+def log_cone_integral(L, s, Gs, th, gx, gw):
+    """log int_cone exp(-(theta - th)^T G (theta - th) / 2) dtheta (G = s Gs s, Gs = L L^T)."""
+    A0, A1, A2 = _lt_mv(L, s, th[0], th[1], th[2])
+    eh1, eh2 = th[1] / th[0], th[2] / th[0]
+    es0, es1, es2 = s[0], s[1] * eh1, s[2] * eh2
+    g0 = Gs[0, 0] * es0 + Gs[0, 1] * es1 + Gs[0, 2] * es2
+    g1 = Gs[1, 0] * es0 + Gs[1, 1] * es1 + Gs[1, 2] * es2
+    g2 = Gs[2, 0] * es0 + Gs[2, 1] * es1 + Gs[2, 2] * es2
+    ege = es0 * g0 + es1 * g1 + es2 * g2
+    f2 = th[0] * th[0]
+    pa = f2 * s[1] * s[1] * (Gs[1, 1] - g1 * g1 / ege)
+    pb = f2 * s[1] * s[2] * (Gs[1, 2] - g1 * g2 / ege)
+    pc = f2 * s[2] * s[2] * (Gs[2, 2] - g2 * g2 / ege)
+    phi = 0.5 * math.atan2(2.0 * pb, pa - pc)
+    cs, sn = math.cos(phi), math.sin(phi)
+    lam0 = max(pa * cs * cs + 2.0 * pb * cs * sn + pc * sn * sn, 1e-300)
+    lam1 = max(pa * sn * sn - 2.0 * pb * cs * sn + pc * cs * cs, 1e-300)
+    # columns of U: (cs, sn), (-sn, cs); whitened z_k = sqrt(lam_k) U[:, k] . (v - vh)
+    u00, u10, u01, u11 = cs, sn, -sn, cs
+    q0, q1 = math.sqrt(lam0), math.sqrt(lam1)
+    Z = np.empty((3, 2))
+    for i in range(3):
+        dv1, dv2 = _TRI[i, 0] - eh1, _TRI[i, 1] - eh2
+        Z[i, 0] = q0 * (u00 * dv1 + u10 * dv2)
+        Z[i, 1] = q1 * (u01 * dv1 + u11 * dv2)
+    ldet = -0.5 * (math.log(lam0) + math.log(lam1))
+    oa = 0                                   # outer axis: the longer extent of the triangle
+    if max(Z[0, 1], Z[1, 1], Z[2, 1]) - min(Z[0, 1], Z[1, 1], Z[2, 1]) > \
+            max(Z[0, 0], Z[1, 0], Z[2, 0]) - min(Z[0, 0], Z[1, 0], Z[2, 0]):
+        oa = 1
+    ia = 1 - oa
+    # vertices sorted by the outer coordinate
+    i0, i1, i2 = 0, 1, 2
+    if Z[i0, oa] > Z[i1, oa]:
+        i0, i1 = i1, i0
+    if Z[i1, oa] > Z[i2, oa]:
+        i1, i2 = i2, i1
+    if Z[i0, oa] > Z[i1, oa]:
+        i0, i1 = i1, i0
+    n = gx.shape[0]
+    xt, lwt, xu, lwu = np.empty(n), np.empty(n), np.empty(n), np.empty(n)
+    m_all, acc_all = -np.inf, 0.0
+    for piece in range(2):
+        ja, jb = (i0, i1) if piece == 0 else (i1, i2)
+        ta, tb = Z[ja, oa], Z[jb, oa]
+        if not tb > ta:
+            continue
+        _nodes(ta, tb, gx, gw, xt, lwt)
+        for k in range(n):
+            t = xt[k]
+            # cross-section: the edge (ja, jb) and the long edge (i0, i2)
+            ua = Z[ja, ia] + (Z[jb, ia] - Z[ja, ia]) * (t - ta) / (tb - ta)
+            ub = Z[i0, ia] + (Z[i2, ia] - Z[i0, ia]) * (t - Z[i0, oa]) / (Z[i2, oa] - Z[i0, oa])
+            lo, hi = min(ua, ub), max(ua, ub)
+            if not hi > lo:
+                continue
+            _nodes(lo, hi, gx, gw, xu, lwu)
+            m_in, acc_in = -np.inf, 0.0
+            for j in range(n):
+                zz0 = t if oa == 0 else xu[j]
+                zz1 = xu[j] if oa == 0 else t
+                w0, w1 = zz0 / q0, zz1 / q1
+                v1 = eh1 + u00 * w0 + u01 * w1
+                v2 = eh2 + u10 * w0 + u11 * w1
+                m_in, acc_in = _lse_add(m_in, acc_in, lwu[j] + _ray_log_g(v1, v2, L, s, eh1, eh2, A0, A1, A2))
+            if acc_in > 0.0:
+                m_all, acc_all = _lse_add(m_all, acc_all, lwt[k] + m_in + math.log(acc_in))
+    if not acc_all > 0.0:
+        return -np.inf
+    return ldet + m_all + math.log(acc_all)
+
+
+@njit(cache=True)
+def marg_theta_parts(B, y, gx, gw):
+    """(marginal log-likelihood without the cone, log P of the cone) for the weighted theta design
+    B and data y, as marg_loglike_parts (their sum is the marginal log-likelihood)."""
+    G, r = normal_eqs(B, y)
+    s = np.empty(3)
+    for i in range(3):
+        if not G[i, i] > 0.0:
+            return -np.inf, 0.0
+        s[i] = math.sqrt(G[i, i])
+    Gs = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            Gs[i, j] = G[i, j] / (s[i] * s[j])
+    L = np.zeros((3, 3))
+    ridge = 0.0
+    if not chol3(Gs, L) or L[2, 2] * L[2, 2] < 1e-12:
+        # (nearly) collinear deficit columns (an extreme grazing geometry: the data constrain one
+        # combination of c1, c2): an extremely weak Gaussian on the scaled coefficients (precision
+        # 1e-9 against the unit diagonal) keeps G invertible; over the bounded cone its effect is
+        # negligible, and it is included in the quadratic form (chi2 below)
+        ridge = 1e-9
+        for i in range(3):
+            Gs[i, i] += ridge
+        L[:, :] = 0.0
+        if not chol3(Gs, L):
+            return -np.inf, 0.0
+    # theta = s^-1 Gs^-1 s^-1 r
+    b0, b1, b2 = r[0] / s[0], r[1] / s[1], r[2] / s[2]
+    z0 = b0 / L[0, 0]
+    z1 = (b1 - L[1, 0] * z0) / L[1, 1]
+    z2 = (b2 - L[2, 0] * z0 - L[2, 1] * z1) / L[2, 2]
+    x2 = z2 / L[2, 2]
+    x1 = (z1 - L[2, 1] * x2) / L[1, 1]
+    x0 = (z0 - L[1, 0] * x1 - L[2, 0] * x2) / L[0, 0]
+    th = np.array([x0 / s[0], x1 / s[1], x2 / s[2]])
+    if not th[0] > 0.0:
+        return -np.inf, 0.0
+    chi2 = 0.0
+    for t in range(B.shape[0]):
+        d = y[t] - B[t, 0] * th[0] - B[t, 1] * th[1] - B[t, 2] * th[2]
+        chi2 += d * d
+    for i in range(3):
+        chi2 += ridge * (s[i] * th[i]) ** 2
+    logdetG = 2.0 * (math.log(L[0, 0]) + math.log(L[1, 1]) + math.log(L[2, 2])) + \
+        2.0 * (math.log(s[0]) + math.log(s[1]) + math.log(s[2]))
+    v = -0.5 * chi2 - 0.5 * logdetG + math.log(6.0)
+    # log P of the cone: the ray integral where the limb-darkening Gaussian is broad on the cone
+    # (whitened extent < 15 sd), the Genz orthant probability (log_orthant_prob, its moments from the
+    # theta solution) where it is narrow (> 35 sd; there the cone's boundary can cut the Gaussian far
+    # in its tail, which the ray quadrature resolves poorly, while the orthant transform is exact),
+    # blended smoothly in between
+    E = _cone_extent(s, Gs, th)
+    w = min(max((E - 15.0) / 20.0, 0.0), 1.0)
+    w = w * w * (3.0 - 2.0 * w)
+    lP = 0.0
+    if w < 1.0:
+        lP += (1.0 - w) * (log_cone_integral(L, s, Gs, th, gx, gw) - 1.5 * _LOG2PI + 0.5 * logdetG)
+    if w > 0.0:
+        ok, ld_, Gsi = inv3_chol(Gs, np.zeros((3, 3)))
+        St = np.empty((3, 3))
+        for i in range(3):
+            for j in range(3):
+                St[i, j] = Gsi[i, j] / (s[i] * s[j])
+        c0 = 6.0 * th[0] - 2.0 * th[1] - 3.0 * th[2]
+        # Fi in c = Mi St Mi^T, Mi = [[6, -2, -3], [0, 1, 0], [0, 0, 1]]
+        r0 = np.array([6.0 * St[0, 0] - 2.0 * St[1, 0] - 3.0 * St[2, 0],
+                       6.0 * St[0, 1] - 2.0 * St[1, 1] - 3.0 * St[2, 1],
+                       6.0 * St[0, 2] - 2.0 * St[1, 2] - 3.0 * St[2, 2]])
+        Fi = np.empty((3, 3))
+        Fi[0, 0] = 6.0 * r0[0] - 2.0 * r0[1] - 3.0 * r0[2]
+        Fi[0, 1] = Fi[1, 0] = r0[1]
+        Fi[0, 2] = Fi[2, 0] = r0[2]
+        Fi[1, 1], Fi[1, 2], Fi[2, 1], Fi[2, 2] = St[1, 1], St[1, 2], St[2, 1], St[2, 2]
+        m, S = cone_ms(c0, th[1], th[2], Fi)
+        lP += w * log_orthant_prob(m, S, GL_X, GL_W)
+    return v, lP
+
+
+@njit(cache=True)
+def theta_moments(B, y):
+    """(ok, chat, Fi): mean and covariance of the (untruncated) Gaussian of c from the theta design."""
+    G, r = normal_eqs(B, y)
+    s = np.empty(3)
+    chat = np.zeros(3)
+    Fi = np.zeros((3, 3))
+    for i in range(3):
+        if not G[i, i] > 0.0:
+            return False, chat, Fi
+        s[i] = math.sqrt(G[i, i])
+    Gs = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            Gs[i, j] = G[i, j] / (s[i] * s[j])
+    L = np.zeros((3, 3))
+    ok, ld, Gsi = inv3_chol(Gs, L)
+    if not ok:
+        return False, chat, Fi
+    th = np.zeros(3)
+    St = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            St[i, j] = Gsi[i, j] / (s[i] * s[j])
+            th[i] += St[i, j] * r[j]
+    Mi = np.array([[6.0, -2.0, -3.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    for i in range(3):
+        for j in range(3):
+            chat[i] += Mi[i, j] * th[j]
+    for i in range(3):
+        for j in range(3):
+            acc = 0.0
+            for k in range(3):
+                for l_ in range(3):
+                    acc += Mi[i, k] * St[k, l_] * Mi[j, l_]
+            Fi[i, j] = acc
+    return True, chat, Fi
+
+
 @njit(cache=True)
 def bernstein_cols(T):
     """n x 3 Bernstein design matrix from occult_terms output (lex, ldx, edx)."""
@@ -377,6 +715,111 @@ def design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt):
     return A
 
 
+@njit(cache=True, parallel=True)
+def design_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, chunk):
+    """design() with the data points split into chunks of ``chunk`` output rows that run on
+    numba's threads. Orbit, occultation terms and columns are computed point by point, so the
+    result is identical to design() for any chunking and thread count."""
+    nt = tt.shape[0]
+    n = nt // ksup
+    A = np.zeros((n, 3))
+    ab = abs(b)
+    inc = math.acos(min(ab / a, 1.0))
+    si = math.sin(inc)
+    k = abs(rp)
+    z_c = terms_cut(k, tol, Gt)
+    inv = 1.0 / ksup
+    nch = (n + chunk - 1) // chunk
+    for c in prange(nch):
+        i0 = c * chunk
+        i1 = min(n, i0 + chunk)
+        r0, r1 = i0 * ksup, i1 * ksup
+        z = np.empty(r1 - r0)
+        if ecc < 1.0e-5:
+            _orbit._rsky_circular(tt[r0:r1], t0, per, a, si, 0.25, 1, z)
+        else:
+            _orbit._rsky_eccentric(tt[r0:r1], t0, per, a, inc, ecc, w, 1, z)
+        Af = bernstein_cols(_occult_terms(z, k, z_c, A_half))
+        for i in range(i0, i1):
+            a0 = a1 = a2 = 0.0
+            for s_ in range(ksup):
+                r = (i - i0) * ksup + s_
+                a0 += Af[r, 0]
+                a1 += Af[r, 1]
+                a2 += Af[r, 2]
+            f = wts[i] * inv
+            A[i, 0] = a0 * f
+            A[i, 1] = a1 * f
+            A[i, 2] = a2 * f
+    return A
+
+
+@njit(cache=True)
+def design_theta(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt):
+    """design() for theta = (f0, c1, c2) (theta_cols): the well-conditioned design of the
+    quadratic law."""
+    nt = tt.shape[0]
+    z = np.empty(nt)
+    ab = abs(b)
+    inc = math.acos(min(ab / a, 1.0))
+    if ecc < 1.0e-5:
+        _orbit._rsky_circular(tt, t0, per, a, math.sin(inc), 0.25, 1, z)
+    else:
+        _orbit._rsky_eccentric(tt, t0, per, a, inc, ecc, w, 1, z)
+    Af = theta_cols(_occult_terms_cut(z, abs(rp), tol, A_half, Gt))
+    n = nt // ksup
+    A = np.zeros((n, 3))
+    inv = 1.0 / ksup
+    for i in range(n):
+        for s in range(ksup):
+            r = i * ksup + s
+            A[i, 0] += Af[r, 0]
+            A[i, 1] += Af[r, 1]
+            A[i, 2] += Af[r, 2]
+        f = wts[i] * inv
+        A[i, 0] *= f
+        A[i, 1] *= f
+        A[i, 2] *= f
+    return A
+
+
+@njit(cache=True, parallel=True)
+def design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, chunk):
+    """design_theta() on numba's threads, as design_par()."""
+    nt = tt.shape[0]
+    n = nt // ksup
+    A = np.zeros((n, 3))
+    ab = abs(b)
+    inc = math.acos(min(ab / a, 1.0))
+    si = math.sin(inc)
+    k = abs(rp)
+    z_c = terms_cut(k, tol, Gt)
+    inv = 1.0 / ksup
+    nch = (n + chunk - 1) // chunk
+    for c in prange(nch):
+        i0 = c * chunk
+        i1 = min(n, i0 + chunk)
+        r0, r1 = i0 * ksup, i1 * ksup
+        z = np.empty(r1 - r0)
+        if ecc < 1.0e-5:
+            _orbit._rsky_circular(tt[r0:r1], t0, per, a, si, 0.25, 1, z)
+        else:
+            _orbit._rsky_eccentric(tt[r0:r1], t0, per, a, inc, ecc, w, 1, z)
+        Af = theta_cols(_occult_terms(z, k, z_c, A_half))
+        for i in range(i0, i1):
+            a0 = a1 = a2 = 0.0
+            for s_ in range(ksup):
+                r = (i - i0) * ksup + s_
+                a0 += Af[r, 0]
+                a1 += Af[r, 1]
+                a2 += Af[r, 2]
+            f = wts[i] * inv
+            A[i, 0] = a0 * f
+            A[i, 1] = a1 * f
+            A[i, 2] = a2 * f
+    return A
+
+
 @njit(cache=True, inline="always")
 def a_logjac_from_T14(T14, per, rp, b):
     """a/R* of a circular orbit with total duration T14 and log|da/dT14|; (nan, 0) if invalid."""
@@ -409,13 +852,63 @@ def to_canonical(X, idx, fixed, t14):
 
 
 @njit(cache=True)
+def b_conj(b, ecc, w, ttype):
+    """Sky separation at conjunction in stellar radii (the transit impact parameter): b = a cos i
+    times r/a = (1 - e^2) / (1 + e sin w) at mid-transit (ttype 1) or (1 - e^2) / (1 - e sin w) at
+    mid-eclipse (ttype 2). The prior support 0 <= b_conj < 1 + rp is the region with an event; for
+    an eccentric orbit it differs from 0 <= b < 1 + rp."""
+    s = 1.0 if ttype == 1 else -1.0
+    return b * (1.0 - ecc * ecc) / (1.0 + s * ecc * math.sin(w))
+
+
+@njit(cache=True)
+def _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb):
+    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i."""
+    ok = True
+    for k in range(7):
+        v = P[i, k]
+        if not (v == v and lo[k] < v < hi[k]):
+            ok = False
+    t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
+    if not (ok and 0.0 <= ecc < 1.0 and 0.0 <= b and b_conj(b, ecc, w, 1) < 1.0 + rp and per > 0.0
+            and rp > 0.0 and a > 1.0):
+        return -np.inf, 0.0
+    if has_ldp:
+        A = design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
+        return marg_loglike_ldprior(A, yw, mb, Pb) + lj[i], 0.0
+    B = design_theta(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
+    v, lP = marg_theta_parts(B, yw, GL_X, GL_W)
+    return v + lP + lj[i], lP
+
+
+@njit(cache=True)
 def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
-                  has_ldp=False, mb=np.zeros(2), Pb=np.eye(2)):
-    """log-likelihood + uniform box prior (lo < canonical < hi; 0 <= b < 1 + rp;
-    0 <= ecc < 1) + log-Jacobian of the T14 map, for every row of X."""
+                  has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0)):
+    """log-likelihood + uniform box prior (lo < canonical < hi; 0 <= b_conj < 1 + rp;
+    0 <= ecc < 1) + log-Jacobian of the T14 map, for every row of X. If logP_out has one entry
+    per row, it receives log P of the physical cone (0 outside the prior; not with has_ldp)."""
     P, lj = to_canonical(X, idx, fixed, t14)
     n = X.shape[0]
     out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in range(n):
+        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True)
+def loglike_batch_dp(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
+                     has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0), chunk=1024):
+    """loglike_batch with the data points of each row spread over numba's threads (design_par);
+    the rows one after the other (for the single evaluations of the optimisers on large light
+    curves). Identical results."""
+    P, lj = to_canonical(X, idx, fixed, t14)
+    n = X.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
     for i in range(n):
         ok = True
         for k in range(7):
@@ -423,15 +916,38 @@ def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt
             if not (v == v and lo[k] < v < hi[k]):
                 ok = False
         t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
-        if not (ok and 0.0 <= b < 1.0 + rp and 0.0 <= ecc < 1.0 and per > 0.0 and rp > 0.0
-                and a > 1.0):
+        if not (ok and 0.0 <= ecc < 1.0 and 0.0 <= b and b_conj(b, ecc, w, 1) < 1.0 + rp and per > 0.0
+                and rp > 0.0 and a > 1.0):
             out[i] = -np.inf
+            if keep:
+                logP_out[i] = 0.0
             continue
-        A = design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
         if has_ldp:
+            A = design_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, chunk)
             out[i] = marg_loglike_ldprior(A, yw, mb, Pb) + lj[i]
+            lP = 0.0
         else:
-            out[i] = marg_loglike(A, yw) + lj[i]
+            B = design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, chunk)
+            v, lP = marg_theta_parts(B, yw, GL_X, GL_W)
+            out[i] = v + lP + lj[i]
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True, parallel=True)
+def loglike_batch_par(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
+                      has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0)):
+    """loglike_batch with the rows spread over numba's threads (identical results)."""
+    P, lj = to_canonical(X, idx, fixed, t14)
+    n = X.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in prange(n):
+        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
     return out
 
 
@@ -445,6 +961,15 @@ def c_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp=False, mb=np.
     S = np.empty((n, 3, 3))
     L = np.zeros((3, 3))
     for i in range(n):
+        if not has_ldp:
+            B = design_theta(tt, ksup, wts, P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5],
+                             P[i, 6], tol, A_half, Gt)
+            ok, ch, Fi = theta_moments(B, yw)
+            for k in range(3):
+                C[i, k] = ch[k]
+                for j in range(3):
+                    S[i, k, j] = Fi[k, j]
+            continue
         A = design(tt, ksup, wts, P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5],
                    P[i, 6], tol, A_half, Gt)
         F, r = normal_eqs(A, yw)
@@ -458,6 +983,114 @@ def c_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp=False, mb=np.
             for j in range(3):
                 S[i, k, j] = Fi[k, j]
     return C, S
+
+
+@njit(cache=True)
+def theta_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt):
+    """For canonical rows P: mean (n x 3) and covariance (n x 3 x 3) of the (untruncated) Gaussian
+    of theta = (f0, c1, c2) given the geometry (c = (6 f0 - 2 c1 - 3 c2, c1, c2)); NaN where the
+    normal equations are singular."""
+    n = P.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    L = np.zeros((3, 3))
+    for i in range(n):
+        B = design_theta(tt, ksup, wts, P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5],
+                         P[i, 6], tol, A_half, Gt)
+        G, r = normal_eqs(B, yw)
+        s = np.empty(3)
+        ok = True
+        for k in range(3):
+            if not G[k, k] > 0.0:
+                ok = False
+            else:
+                s[k] = math.sqrt(G[k, k])
+        if not ok:
+            continue
+        Gs = np.empty((3, 3))
+        for k in range(3):
+            for j in range(3):
+                Gs[k, j] = G[k, j] / (s[k] * s[j])
+        ok, ld, Gsi = inv3_chol(Gs, L)
+        if not ok or L[2, 2] * L[2, 2] < 1e-12:          # as marg_theta_parts: a weak ridge
+            for k in range(3):
+                Gs[k, k] += 1e-9
+            ok, ld, Gsi = inv3_chol(Gs, L)
+            if not ok:
+                continue
+        for k in range(3):
+            acc = 0.0
+            for j in range(3):
+                S[i, k, j] = Gsi[k, j] / (s[k] * s[j])
+                acc += S[i, k, j] * r[j]
+            T[i, k] = acc
+    return T, S
+
+
+@njit(cache=True)
+def _trunc_normal(mu, sd, lo, hi, u):
+    """Inverse-CDF draw from N(mu, sd^2) truncated to [lo, hi] (tails and narrow windows exact
+    enough: an exponential substitution beyond 8 sd, a linear-in-log density for windows below
+    1e-6 sd)."""
+    if not hi > lo:
+        return lo
+    za, zb = (lo - mu) / sd, (hi - mu) / sd
+    flip = za > 0.0
+    if flip:
+        za, zb = -zb, -za
+        u = 1.0 - u
+    if zb - za < 1e-6:
+        z = za + u * (zb - za)
+    elif zb < -8.0:                                     # exponential tangent at zb
+        lam = -zb
+        E = -math.expm1(-lam * (zb - za))
+        z = zb + math.log1p(-u * E) / lam
+    else:
+        pa, pb = ndtr(za), ndtr(zb)
+        p = pa + u * (pb - pa)
+        z = ndtri(min(max(p, 1e-300), 1.0 - 1e-16))
+        z = min(max(z, za), zb)
+    if flip:
+        z = -z
+    return mu + sd * z
+
+
+@njit(cache=True)
+def gibbs_theta_one(th, Sig, rng_u, sweeps):
+    """One draw of theta = (f0, c1, c2) ~ N(th, Sig) truncated to the cone 0 <= c0 <= c1 <= c2,
+    c0 = 6 f0 - 2 c1 - 3 c2 (Gibbs, explicit intervals: f0 in [(2 c1 + 3 c2) / 6, (c1 + c2) / 2],
+    c1 in [2 f0 - c2, min(c2, 3 f0 - 3 c2 / 2)], c2 in [max(c1, 2 f0 - c1), 2 f0 - 2 c1 / 3]).
+    Well conditioned for any transit depth (in c the covariance is nearly singular for shallow
+    transits). Starts at the centroid of the cone's cross-section at f0 = max(th0, 0)."""
+    d = np.sqrt(np.array([Sig[0, 0], Sig[1, 1], Sig[2, 2]]))
+    R = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            R[i, j] = Sig[i, j] / (d[i] * d[j])
+    Ri = np.linalg.inv(R)                               # scaled: the entries of Sig span decades
+    P = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            P[i, j] = Ri[i, j] / (d[i] * d[j])
+    f0 = th[0] if th[0] > 0.0 else 1.0
+    x = np.array([f0, f0 * 2.2 / 3.0, f0 * 4.2 / 3.0])
+    k = 0
+    for _ in range(sweeps):
+        for i in range(3):
+            mi = th[i]
+            for j in range(3):
+                if j != i:
+                    mi -= P[i, j] * (x[j] - th[j]) / P[i, i]
+            sd = 1.0 / math.sqrt(P[i, i])
+            if i == 0:
+                lo, hi = (2.0 * x[1] + 3.0 * x[2]) / 6.0, (x[1] + x[2]) / 2.0
+            elif i == 1:
+                lo, hi = 2.0 * x[0] - x[2], min(x[2], 3.0 * x[0] - 1.5 * x[2])
+            else:
+                lo, hi = max(x[1], 2.0 * x[0] - x[1]), 2.0 * x[0] - 2.0 * x[1] / 3.0
+            x[i] = _trunc_normal(mi, sd, lo, hi, rng_u[k])
+            k += 1
+    return x
 
 
 # ----------------------------------------------------------------------------
@@ -794,8 +1427,8 @@ def gen_batch(P, lj, al, check, lo, hi, has_alpha, alo, ahi, rowpan, tt, ksup, w
             elif check and not (lo[k] < v < hi[k]):
                 ok = False
         t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
-        if check and not (ok and 0.0 <= b < 1.0 + rp and 0.0 <= ecc < 1.0 and per > 0.0
-                          and rp > 0.0 and a > 1.0
+        if check and not (ok and 0.0 <= ecc < 1.0 and 0.0 <= b and b_conj(b, ecc, w, ttype) < 1.0 + rp
+                          and per > 0.0 and rp > 0.0 and a > 1.0
                           and (not has_alpha or alo < al[i] < ahi)):
             ok = False
         if not ok:

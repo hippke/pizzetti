@@ -25,6 +25,8 @@ profile_is (the recommended method) builds the proposal along one parameter
 (the impact parameter) from conditional optima, so that skewed posteriors and
 the b = 0 wall are covered by construction.
 """
+import os
+
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import gammaln
@@ -138,6 +140,34 @@ def hessian(logp_batch, theta, h):
     return H, len(pts)
 
 
+def stuck_walkers(lp, min_gap=25.0):
+    """Indices of ensemble walkers stuck far below the others: lp (steps, walkers) is the log
+    posterior over the last stretch of the chain; a walker whose mean is more than
+    max(min_gap, 10 MAD) below the median walker's sits at a local mode or on a plateau the
+    stretch move does not leave (its posterior mass is negligible: e^-25 at the peak)."""
+    m = np.mean(lp, axis=0)
+    ok = np.isfinite(m)
+    if ok.sum() < 2:
+        return np.zeros(0, dtype=int)
+    med = np.median(m[ok])
+    mad = np.median(np.abs(m[ok] - med))
+    return np.where(~ok | (m < med - max(min_gap, 10.0 * mad)))[0]
+
+
+def reset_walkers(coords, bad, rng, logp_batch=None):
+    """coords with the walkers ``bad`` moved next to randomly chosen other walkers (jitter of
+    1 % of the ensemble spread; an exact copy where the jittered point is outside the prior)."""
+    X = np.array(coords, dtype=float)
+    good = np.setdiff1d(np.arange(len(X)), bad)
+    src = X[rng.choice(good, len(bad))]
+    new = src + 0.01 * X[good].std(axis=0) * rng.standard_normal(src.shape)
+    if logp_batch is not None:
+        out = ~np.isfinite(logp_batch(new))
+        new[out] = src[out]
+    X[bad] = new
+    return X
+
+
 def _mvt_logpdf(x, mu, L, nu):
     d = mu.size
     z = np.linalg.solve(L, (x - mu).T).T
@@ -183,7 +213,7 @@ def _weighted_gmm(X, w, K, rng, iters=60):
 
 
 def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1.2, defensive=0.15,
-               batch=2000):
+               batch=2000, extra=(), min_iters=None, khat_ok=0.7, ess_min=0.1, dq_tol=0.1):
     """Adaptive multiple importance sampling (AMIS) from weighted draws (X, logw).
 
     Each iteration fits a Gaussian mixture to all weighted draws so far and draws n new points
@@ -193,11 +223,19 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
     more stable than the weights of a single iteration. For posteriors that a Laplace-based
     proposal covers badly (skewed or curved conditionals), where k-hat need not see the missing
     mass. The start draws (X, logw) seed the first fit only. Returns dict(theta, w, logw, khat,
-    ess, n_eval, history)."""
+    ess, n_eval, history, converged).
+
+    ``extra``: fixed components (weight, mean, covariance) added to every iteration's proposal
+    (e.g. a component over the whole prior box: then every region of the support keeps a proposal
+    density, and the estimate is consistent whatever the start draws missed). ``min_iters``: run
+    adaptively, at least min_iters and at most ``iters`` iterations, until k-hat < ``khat_ok``, the
+    ESS of the latest n draws' share is >= ``ess_min`` n and the 2.5/16/50/84/97.5 % quantiles of
+    every coordinate moved by less than ``dq_tol`` sd since the previous iteration (``converged``);
+    None: exactly ``iters`` iterations."""
     from scipy.special import logsumexp
     logw = np.asarray(logw, float)
     fail = dict(theta=np.atleast_2d(X), w=np.zeros(len(logw)), logw=np.full(len(logw), -np.inf),
-                khat=np.inf, ess=0.0, n_eval=0, history=[])
+                khat=np.inf, ess=0.0, n_eval=0, history=[], converged=False)
     if np.sum(np.isfinite(logw)) < 10 * (np.atleast_2d(X).shape[1] + 1):
         return fail                              # too few weighted draws to fit a proposal
     w = np.exp(logw - np.max(logw[np.isfinite(logw)]))
@@ -205,40 +243,72 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
     w /= w.sum()
     Xs, lps, props, counts = None, None, [], []
     nev, hist = 0, []
+    extra = [(float(p), np.asarray(m, float), np.linalg.cholesky(np.asarray(c, float))) for p, m, c in extra]
+    f_extra = sum(p for p, _, _ in extra)
+    qs = np.array([0.025, 0.16, 0.5, 0.84, 0.975])
 
-    def lq_all(Y):
-        """log of the deterministic mixture of all proposals so far (weights n_t / N)."""
+    def wquant(Y, ww):
+        out = np.empty((Y.shape[1], len(qs)))
+        for j in range(Y.shape[1]):
+            o = np.argsort(Y[:, j])
+            cw = np.cumsum(ww[o])
+            out[j] = np.interp(qs, (cw - 0.5 * ww[o]) / cw[-1], Y[o, j])
+        return out
+    q_prev, converged = None, False
+
+    def lq_one(comps, Y):
+        return logsumexp(np.column_stack([np.log(p) + _mvt_logpdf(Y, m, L, nu) for p, m, L in comps]), axis=1)
+
+    LQ = []                                  # LQ[t]: log density of proposal t at all draws so far
+
+    def lq_all(Xn):
+        """Append the new draws Xn (of the newest proposal) and return the log density of the
+        deterministic mixture of all proposals so far (weights n_t / N) at all draws. Each
+        proposal's density at each draw is computed once."""
+        for t in range(len(LQ)):
+            LQ[t] = np.concatenate([LQ[t], lq_one(props[t], Xn)])
+        LQ.append(lq_one(props[-1], Xn if Xs is None else np.vstack([Xs, Xn])))
         N = float(sum(counts))
-        terms = []
-        for comps, c in zip(props, counts):
-            lq = logsumexp(np.column_stack([np.log(p) + _mvt_logpdf(Y, m, L, nu) for p, m, L in comps]), axis=1)
-            terms.append(np.log(c / N) + lq)
-        return logsumexp(np.column_stack(terms), axis=1)
+        return logsumexp(np.column_stack([np.log(c / N) + lq for lq, c in zip(LQ, counts)]), axis=1)
 
     for it in range(iters):
         ess = 1.0 / np.sum(w ** 2)
         pi, mu, cov = _weighted_gmm(X, w, min(K, max(1, int(ess) // 50)), rng)
         m0 = w @ X
         C0 = np.cov(X.T, aweights=w).reshape(X.shape[1], X.shape[1])
-        comps = [(p * (1 - defensive), m, np.linalg.cholesky(c * inflate ** 2)) for p, m, c in zip(pi, mu, cov)]
-        comps.append((defensive, m0, np.linalg.cholesky(C0 * 4.0)))
+        comps = [(p * (1 - defensive) * (1 - f_extra), m, np.linalg.cholesky(c * inflate ** 2))
+                 for p, m, c in zip(pi, mu, cov)]
+        comps.append((defensive * (1 - f_extra), m0, np.linalg.cholesky(C0 * 4.0)))
+        comps += extra
         k = rng.multinomial(n, [c[0] for c in comps])
         Xn = np.vstack([_mvt_sample(rng, m, L, nu, c) for (p, m, L), c in zip(comps, k) if c > 0])
         lpn = np.concatenate([logp_batch(Xn[i:i + batch]) for i in range(0, len(Xn), batch)])
         nev += len(Xn)
         props.append(comps)
         counts.append(len(Xn))
+        lqa = lq_all(Xn)
         Xs = Xn if Xs is None else np.vstack([Xs, Xn])
         lps = lpn if lps is None else np.concatenate([lps, lpn])
-        lw, khat = psis(lps - lq_all(Xs))
+        lw, khat = psis(lps - lqa)
         if not np.isfinite(khat) or not np.any(np.isfinite(lw)):
             fail.update(n_eval=int(nev), history=hist)
             return fail                          # no usable weights (e.g. all draws outside the prior)
         w = np.exp(lw)
         X = Xs
-        hist.append(dict(khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n=int(len(Xs))))
+        ess = float(1.0 / np.sum(w ** 2))
+        hist.append(dict(khat=float(khat), ess=ess, n=int(len(Xs))))
+        if min_iters is not None:
+            q = wquant(Xs, w)
+            sd = np.sqrt(np.clip(np.diag(np.atleast_2d(np.cov(Xs.T, aweights=w))), 1e-300, None))
+            dq = np.inf if q_prev is None else float(np.max(np.abs(q - q_prev) / sd[:, None]))
+            q_prev = q
+            hist[-1]["dq"] = dq
+            # the pooled draws' ESS against n (one iteration's draws), as for a single IS run
+            if (it + 1 >= min_iters and khat < khat_ok and ess >= ess_min * n and dq < dq_tol):
+                converged = True
+                break
     return dict(theta=Xs, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n_eval=int(nev),
-                history=hist)
+                history=hist, converged=converged)
 
 def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
                adapt=2, khat_target=0.5, batch=2000):
@@ -290,7 +360,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                drop=12.0, step_sd=1.0, lo_wall=0.0, hi_wall=None, max_grid=60, batch=2000,
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
                mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
-               lazy_refine=True, khat_refine=0.7):
+               lazy_refine=True, khat_refine=0.7, logp_target=None, carry_cov=None, max_carry=3,
+               defensive=0.1):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -314,12 +385,25 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     refined grid. The refinement costs up to ``max_refine`` conditional fits; a poor stage-1
     proposal is mostly due to non-Gaussian conditionals, which stage 2 handles and refinement
     does not. False refines always, before the first draws.
+    ``logp_target``: the density the importance weights refer to, if not ``logp_batch``: the
+    proposal (MAP, profile, Hessians) is built on ``logp_batch`` and the draws are weighted against
+    ``logp_target``. With logp_target = logp_batch + log g, g <= 1 (e.g. a smooth posterior times
+    a cut-off), the weights stay bounded.
+    ``carry_cov`` (experimental, default False; environment PIZZETTI_CARRY_COV=1): a conditional
+    optimum whose Hessian is not negative definite (a flat or slightly non-concave conditional, as
+    near the grazing edge) takes the neighbouring grid point's covariance instead of failing (at the
+    MAP: |eigenvalues| of the Hessian), for at most ``max_carry`` consecutive grid points; otherwise
+    such steps fail, the step is halved and the grid can end early (incomplete profile). In 36
+    grazing injections that fell back to emcee it made 14 usable instead of 10, but 4 of the 10 failed
+    instead: not adopted.
     ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
     neighbouring grid point's sd; "map" ``h_sd`` x the conditional sd at the MAP for
     every grid point (smoother log det Sigma(b) for strongly curved conditionals, but
     tested worse: the grid can stop early, Kepler-1 LC).
     """
     rng = np.random.default_rng() if rng is None else rng
+    if carry_cov is None:                    # default off; PIZZETTI_CARRY_COV=1 for experiments
+        carry_cov = os.environ.get("PIZZETTI_CARRY_COV", "0") == "1"
     scale = np.asarray(scale, float)
     d = len(theta0)
     rest = [i for i in range(d) if i != prof]
@@ -351,8 +435,14 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         if robust_cond:                      # derivative-free pre-step (rough/awkward conditionals)
             rp_ = minimize(nlp, x_start, method="Powell", options=dict(xtol=1e-3, ftol=1e-8))
             x_start, nf_extra = rp_.x, rp_.nfev
-        r = minimize(nlp, x_start, method="BFGS", options=opts)
+        try:
+            r = minimize(nlp, x_start, method="BFGS", options=opts)
+        except ValueError:                   # hess_inv0 rejected (nearly singular seed): no seed
+            opts.pop("hess_inv0", None)
+            r = minimize(nlp, x_start, method="BFGS", options=opts)
         r.nfev += nf_extra
+        if not r.fun < 1e299:                # no finite target at this b (outside the support)
+            return None
         mu = x0 + r.x * sc
         th = np.empty(d)
         th[rest] = mu
@@ -362,10 +452,16 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             Y = np.repeat(th[None, :], len(X), axis=0)
             Y[:, rest] = X
             return logp_batch(Y)
-        k = 0
+        k = k2 = 0
+        H = None
         try:
             if cov_prev is None:
                 H, k = hessian(lp_rest, mu, 1e-3 * sc)
+                if not (np.all(np.isfinite(H)) and np.all(np.linalg.eigvalsh(-0.5 * (H + H.T)) > 0)):
+                    # steps of 1e-3 scale below the numerical noise of log p (a long, precise light
+                    # curve: ~5e-3 nats for Kepler-10, 79 000 points): once more with larger steps
+                    H, k1 = hessian(lp_rest, mu, 0.1 * sc)
+                    k += k1
                 cov = np.linalg.inv(-H)
                 sd = np.sqrt(np.clip(np.diag(cov), 1e-300, None))
             elif h_ref == "map" and sd_ref[0] is not None:
@@ -376,12 +472,31 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             cov = np.linalg.inv(-H)
             cov = 0.5 * (cov + cov.T)
             ev, V = np.linalg.eigh(cov)
-            if ev.min() <= 0:
-                return None
+            if not (np.all(np.isfinite(cov)) and ev.min() > 0):     # (NaN: non-finite Hessian)
+                raise np.linalg.LinAlgError("conditional Hessian not negative definite")
             ldet = np.sum(np.log(ev))
         except np.linalg.LinAlgError:
-            return None
-        return mu, -r.fun, cov, ldet, r.nfev + k + k2
+            # a finite conditional optimum whose Hessian is not negative definite (a flat or
+            # slightly non-concave conditional, e.g. grazing geometries): with carry_cov, take the
+            # neighbouring grid point's covariance (or at the MAP, |eigenvalues| of the Hessian);
+            # the importance weights correct the approximate proposal, k-hat flags a poor one
+            if not carry_cov:
+                return None
+            if cov_prev is not None:
+                cp = 0.5 * (cov_prev + cov_prev.T)
+                ev = np.linalg.eigvalsh(cp)
+                if not (np.all(np.isfinite(cp)) and ev.min() > 0):
+                    return None
+                return mu, -r.fun, cp, float(np.sum(np.log(ev))), r.nfev + k + k2, True
+            if H is None or not np.all(np.isfinite(H)):
+                return None
+            lam, V = np.linalg.eigh(-0.5 * (H + H.T))
+            lam = np.abs(lam)
+            if not lam.min() > 0:
+                return None
+            cov = (V / lam) @ V.T
+            return mu, -r.fun, cov, float(-np.sum(np.log(lam))), r.nfev + k + k2, True
+        return mu, -r.fun, cov, ldet, r.nfev + k + k2, False
 
     # local sd of b at the MAP (1-d second difference)
     def lp1(bv):
@@ -413,6 +528,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         cov_prev, b_prev, x_prev = f0[2], None, None
         step = step_sd * sd_b
         tries = 0
+        carried = 0                          # consecutive grid points with a borrowed covariance
         for _ in range(max_grid // 2):
             if lo_wall is not None and direction < 0 and bv <= lo_wall:
                 break
@@ -429,6 +545,12 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             f = cond_fit(bn, xg, cov_prev)
             if f is None and b_prev is not None:
                 f = cond_fit(bn, x0, cov_prev)
+            if f is not None and f[5]:
+                carried += 1
+                if carried > max_carry:      # a long stretch without a usable curvature: stop
+                    f = None
+            elif f is not None:
+                carried = 0
             if f is None:                    # e.g. outside the prior: halve the step, retry
                 step *= 0.5
                 tries += 1
@@ -442,6 +564,13 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             bv, x0, cov_prev = bn, f[0], f[2]
             if hit_wall or (f[1] + 0.5 * f[3] - lref) < -drop:
                 break
+    if len(grid) < 2:                    # no step away from the MAP succeeded: no proposal in b
+        return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1),
+                    khat=np.inf, ess=0.0, n_eval=int(nev), theta_map=theta_map,
+                    grid_b=np.array([theta_map[prof]]), grid_logdens=np.zeros(1), stage=0,
+                    n_grid=1, complete=False, n_eval_map=int(nev_map), n_refine=0,
+                    grid_lpmax=np.array([f0[1]]), grid_logdet=np.array([f0[3]]))
+
     def refine():
         """Insert midpoints where the linear interpolation of mu(b) between grid
         points is off by more than refine_tol conditional sd; returns the number of
@@ -541,20 +670,23 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             return out
 
         def evaluate(X):
-            return np.concatenate([logp_batch(X[i:i + batch]) for i in range(0, len(X), batch)])
+            f = logp_batch if logp_target is None else logp_target
+            return np.concatenate([f(X[i:i + batch]) for i in range(0, len(X), batch)])
 
         X = q_prof_sample(n)
         lp = evaluate(X)
         nev += n
-        lw, khat = psis(lp - q_prof_logpdf(X))
-        return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat)
+        lq = q_prof_logpdf(X)
+        lw, khat = psis(lp - lq)
+        return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat)
 
     def stages(out):
         """Stage 1 (draws from the profile proposal) and, if k-hat >= khat_ok, stage 2."""
         nonlocal nev
-        bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lw, khat = out
+        bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat = out
         w = np.exp(lw)
         stage = 1
+        _q_final = q_prof_logpdf                 # the density the final draws were drawn from
         if mix_stage and not (khat < khat_ok):
             # stage 2: defensive mixture 0.5 profile proposal + 0.5 multivariate t fitted to the
             # stage-1 weighted samples (covers near-Gaussian posteriors where the
@@ -578,8 +710,33 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             lqa = np.logaddexp(np.log(0.75) + lq1, np.log(0.25) + lqt)
             lw, khat = psis(lpa - lqa)
             w = np.exp(lw)
-            X = Xa
+            X, lp, lq = Xa, lpa, lqa
             stage = 2
+
+            def _q_final(Y):
+                return np.logaddexp(np.log(0.75) + q_prof_logpdf(Y), np.log(0.25) + _mvt_logpdf(Y, m1, L1, nu))
+        if defensive:
+            # defensive draws from a broad t around the weighted draws (2 x their sd, beyond the
+            # inflation), all draws weighted against the deterministic mixture: a proposal that stops
+            # short of part of the posterior (an end of the grid cut off) gets large weights there,
+            # which k-hat sees -- otherwise the weights of the draws it does make can look fine
+            md = max(int(round(defensive * len(X))), 10 * (d + 1))
+            md_mu = w @ X / w.sum()
+            Cd = ((w[:, None] * (X - md_mu)).T @ (X - md_mu)) / w.sum()
+            ev, V = np.linalg.eigh(0.5 * (Cd + Cd.T))
+            Cd = (V * np.clip(ev, 1e-30, None)) @ V.T
+            Ld = np.linalg.cholesky(Cd * (2.0 * inflate) ** 2)
+            Xd = _mvt_sample(rng, md_mu, Ld, nu, md)
+            lpd = evaluate(Xd)
+            nev += md
+            na = len(X)
+            Xa = np.vstack([X, Xd])
+            lpa = np.concatenate([lp, lpd])
+            lq_old = np.concatenate([lq, _q_final(Xd)])
+            lqa = np.logaddexp(np.log(na / (na + md)) + lq_old, np.log(md / (na + md)) + _mvt_logpdf(Xa, md_mu, Ld, nu))
+            lw, khat = psis(lpa - lqa)
+            w = np.exp(lw)
+            X = Xa
         return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok
 
     can_refine = refine_tol is not None and len(grid) > 1
