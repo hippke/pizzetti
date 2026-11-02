@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `fit()` / `expand()`: where no geometry gives a valid limb-darkening draw (no visible transit), the
+  coefficients come from the prior; this fallback read the c-space moments, which the default prior no
+  longer computes (theta-space draws), and raised UnboundLocalError. f0 now comes from the theta
+  moments (the data mean where they are not finite).
+- `fit()` / `profile_is()` from a non-transiting start (b_conj >= 1 + rp, e.g. inc 89.5 deg with a/R* 123):
+  a/R* is undefined there in the T14 parametrisation and the profile failed at once, returning the start
+  repeated (k-hat inf). The start's b is now moved to half the transiting range; on flat data the fit
+  returns a broad posterior, on data with a transit it finds the transit.
 - Bounded retry (`_BoundedCoords.to_x`): `_conj_factor` and `_t14_range` converted the internal rows
   to canonical ones, including T14 -> a/R*, before the T14 column was set; a T14 of 0 raised
   ZeroDivisionError in the numba kernel (`fit()` crashed for a K2-131-like ultra-short-period planet at

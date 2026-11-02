@@ -913,7 +913,8 @@ class MarginalTransitModel:
             q1, q2 = rng.random(len(X)), rng.random(len(X))
             sq = np.sqrt(q1)
             u1, u2 = 2.0 * sq * q2, sq * (1.0 - 2.0 * q2)
-            f0 = np.where(np.isfinite(C @ K.DISK), C @ K.DISK, float(self.yw @ self.wts / (self.wts @ self.wts)))
+            # T[:, 0]: the conditional mean of f0 (theta = (f0, c1, c2)); the data mean where it is not finite
+            f0 = np.where(np.isfinite(T[:, 0]), T[:, 0], float(self.yw @ self.wts / (self.wts @ self.wts)))
             logw = np.zeros(len(X))
             self.last_ld_from_prior = True
         w = np.exp(logw - logw.max())
@@ -1046,7 +1047,7 @@ class MarginalTransitModel:
         """
         from ._sampling import pmc_refine, profile_is
         rng = np.random.default_rng() if rng is None else rng
-        x0 = self.to_internal(self.fixed_physical_free())[0] if x0 is None else np.asarray(x0, float)
+        x0 = self._start_internal() if x0 is None else np.asarray(x0, float)
         x0 = self._valid_start(x0, rng)
         jb = self.free.index("b")
         lo_b, hi_b = self.lo[4], self.hi[4]
@@ -1217,7 +1218,7 @@ class MarginalTransitModel:
         from ._sampling import hessian, reset_walkers, stuck_walkers
         rng = np.random.default_rng(seed)
         self.n_eval = 0
-        x0 = self.to_internal(self.fixed_physical_free())[0]
+        x0 = self._start_internal()
         scale = self._default_scales(x0)
         diag = dict(method=None)
         Xw = w = None
@@ -1324,6 +1325,19 @@ class MarginalTransitModel:
         if self.alpha_col >= 0:
             X[0, self.alpha_col] = self.alpha_fixed
         return X
+
+    def _start_internal(self):
+        """Internal start from the TransitParams values. A non-transiting start (b_conj >= 1 + rp:
+        the transit duration, and with it a/R* in the T14 parametrisation, is undefined there and
+        the log posterior is -inf) gets b at half the transiting range, b_conj = (1 + rp) / 2."""
+        X = self.fixed_physical_free()
+        if "b" in self.free:
+            P = self._canonical_physical(X)
+            rp, b, e, w = P[0, 2], P[0, 4], P[0, 5], P[0, 6]
+            g = (1.0 - e * e) / (1.0 + (-1.0 if self.secondary else 1.0) * e * math.sin(w))
+            if not (abs(b) * g < 1.0 + abs(rp)):
+                X[0, self.free.index("b")] = 0.5 * (1.0 + abs(rp)) / g
+        return self.to_internal(X)[0]
 
     def _default_scales(self, x0):
         P = self.fixed

@@ -525,6 +525,52 @@ def _shallow_toy(sigma=1e-3, seed=1):
                                          supersample_factor=15, exp_time=exp, offsets="midpoint")
 
 
+def _long_period_model(transit, seed=1):
+    """P = 95 d, rp 0.026, a/R* 123, 400 points over 1.2 d around t0; the TransitParams start is
+    non-transiting (inc 89.5 deg: b = 1.07 > 1 + rp). transit: data with a transit at b = 0.5,
+    else flat noise."""
+    rng = np.random.default_rng(seed)
+    t = np.linspace(-0.6, 0.6, 400)
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a = 0.0, 95.0, 0.026, 123.0
+    p.ecc, p.w, p.limb_dark, p.u = 0.0, 90.0, "quadratic", [0.4, 0.25]
+    p.inc = math.degrees(math.acos(0.5 / 123.0))
+    y = (pizzetti.TransitModel(p, t).light_curve(p) if transit else np.ones_like(t)) + 5e-4 * rng.standard_normal(t.size)
+    p.inc = 89.5
+    return pizzetti.MarginalTransitModel(p, t, y, 5e-4, free=["t0", "rp", "a", "b"],
+                                         bounds=dict(t0=(-0.1, 0.1), rp=(0.003, 0.5), a=(1.5, 2000.0), b=(0.0, 1.2)))
+
+
+def test_expand_no_valid_ld_draw_uses_prior():
+    """Geometries without any valid limb-darkening draw (no transit in the data window): the
+    coefficients come from the prior and f0 from the theta moments; this fallback raised
+    UnboundLocalError (it read the c-space moments C, which the default prior does not compute)."""
+    m = _long_period_model(transit=False)
+    X = np.tile(m.fixed_physical_free(), (20, 1))           # b = 1.07: no transit at all
+    S, labels, w = m.expand(X, ld="u", rng=np.random.default_rng(0), resample=False)
+    assert m.last_ld_from_prior
+    f0 = S[:, labels.index("f0")]
+    assert np.all(np.isfinite(f0)) and np.all(np.abs(f0 - 1.0) < 1e-3)
+
+
+def test_fit_from_non_transiting_start():
+    """A non-transiting start (b = 1.07 > 1 + rp; a/R* undefined in the T14 parametrisation) is
+    moved inside the transiting range: on flat data the fit returns a broad posterior instead of
+    the start repeated (k-hat inf); on data with a transit it finds the transit."""
+    r = pizzetti_fit_quiet(_long_period_model(transit=False))
+    rp = r.samples[:, r.labels.index("rp")]
+    assert r.diagnostics["is_ok"] and np.std(rp) > 0 and np.all(np.isfinite(r.samples))
+    r = pizzetti_fit_quiet(_long_period_model(transit=True))
+    rp = r.samples[:, r.labels.index("rp")]
+    assert r.diagnostics["is_ok"] and abs(np.median(rp) - 0.026) < 0.005
+
+
+def pizzetti_fit_quiet(m):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return m.fit(ld="u", n=4000, seed=0)
+
+
 def test_bounded_coords_ignore_t14_column():
     """_conj_factor (e, w) and _BoundedCoords._t14_range (per, rp, b) are called by
     _BoundedCoords.to_x before the T14 column is set; a T14 of 0 raised ZeroDivisionError in the
