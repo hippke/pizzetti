@@ -198,6 +198,30 @@ def _draw_c_theta(T, S, rng):
     return np.column_stack([6.0 * th[:, 0] - 2.0 * th[:, 1] - 3.0 * th[:, 2], th[:, 1], th[:, 2]])
 
 
+class _BudgetExceeded(Exception):
+    """Raised by MarginalTransitModel.log_prob_internal when the budget of profile_is is spent."""
+
+
+class _Budget:
+    """Evaluation and wall-time budget of one profile_is call (None: no limit). Charged in
+    log_prob_internal, through which every evaluation passes."""
+
+    def __init__(self, max_evals=None, max_time=None):
+        import time
+        self.max_evals, self.max_time, self.used = max_evals, max_time, 0
+        self._clock = time.perf_counter
+        self.t0 = self._clock()
+
+    def charge(self, n):
+        self.used += n
+        if ((self.max_evals is not None and self.used > self.max_evals)
+                or (self.max_time is not None and self._clock() - self.t0 > self.max_time)):
+            raise _BudgetExceeded
+
+    def remaining_evals(self):
+        return None if self.max_evals is None else max(self.max_evals - self.used, 0)
+
+
 class _BoundedCoords:
     """Unbounded coordinates u for the internal coordinates x of a model, for the retry of
     profile importance sampling when the posterior presses against a prior bound of a
@@ -471,6 +495,7 @@ class MarginalTransitModel:
             raise ValueError('threads must be a positive integer or "all"')
         self.threads = threads
         self.n_eval = 0
+        self._budget = None                  # set by profile_is(max_evals=, max_time=) while it runs
         self._ja = self.free.index("a") if "a" in self.free else -1
 
     # -- scope checks (remove when the features are implemented) -------------
@@ -691,6 +716,8 @@ class MarginalTransitModel:
         coefficients (0 without a cone), so that log posterior - log P is the posterior with a
         flat prior over all coefficients (smooth; the cone can cut the posterior off sharply)."""
         Xi = np.ascontiguousarray(np.atleast_2d(Xi), dtype=float)
+        if self._budget is not None:
+            self._budget.charge(len(Xi))
         logP = np.zeros(len(Xi))
         if self.fast:
             args = (self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi, self.tt, self.k,
@@ -992,7 +1019,7 @@ class MarginalTransitModel:
         return x0
 
     def profile_is(self, n=4000, rng=None, x0=None, retry=True, flat_proposal=True, last_resort=True,
-                   ess_min=0.25, rescue=True, rescue_iters=30, khat_ok=0.5):
+                   ess_min=0.25, rescue=True, rescue_iters=30, khat_ok=0.5, max_evals=None, max_time=None):
         """Profile importance sampling along b (``_sampling.profile_is``) in internal coordinates.
 
         The walls of the b profile are b = 0 (the likelihood depends on b^2) or the bounds on b,
@@ -1044,7 +1071,23 @@ class MarginalTransitModel:
         ``flat_proposal`` and ``last_resort_pmc`` say whether each step was not run (None), run
         but not used (False) or used (True); ``rescue``: whether the rescue ran; ``is_ok``: whether
         the returned draws pass the diagnostics.
+        ``max_evals``, ``max_time`` (seconds): a budget for the whole call (None: none). An expensive
+        likelihood (long light curves with many sub-exposures) times the evaluations of a hard
+        posterior (a few 1e5 with the retries and the rescue) can take hours. When the budget is
+        spent, the best attempt so far is returned with ``budget_exceeded`` True and ``is_ok`` False
+        (the rescue's iterations are capped to fit an evaluation budget); if the first proposal
+        could not be completed, RuntimeError.
         """
+        budget = _Budget(max_evals, max_time) if (max_evals is not None or max_time is not None) else None
+        self._budget = budget
+        try:
+            return self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
+                                    rescue_iters, khat_ok, budget)
+        finally:
+            self._budget = None
+
+    def _profile_is(self, n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue, rescue_iters,
+                    khat_ok, budget):
         from ._sampling import pmc_refine, profile_is
         rng = np.random.default_rng() if rng is None else rng
         x0 = self._start_internal() if x0 is None else np.asarray(x0, float)
@@ -1053,8 +1096,12 @@ class MarginalTransitModel:
         lo_b, hi_b = self.lo[4], self.hi[4]
         walls = dict(lo_wall=max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0),
                      hi_wall=hi_b - 1e-9 if np.isfinite(hi_b) else None)
-        res = profile_is(self.log_prob_internal, x0, self._default_scales(x0), prof=jb, n=n, rng=rng,
-                         **walls)
+        try:
+            res = profile_is(self.log_prob_internal, x0, self._default_scales(x0), prof=jb, n=n, rng=rng,
+                             **walls)
+        except _BudgetExceeded:
+            raise RuntimeError(f"profile_is: budget spent ({budget.used} evaluations, max_evals={budget.max_evals}, "
+                               f"max_time={budget.max_time} s) before the first proposal was complete") from None
         flags = dict(bounded_retry=None, flat_proposal=None, last_resort_pmc=None)
         nev = [res["n_eval"]]
 
@@ -1072,6 +1119,7 @@ class MarginalTransitModel:
             r.update(flags)
             r["grazing_beta"] = graze
             r["rescue"] = None
+            r["budget_exceeded"] = False
             r["is_ok"] = usable(r)
             if not r["is_ok"] and rescue:
                 r = run_rescue(r)
@@ -1174,44 +1222,64 @@ class MarginalTransitModel:
                     logit_cols.append(T.jb)
                 for j in logit_cols:
                     mb[j], sb[j] = 0.0, max(np.pi / np.sqrt(3.0), 5.0 * sd0[j])
-            pm = pmc_refine(lp_u, U0, lw0, rng, n=n, iters=rescue_iters, min_iters=3,
+            iters, capped = rescue_iters, False
+            if budget is not None and budget.max_evals is not None:      # whole iterations of n draws
+                iters = min(rescue_iters, budget.remaining_evals() // n)
+                capped = iters < rescue_iters
+                if iters < 1:
+                    out["budget_exceeded"] = True
+                    return out
+            pm = pmc_refine(lp_u, U0, lw0, rng, n=n, iters=iters, min_iters=3,
                             extra=[(0.03, mb, np.diag(sb ** 2))], ess_min=ess_min)
             nev.append(pm["n_eval"])
             if not np.isfinite(pm["khat"]):
                 return out
             X = T.to_x(pm["theta"])[0] if T.active else pm["theta"]
             out.update(theta=X, w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"], stage="amis",
-                       pmc=pm["history"], rescue=True, is_ok=bool(pm["converged"]))
+                       pmc=pm["history"], rescue=True, is_ok=bool(pm["converged"]),
+                       budget_exceeded=bool(capped and not pm["converged"]))
             return out
 
-        if usable(res):
-            return finish(res)
-        start = res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0
-        order = ("flat", "retry") if res["complete"] else ("retry", "flat")
+        def stopped(r):
+            """The budget ran out: the best attempt so far, flagged."""
+            r = dict(r)
+            r.update(flags)
+            r.update(grazing_beta=graze, rescue=r.get("rescue"), is_ok=False, budget_exceeded=True,
+                     n_eval=int(budget.used))
+            return r
+
         best = res
-        for step in order:
-            r = run_flat() if step == "flat" else run_retry(start)
-            if r is None:
-                continue
-            tried.append(r)
-            key = "flat_proposal" if step == "flat" else "bounded_retry"
-            flags[key] = False
-            if better(r, best):
-                if best is not res:
-                    flags["flat_proposal" if key == "bounded_retry" else "bounded_retry"] = False
-                best = r
-                flags[key] = True
-            if usable(r):
-                break
-        return finish(best)
+        try:
+            if usable(res):
+                return finish(res)
+            start = res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0
+            order = ("flat", "retry") if res["complete"] else ("retry", "flat")
+            for step in order:
+                r = run_flat() if step == "flat" else run_retry(start)
+                if r is None:
+                    continue
+                tried.append(r)
+                key = "flat_proposal" if step == "flat" else "bounded_retry"
+                flags[key] = False
+                if better(r, best):
+                    if best is not res:
+                        flags["flat_proposal" if key == "bounded_retry" else "bounded_retry"] = False
+                    best = r
+                    flags[key] = True
+                if usable(r):
+                    break
+            return finish(best)
+        except _BudgetExceeded:
+            return stopped(best)
 
     def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
-            ld="q", progress=False):
+            ld="q", progress=False, max_evals=None, max_time=None):
         """Posterior samples in one call.
 
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
         rescue of ``profile_is`` where the profile is not usable; no fallback to MCMC: a warning if
-        the final diagnostics fail (``diagnostics["is_ok"]``);
+        the final diagnostics fail (``diagnostics["is_ok"]``); ``max_evals`` / ``max_time`` (seconds)
+        limit its cost (``profile_is``; ``diagnostics["budget_exceeded"]``);
         "emcee": vectorised emcee until convergence (N > ntau * tau, tau stable to 1 %);
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
@@ -1223,17 +1291,22 @@ class MarginalTransitModel:
         diag = dict(method=None)
         Xw = w = None
         if method in ("is", "auto") and "b" in self.free:
-            res = self.profile_is(n=n, rng=rng, x0=x0)
+            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time)
             ok = bool(res["is_ok"])
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
                         complete=res["complete"], n_grid=res["n_grid"], is_ok=ok,
                         bounded_retry=res["bounded_retry"], flat_proposal=res["flat_proposal"],
                         last_resort_pmc=res["last_resort_pmc"], grazing_beta=res["grazing_beta"],
-                        rescue=res["rescue"], rescue_iters=len(res.get("pmc") or []) if res["rescue"] else 0)
+                        rescue=res["rescue"], rescue_iters=len(res.get("pmc") or []) if res["rescue"] else 0,
+                        budget_exceeded=bool(res.get("budget_exceeded")))
             # no fallback to MCMC: the importance draws are returned in any case, with a warning if
             # their diagnostics fail (method="emcee" runs the sampler)
             Xw, w = self.to_physical(res["theta"]), res["w"]
-            if not ok:
+            if res.get("budget_exceeded"):
+                warnings.warn(f"importance sampling stopped at its budget (max_evals={max_evals}, max_time="
+                              f"{max_time} s) with k-hat {res['khat']:.2f}, ESS {res['ess']:.0f}: the draws are "
+                              "the best attempt so far, not a converged posterior", stacklevel=2)
+            elif not ok:
                 warnings.warn(f"importance sampling diagnostics failed (k-hat {res['khat']:.2f}, ESS "
                               f"{res['ess']:.0f}); check the posterior, e.g. with method='emcee'",
                               stacklevel=2)

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `fit(max_evals=, max_time=)` and `profile_is(max_evals=, max_time=)`: an evaluation and wall-time
+  budget for profile importance sampling (default: none). An expensive likelihood (a weak, many-epoch
+  Kepler long-cadence signal: ~3600 binned points x 15 sub-exposures, 2e5 evaluations with the retry
+  and 22 rescue iterations, 7 min; hours at 65 000 points) otherwise has no practical bound. When the
+  budget is spent, the best attempt so far is returned with `diagnostics["budget_exceeded"]` and
+  `is_ok` False and a warning; the rescue's iterations are capped to fit an evaluation budget; a budget
+  too small for the first proposal raises RuntimeError. The conditional fits themselves were not the
+  problem (Powell <= 700, BFGS <= 527 evaluations per call there): no caps added, results unchanged.
 - `fit()` / `expand()`: where no geometry gives a valid limb-darkening draw (no visible transit), the
   coefficients come from the prior; this fallback read the c-space moments, which the default prior no
   longer computes (theta-space draws), and raised UnboundLocalError. f0 now comes from the theta

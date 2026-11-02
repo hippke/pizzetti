@@ -571,6 +571,27 @@ def pizzetti_fit_quiet(m):
         return m.fit(ld="u", n=4000, seed=0)
 
 
+def test_fit_budget():
+    """max_evals / max_time stop profile importance sampling (a hard posterior: the S/N ~5 toy needs
+    the retry and the rescue, ~7e4 evaluations) with the best attempt so far, flagged; a budget that
+    does not bind changes nothing; a budget too small for the first proposal raises."""
+    m = _shallow_toy()
+    with warnings.catch_warnings(record=True) as wl:
+        warnings.simplefilter("always")
+        r = m.fit(seed=0, n=4000, max_evals=20_000)
+    d = r.diagnostics
+    assert d["budget_exceeded"] and not d["is_ok"] and d["n_eval"] <= 20_000
+    assert any("budget" in str(x.message) for x in wl)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        r0 = m.fit(seed=0, n=4000)
+        r1 = m.fit(seed=0, n=4000, max_evals=10 ** 8, max_time=1e6)
+    assert not r1.diagnostics["budget_exceeded"] and r1.diagnostics["n_eval"] == r0.diagnostics["n_eval"]
+    assert np.array_equal(r1.samples, r0.samples)
+    with pytest.raises(RuntimeError, match="budget"):
+        m.fit(seed=0, n=4000, max_evals=10)
+
+
 def test_bounded_coords_ignore_t14_column():
     """_conj_factor (e, w) and _BoundedCoords._t14_range (per, rp, b) are called by
     _BoundedCoords.to_x before the T14 column is set; a T14 of 0 raised ZeroDivisionError in the
