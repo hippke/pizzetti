@@ -11,15 +11,18 @@
 \newcommand{\dd}{\mathrm{d}}
 \renewcommand{\theequation}{S\arabic{equation}}
 \renewcommand{\thesection}{S\arabic{section}}
-\title{Supplementary proofs to ``A Fast Elementary Series to Calculate Limb-darkened Transit Flux''}
+\renewcommand{\thetable}{S\arabic{table}}
+\title{Supplement to ``A fast elementary series to compute power-law limb-darkened transiting exoplanet light curves''}
 \author{M.~Hippke, E.~Agol, R.~Heller}
 \date{}
 \begin{document}
 \maketitle
 
-This supplement contains the proofs that are not needed to use or to check the method of the paper:
+This supplement contains material that is not needed to use or to check the default method of the paper:
 the error bounds for the truncation of the interior series by powers of $p$ (Section~\ref{app:meanvalue}),
-and the proof of the bound for the contact pieces, Theorem~3 of the paper (Section~\ref{app:contactproof}).
+the construction, validation and benchmarks of the contact expansions about first and second contact and of their
+certified pieces, which Sect.~6.3 of the paper summarises (Sections~\ref{sec:contactexp} and \ref{sec:proven}),
+and the proof of the bound for the contact pieces, Theorem~\ref{thm:contact} (Section~\ref{app:contactproof}).
 Equation numbers with a prefix S refer to this supplement. Readable explanations of all proofs, and
 notebooks that check every bound numerically against references independent of the derivations, are in the
 same repository (\texttt{docs/proofs} and \texttt{validation}).
@@ -55,7 +58,7 @@ For fixed $p$, $z$ is an algebraic function of $k$,
 \begin{equation}
 z=p(1-2k)+\sqrt{p^2(1-2k)^2+1-p^2}, \label{eq:zk}
 \end{equation}
-\begin{theorem}[Theorem 3 of the paper] \label{thm:contact}
+\begin{theorem}[Contact pieces] \label{thm:contact}
 Let $p<\tfrac12$. On every piece of the contact expansions, $|P_\gamma-\hat P_\gamma|\le E_\gamma^{(j)}+E_\gamma^{(n)}$, where $\hat P_\gamma$ is the polynomial approximation of the piece, $E_\gamma^{(j)}$ (Equation~\ref{eq:Ej}) bounds the remainder of the $j$-series and $E_\gamma^{(n)}$ (Equations~\ref{eq:cauchy}--\ref{eq:Eneta}) the truncation in $n$. Both are explicit functions of $p$, $\gamma$, $J$, $N$, the piece and a radius $\rho$, and are finite whenever the disk conditions of Lemma~\ref{lem:geom} hold. The flux error is at most $\sum_i|c_i|\,(E^{(j)}_{\gamma_i}+E^{(n)}_{\gamma_i})\big/\bigl(2\pi\sum_ic_i/(\alpha_i+2)\bigr)$.
 \end{theorem}
 
@@ -107,9 +110,120 @@ The area mean is $\avg{f}=(2/p^2)\int_0^p\rho\,m_f(\rho)\,\dd\rho$. The polynomi
 For $f=(1-r^2)^\gamma=\sum_m\beta_m r^{2m}$ with $0<\gamma<1$, $\Delta^n r^{2m}=4^n\left(m!/(m-n)!\right)^2r^{2(m-n)}$ for $m\ge n$. Hence $\Delta^nf=\sum_{m\ge n}\beta_m4^n(m!/(m-n)!)^2r^{2(m-n)}$ has only negative coefficients for $n\ge1$. It is therefore negative, and its modulus increases with $r$. On the disk $r$ ranges over $[\max(0,z-p),z+p]$ (for $z<p$ the disk covers the stellar centre), which gives the two-sided bound of Proposition~\ref{prop:lagrange}.
 
 
+\section{Expansions about the contacts} \label{sec:contactexp}
+
+This section and the next give the construction of the contact expansions and of their certified pieces, which Sect.~6.3 of the paper summarises. We keep the notation of the paper: the exponent is $\alpha=2\gamma$, $\zeta_j$ denotes the coefficients $c_j$ of Equations~(\ref{eq:ingress}) and (\ref{eq:interiorhyp}), $y=1-k$ and $y'=1-\kappa$ measure the distance from second contact outside and inside the stellar disk, and
+\begin{equation}\label{eq:HGfunctions}
+    \begin{aligned}
+        \mathcal H_j(k)&=B(\tfrac12,\tfrac{\alpha}{2}+2+j)\,{}_2F_1(\tfrac12,\tfrac12;\tfrac{\alpha+5}{2}+j;k)\\
+        \mathcal G_j(\kappa)&=\pi\,{}_2F_1(-\tfrac{\alpha}{2}-1-j,\tfrac12;1;\kappa),
+    \end{aligned}
+\end{equation}
+which depend solely on $\alpha$, $j$, and their argument, so that $P_\alpha=-x^{\alpha/2+1}\sqrt{k}\,(\alpha+2)^{-1}\sum_j\zeta_j\mathcal H_j(k)$ across the limb and $P_\alpha=-x^{\alpha/2+1}(\alpha+2)^{-1}\sum_j\zeta_j\mathcal G_j(\kappa)$ inside the disk; in the notation of Sect.~\ref{app:contactproof}, $\mathcal H_j=H_j$ and $\mathcal G_j=\pi G_j$ (Equation~\ref{eq:HG}). Both $\mathcal H_j(k)$ and $\mathcal G_j(\kappa)$ are positive and monotonically non-increasing with $j$, while every coefficient $\zeta_j$ with $j\ge 1$ shares the sign of $p^2-z^2$. Consequently, the truncation remainder of the $j$-series after any index $J\ge1$ is bounded in magnitude by the first omitted term divided by $1-x$ (Lemma~\ref{lem:jrem}).
+
+Second contact corresponds to a unit argument ($k=1$ or $\kappa=1$) of these Gauss functions. A Gauss function ${}_2F_1(\hat a,\hat b;\hat c;1-y)$ with parameter excess $\nu=\hat c-\hat a-\hat b>0$ is finite but non-analytic as $y\to0^+$; for non-integer $\nu$, the connection formula \citep[15.8.4]{DLMF} gives
+\begin{equation}
+\begin{aligned}
+%{}_2F_1(\hat a,\hat b;\hat c;1-y)={}&\frac{\Gamma(\hat c)\Gamma(\nu)}{\Gamma(\hat c-\hat a)\Gamma(\hat c-\hat b)}\,{}_2F_1(\hat a,\hat b;1-\nu;y)\\
+%&+y^\nu\,\frac{\Gamma(\hat c)\Gamma(-\nu)}{\Gamma(\hat a)\Gamma(\hat b)}\,{}_2F_1(\hat c-\hat a,\hat c-\hat b;1+\nu;y).
+{}_2F_1(\hat a,\hat b;\hat c;1-y)&=y^\nu\,\frac{\Gamma(\hat c)\Gamma(-\nu)}{\Gamma(\hat a)\Gamma(\hat b)}\,{}_2F_1(\hat c-\hat a,\hat c-\hat b;1+\nu;y)\\
+&+\frac{\Gamma(\hat c)\Gamma(\nu)}{\Gamma(\hat c-\hat a)\Gamma(\hat c-\hat b)}\,{}_2F_1(\hat a,\hat b;1-\nu;y).\\
+\end{aligned} \label{eq:conn}
+\end{equation}
+For integer $\nu$, the two series merge into a finite polynomial in $y$ plus $y^\nu\ln y$ times a power series \citep[15.8.10]{DLMF}. For both $\mathcal H_j$ and $\mathcal G_j$, the parameter excess is $\nu=\tfrac{\alpha+3}{2}+j$, an integer if and only if $\alpha$ is an odd integer. For any $\alpha>0$, we may therefore write $\mathcal H_j$ in the unified form
+\begin{equation}
+\mathcal H_j=U_j(y)+y^{(\alpha+3)/2+j}\bigl[L_j(y)\ln y+C_j(y)\bigr],\qquad y=1-k, \label{eq:HABB}
+\end{equation}
+where $U_j$, $L_j$, and $C_j$ are convergent power series in $y$. Note that Eq.~(\ref{eq:HABB}) holds for all $\alpha>0$, with the logarithmic term appearing only when $\alpha$ is an odd integer: specifically, if $\alpha$ is not an odd integer, then $\nu$ is non-integer, $L_j(y)\equiv 0$, and $U_j(y)$ and $C_j(y)$ correspond directly to the two hypergeometric series in Eq.~(\ref{eq:conn}); whereas if $\alpha$ is an odd integer, $U_j(y)$, $L_j(y)$, and $C_j(y)$ are given by the logarithmic connection formula \citep[15.8.10]{DLMF}. The interior function $\mathcal G_j(\kappa)$ admits an identical decomposition in terms of $y'=1-\kappa$.
+
+For a fixed radius ratio $p$, the separation $z$ is the algebraic function of $k$ given by Equation~(\ref{eq:zk}). Consequently, $x=4zpk$, the coefficients $\zeta_j$, and the prefactors in Eqs.~(\ref{eq:ingress}) and (\ref{eq:interiorhyp}) are all analytic functions of $k$ in neighbourhoods of both $k=0$ and $k=1$. Expanding each factor in power series alongside the Gauss hypergeometric functions and collecting like powers yields three contact expansions covering the outer and inner neighbourhoods of the stellar limb:
+\begin{align}
+P_\alpha&=k^{(\alpha+3)/2}\sum_{n\ge0}e_n k^n, \label{eq:ca}\\
+P_\alpha&=\sum_{n\ge0}g_n y^n+y^{(\alpha+3)/2}\sum_{n\ge0}\left(g'_n\ln y+g''_n\right)y^n, \label{eq:cb}\\
+P_\alpha&=\sum_{n\ge0}h_n y'^n+y'^{(\alpha+3)/2}\sum_{n\ge0}\left(h'_n\ln y'+h''_n\right)y'^n, \label{eq:cc}
+\end{align}
+valid for $0\le k\le\tfrac12$, $0\le y\le\tfrac12$, and $0\le y'\le\tfrac12$, respectively. Here $y=1-k$ and $y'=1-\kappa$ measure the dimensionless distance from second contact on the exterior ($z\ge 1-p$) and interior ($z\le 1-p$) sides of the stellar limb. Just like Eq.~(\ref{eq:HABB}), Eqs.~(\ref{eq:cb}) and (\ref{eq:cc}) apply to every $\alpha>0$: when $\alpha$ is not an odd integer, $g'_n=h'_n=0$ and the logarithmic terms vanish; when $\alpha$ is an odd integer, $y^{(\alpha+3)/2}$ reduces to an integer power of $y$, and the logarithmic series carries the non-analytic part of the flux.
+
+To compute the expansion coefficients, we express every factor in Eqs.~(\ref{eq:ingress}) and (\ref{eq:interiorhyp}) as a power series in the local expansion variable $\eta\in\{k, y, y'\}$ and multiply the resulting series. Substituting $k(\eta)$, with $k=1-y$ or $k=1/(1-y')$, into Eq.~(\ref{eq:zk}) defines $z(\eta)$, which in turn determines $x(\eta)=1-(z(\eta)-p)^2$, the coefficients $\zeta_j(\eta)$, and the overall prefactor
+\begin{equation}
+\Phi(\eta)=-\frac{x(\eta)^{\alpha/2+1}\sqrt{k(\eta)}}{\alpha+2}\ \text{(limb)},\quad \Phi(\eta)=-\frac{x(\eta)^{\alpha/2+1}}{\alpha+2}\ \text{(inside)}, \label{eq:Phi}
+\end{equation}
+such that $P_\alpha=\Phi(\eta)\sum_j\zeta_j\mathcal H_j$ across the limb and $P_\alpha=\Phi(\eta)\sum_j\zeta_j\mathcal G_j$ inside the disk. For fixed $p$ and $\alpha$, all of these quantities are functions of the single variable $\eta$. The coefficients in Eqs.~(\ref{eq:ca})--(\ref{eq:cc}) are then defined as follows:
+\begin{enumerate}
+\item $e_n$: the Taylor coefficients in $k$ of $-\frac{(4pz(k))^{\alpha/2+1}}{\alpha+2}\sum_j\zeta_j(k)\,\mathcal H_j(k)$, where the leading fractional power $k^{(\alpha+3)/2}$ has been factored out using the identity $x^{\alpha/2+1}\sqrt k=(4pz)^{\alpha/2+1}k^{(\alpha+3)/2}$ from Equation~(\ref{eq:k}).
+\item $g_n$, $g'_n$, and $g''_n$: the Taylor coefficients in $y$ of $\Phi(y)\sum_j\zeta_j(y)U_j(y)$, $\Phi(y)\sum_j\zeta_j(y)\,y^jL_j(y)$, and $\Phi(y)\sum_j\zeta_j(y)\,y^jC_j(y)$, respectively, where $U_j$, $L_j$, and $C_j$ are the component series in Eq.~(\ref{eq:HABB}), and $\Phi(y)$ and $\zeta_j(y)$ are evaluated via $z(k=1-y)$ in Eq.~(\ref{eq:zk}); here the factor $y^{(\alpha+3)/2+j}$ in Eq.~(\ref{eq:HABB}) has been split into the common prefactor $y^{(\alpha+3)/2}$ of Eq.~(\ref{eq:cb}) and the factor $y^j$ inside the sum.
+\item $h_n$, $h'_n$, and $h''_n$: defined identically to $g_n$, $g'_n$, and $g''_n$, upon replacing $y$ with $y'$, $\mathcal H_j$ with $\mathcal G_j$, and the limb prefactor with the interior prefactor in Eq.~(\ref{eq:Phi}).
+\end{enumerate}
+At first contact ($k=0$), for instance, one has $z=1+p$, $x=0$, $\zeta_0=1+p^2-z^2=-2p$, and $\zeta_j=0$ for all $j\ge1$, yielding the closed-form leading coefficient
+\begin{equation}
+\begin{aligned}
+e_0&=\frac{2p\,\bigl(4p(1+p)\bigr)^{\alpha/2+1}}{\alpha+2}\,B\!\left(\tfrac12,\tfrac{\alpha}{2}+2\right),\\
+P_\alpha&\simeq e_0\,k^{(\alpha+3)/2}\qquad(k\to0).
+\end{aligned} \label{eq:a0}
+\end{equation}
+Higher-order coefficients depend solely on $p$ and $\alpha$, and --- truncating all power series at order $N$ in $\eta$ and the hypergeometric sum at $j\le J$ (Sect.~\ref{sec:proven}) --- are constructed in four steps of elementary power-series arithmetic:
+\begin{enumerate}
+\item[(i)] Expand $z(\eta)$ from Eq.~(\ref{eq:zk}) by taking the square root of a power series, and form $x(\eta)$ and $\zeta_j(\eta)$ by series multiplication.
+\item[(ii)] Construct the prefactor $\Phi(\eta)$ by raising power series to real powers: given a series $\psi(\eta)=\sum_{i\ge0}\psi_i\eta^i$ with leading coefficient $\psi_0>0$, the coefficients of $\psi(\eta)^\lambda=\sum_{n\ge0}\psi^{(\lambda)}_n\eta^n$, for any real exponent $\lambda$, satisfy Euler's recurrence $\psi^{(\lambda)}_0=\psi_0^\lambda$ and $\psi^{(\lambda)}_n=\frac{1}{n\psi_0}\sum_{i=1}^{n}\bigl[(\lambda+1)i-n\bigr]\psi_i\psi^{(\lambda)}_{n-i}$ for $n\ge1$ \citep[Sect.~4.7]{Knuth1997}.
+\item[(iii)] Assemble the power-series coefficients of the Gauss hypergeometric functions, which are available in closed form. Around $k=0$, $\mathcal H_j(k)=\sum_n\mathcal H_{j,n}k^n$ with $\mathcal H_{j,n}=B(\tfrac12,\tfrac{\alpha}{2}+2+j)\,(\tfrac12)_n^2/[(\tfrac{\alpha+5}{2}+j)_n\,n!]$, where $(\cdot)_n$ denotes the rising factorial (Pochhammer symbol). Around second contact, for non-integer $\nu=\tfrac{\alpha+3}{2}+j$, applying Eq.~(\ref{eq:conn}) with $(\hat a,\hat b,\hat c)=(\tfrac12,\tfrac12,\tfrac{\alpha+5}{2}+j)$ expresses $U_j(y)$ and $C_j(y)$ as $B(\tfrac12,\tfrac{\alpha}{2}+2+j)$ times the Gamma-function prefactors of Eq.~(\ref{eq:conn}) multiplied by power series with coefficients $(\tfrac12)_n^2/[(1-\nu)_n\,n!]$ and $(\tfrac{\alpha}{2}+2+j)_n^2/[(1+\nu)_n\,n!]$, respectively. The interior functions $\mathcal G_j$ follow analogously with $(\hat a,\hat b,\hat c)=(-\tfrac{\alpha}{2}-1-j,\tfrac12,1)$, while the logarithmic case for odd integer $\alpha$ follows directly from \citet[15.8.10]{DLMF}.
+\item[(iv)] Multiply the component series from steps (i)--(iii) and accumulate the sum over $j\le J$.
+\end{enumerate}
+Geometrically, Eq.~(\ref{eq:ca}) covers the outer half of ingress/egress near first/fourth contacts ($\sqrt{1-p^2}\le z\le1+p$), Eq.~(\ref{eq:cb}) covers the inner half between second/third contact and $z=\sqrt{1-p^2}$, and Eq.~(\ref{eq:cc}) covers the region immediately inside second/third contacts ($\sqrt{1+8p^2}-3p\le z\le1-p$). In particular, Eq.~(\ref{eq:ca}) demonstrates that the flux deficit vanishes at first/fourth contact as $(1+p-z)^{(\alpha+3)/2}$, while Eqs.~(\ref{eq:cb}) and (\ref{eq:cc}) explicitly isolate the non-analytic behaviour at second/third contacts, where both $y$ and $y'$ scale linearly with $|1-p-z|$.
+
+Once these singular factors are extracted explicitly, the remaining power series in $k$, $y$, and $y'$ converge geometrically. Because the nearest singularity in the complex plane lies either at the opposite contact ($k=1$ for Eq.~\ref{eq:ca} and $y=1$ for Eq.~\ref{eq:cb}) or where the occulter rim crosses the stellar centre ($y'=1-4p^2$ for Eq.~\ref{eq:cc}), consecutive terms decay by a factor of at least $\approx \tfrac12$ across the stated intervals. Truncating at degree $n=32$ therefore achieves $10^{-15}$ accuracy (Table~\ref{tab:contact}), with the $n$-truncation residual estimated in fixed-order mode from the magnitude of the last three terms and bounded formally in Sect.~\ref{sec:proven}. In contrast, the auxiliary sum over $j$ converges more slowly as $x\to 1$ ($z\to p$). Retaining at most $J=200$ terms in $j$ yields a relative accuracy of $10^{-11}$ for all $p\le0.2$; for larger occulters the expansions do not reach the tolerance, and the fixed-node rule of Sect.~6.2 of the paper ($p<0.3$) or numerical quadrature takes over. Importantly, for $M=11$ and every configuration listed in Table~C.3 of the paper, the interior cut-off $z_c$ lies well above the lower boundary $\sqrt{1+8p^2}-3p$ of Eq.~(\ref{eq:cc}); consequently, the interior polynomial and the three contact expansions together provide seamless coverage across all phases of any transit with $p\le0.2$.
+
+Note that the integer exponents $\alpha_i=0$ and $\alpha_i=2$ require no hypergeometric expansion, as their blocked flux integrals reduce to the elementary circle--circle intersection area and an algebraic function of $z$ and $p$, respectively. For each remaining exponent, precomputing the expansion coefficients requires $O(JN^2)$ operations per light curve for $J$ terms in $j$ and degree $N=32$, amounting to 0.1--1.7\,ms per light curve for the standard laws in Table~\ref{tab:contact}. Evaluating each limb sample then requires only one logarithm, one fractional power, and one to three degree-32 Horner polynomial evaluations per exponent.
+
+
+We validated the contact expansions of Eqs.~(\ref{eq:ca})--(\ref{eq:cc}) against 40-digit evaluations of Equation~(\ref{eq:P1d}) and of the area integral of $\mu^\alpha$ over the occulter across exponents $\alpha\in\{0,\tfrac12,0.6,1,\tfrac32,2,\tfrac52\}$ and radius ratios $0.001\le p\le0.2$, extending to separations within $10^{-12}$ of first and second contact. Across all tests, the maximum error in normalised flux units was $1.1\times10^{-15}$. When evaluated through the full light-curve pipeline on $z_c<z<1+p$, the square-root, four-parameter, and power-2 laws agree with an independent 40-digit Green's-theorem quadrature to better than $10^{-15}$ in fixed-order mode, and remain strictly within $\tau$ in the certified piecewise mode of Sect.~\ref{sec:proven} (Table~\ref{tab:contact}). After a one-time set-up of 0.1--1.7\,ms per light curve, the fixed-order contact expansions evaluate each limb sample 15 to 22 times faster than Green's-theorem quadrature---and 50 to 300 times faster than summing the single-index expansion of Eq.~(\ref{eq:ingress}) directly at each point (Sect.~4 of the paper). This acceleration arises because the contact expansions rearrange the double sum once per light curve, folding both the sum over $j$ and the hypergeometric power series into the precomputed coefficients $(e_n, g_n, g'_n, g''_n, h_n, h'_n, h''_n)$ so that no special function is evaluated at sample time.
+
+\begin{table}[ht]
+\centering
+\caption{Performance and accuracy of the contact expansions (Sect.~\ref{sec:contactexp}) across $z_c<z<1+p$, paired with the interior series run at the same tolerance $\tau$: maximum absolute flux error against a 40-digit reference across 34--40 separations (including points within $10^{-13}p$ of the contacts), one-time coefficient set-up time per light curve (summing all exponents of the law), and evaluation time per limb sample. ``Fixed order'': Equations~(\ref{eq:ca})--(\ref{eq:cc}) truncated at $n=32$ with empirical tail estimation (Sect.~\ref{sec:contactexp}). ``Proven'': the certified piecewise polynomials of Sect.~\ref{sec:proven}, each guaranteed to satisfy $|\Delta F|\le\tau$. ``Quadr.'': Green's-theorem numerical quadrature. Benchmarks run on a single thread of an Intel Xeon (2.1\,GHz) with \texttt{numba}~0.68.}
+\label{tab:contact}
+\scriptsize\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{lrcrrcrrcrr}
+\hline\hline
+ & & \multicolumn{3}{c}{fixed order} & \multicolumn{3}{c}{proven, $\tau=10^{-9}$} & \multicolumn{2}{c}{proven, $\tau=10^{-12}$} & quadr. \\
+Law & $p$ & max $|\Delta F|$ & set-up & per sample & max $|\Delta F|$ & set-up & per sample & max $|\Delta F|$ & set-up & per sample \\
+ & & & (ms) & (ns) & & (ms) & (ns) & & (ms) & (ns) \\
+\hline
+square-root & 0.0092 & $<10^{-16}$ & 0.17 & 77 & $3.2\times10^{-10}$ & 9 & 54 & $2.8\times10^{-13}$ & 13 & 1419 \\
+square-root & 0.1 & $1.1\times10^{-16}$ & 0.44 & 80 & $2.7\times10^{-10}$ & 19 & 66 & $1.6\times10^{-13}$ & 41 & 1277 \\
+square-root & 0.2 & $5.6\times10^{-16}$ & 0.91 & 78 & $1.6\times10^{-10}$ & 27 & 54 & $1.4\times10^{-13}$\rlap{$^{\,a}$} & 34 & 1143 \\
+four-parameter & 0.0092 & $<10^{-16}$ & 0.26 & 77 & $5.3\times10^{-10}$ & 16 & 87 & $2.8\times10^{-13}$ & 21 & 1648 \\
+four-parameter & 0.1 & $1.1\times10^{-16}$ & 0.63 & 81 & $1.1\times10^{-10}$ & 23 & 72 & $6.7\times10^{-13}$ & 75 & 1403 \\
+four-parameter & 0.2 & $1.1\times10^{-16}$ & 1.68 & 80 & $5.7\times10^{-11}$ & 64 & 75 & $2.2\times10^{-13}$\rlap{$^{\,a}$} & 61 & 1758 \\
+power-2, $\alpha=0.6$ & 0.0092 & $<10^{-16}$ & 0.09 & 54 & $4.0\times10^{-10}$ & 5 & 40 & $3.8\times10^{-13}$ & 7 & 1132 \\
+power-2, $\alpha=0.6$ & 0.1 & $1.1\times10^{-16}$ & 0.17 & 61 & $4.0\times10^{-10}$ & 12 & 51 & $1.8\times10^{-13}$ & 22 & 1307 \\
+power-2, $\alpha=0.6$ & 0.2 & $2.2\times10^{-16}$ & 0.40 & 62 & $7.1\times10^{-10}$ & 17 & 52 & $1.3\times10^{-13}$\rlap{$^{\,a}$} & 25 & 1017 \\
+power-2, $\alpha=1$ & 0.0092 & $<10^{-16}$ & 0.08 & 60 & $2.7\times10^{-10}$ & 5 & 47 & $3.0\times10^{-13}$ & 7 & 1083 \\
+power-2, $\alpha=1$ & 0.1 & $1.1\times10^{-16}$ & 0.20 & 49 & $2.7\times10^{-10}$ & 12 & 43 & $1.5\times10^{-13}$ & 26 & 977 \\
+power-2, $\alpha=1$ & 0.2 & $7.8\times10^{-16}$ & 0.52 & 58 & $4.1\times10^{-10}$ & 22 & 51 & $1.5\times10^{-13}$\rlap{$^{\,a}$} & 29 & 1000 \\
+\hline
+\end{tabular}
+\par\smallskip\footnotesize $^a$ 76--77\,\% of the limb samples certified; the two innermost pieces ($z_c<z<0.625$) cannot reach $10^{-12}$ within the cap of $J=200$ terms of the $j$-series and automatically fall back to quadrature.
+\end{table}
+
+\section{Certified pieces} \label{sec:proven}
+
+To obtain a guaranteed upper bound on the truncation error of the contact expansions in Eqs.~(\ref{eq:ca})--(\ref{eq:cc}), we partition the limb region $z_c<z<1+p$ into a small number of subdomains (``pieces''), on each of which a low-degree polynomial suffices, and bound on every piece both the tail of the $j$-series beyond $j=J$ and the tail of the power series in $n$ beyond $n=N$. The construction is given below; the resulting error bound is Theorem~\ref{thm:contact}, proven in Sect.~\ref{app:contactproof}. For a target tolerance of $\tau=10^{-9}$, every piece is certified for all $p\le0.2$ using five to seven pieces of polynomial degree $N\in[2,13]$; for $\tau=10^{-12}$, certification succeeds for $p\le0.15$ using five to eight pieces of degree up to $N=17$. Any pieces that cannot be certified---such as those for larger occulters, or the innermost pieces at the tightest tolerance where the $j$-series converges slowly as $z\to p$---automatically fall back to numerical quadrature. Consequently, for all $p\le0.2$ and $\tau=10^{-9}$, the interior series combined with the certified contact pieces evaluates the entire transit light curve with a mathematically proven error bound of $\tau$. In validation tests against 40-digit reference integrations, none of the 355 certified pieces violated its theoretical bound, with actual maximum errors ranging between 0.56 and 0.98 times the bound (see below).
+
+The computational overhead of certifying the piecewise error bound is incurred only once per light curve. At $\tau=10^{-9}$, this set-up requires 5--64\,ms (Table~\ref{tab:contact}), compared with 0.1--1.7\,ms for the uncertified fixed-order coefficients; the majority of the certification time is spent computing the $J\le 200$ terms needed for the intermediate Taylor pieces and evaluating the complex-circle majorants $\mathcal M(R)$. Once constructed, evaluating each sample on the certified pieces takes 40--87\,ns---comparable to the 49--81\,ns of the fixed-order expansions, and 19 to 29 times faster than numerical quadrature. For a complete transit light curve of $10^4$ samples at $p=0.1$, the one-time set-up dominates the total runtime in certified mode: 12\,ms in total for the power-2 law, compared with 0.5\,ms using the fixed-order expansions and 3.2\,ms using \texttt{batman}. Accordingly, our software implementation employs uncertified limb methods by default (the fixed-node rule of Sect.~6.2 of the paper and its Chebyshev interpolants) and enables the certified piecewise bounds on user request.
+
+The total truncation error of the contact expansions, Eqs.~(\ref{eq:ca})--(\ref{eq:cc}), comprises two contributions: the tail of the $j$-series beyond $j=J$, which is bounded geometrically as noted in Sect.~\ref{sec:contactexp} (Lemma~\ref{lem:jrem}), and the tail of the power series in $n$ beyond $n=N$. To bound the latter provably while keeping the polynomial degree small, we partition the limb region $z_c<z<1+p$ into subdomains (``pieces'') on each of which a low-degree polynomial suffices: specifically, Eq.~(\ref{eq:ca}) on $k\le\tfrac14$; two analytic Taylor expansions centred at $k=\tfrac38$ and $k=\tfrac58$; Eq.~(\ref{eq:cb}) on $y\le\tfrac14$; Eq.~(\ref{eq:cc}) on $y'\le\tfrac14$ (narrowed if $z_c$ lies closer); and analytic Taylor expansions in $\kappa$ of half-width at most 0.07 extending inward from there to $\kappa_c=\kappa(z_c)$. On any piece with local coordinate $\eta$ and half-width (or contact range) $\omega$, the remainder of each analytic series $\sum_nf_n\eta^n$ satisfies
+\begin{equation}
+\Bigl|\sum_{n>N}f_n\eta^n\Bigr|\le\sum_{n=N+1}^{64}|f_n|\,\omega^n+\mathcal M(R)\,\frac{(\omega/R)^{65}}{1-\omega/R},\qquad |\eta|\le \omega<R, \label{eq:tailbound}
+\end{equation}
+where the coefficients $f_n$ are computed explicitly through $n=64$ and higher terms ($n\ge 65$) are bounded via Cauchy's inequality $|f_n|\le \mathcal M(R)R^{-n}$, with $\mathcal M(R)$ an analytical upper bound on $|f(\eta)|$ along the circle $|\eta|=R$ in the complex plane. On the contact pieces, the analytic series are the component power series in Eqs.~(\ref{eq:ca})--(\ref{eq:cc}), whose tails are weighted by at most $\omega^{(\alpha+3)/2}$ and $\max_{0<y\le \omega}y^{(\alpha+3)/2}|\ln y|$ across the piece. To select the truncation degree $N$ on each piece, we weight both the $j$-truncation and $n$-truncation bounds by $|c_i|$, sum over all exponents of the limb-darkening law, and choose the smallest $N$ for which the total guaranteed flux error does not exceed the target tolerance $\tau$. The resulting bound is stated in Theorem~\ref{thm:contact}.
+
+The complete proof of Theorem~\ref{thm:contact}, together with explicit formulae for the majorants $\mathcal M(R)$ and the complex-disk analyticity conditions on $|\eta|\le R$, is given in Sect.~\ref{app:contactproof}. The proof relies on complex and real analysis: the $j$-remainder bound follows from the monotonicity of the integrand in Eq.~(\ref{eq:P1d}); $z(\eta)$, $x(\eta)$, and the prefactors $\Phi(\eta)$ are holomorphic on the disks $|\eta|\le R$ because $z$ is non-vanishing and all square-root arguments maintain a positive real part; their maxima on $|\eta|=R$ are bounded rigorously from 1024 boundary samples combined with a Cauchy derivative bound; and the Gauss hypergeometric series are bounded via majorant series with geometric tails, Euler's integral representation, and --- for odd integer $\alpha$ --- elementary inequalities for the digamma function. On the intermediate Taylor pieces, the expansion coefficients are formed by re-centring a degree-64 series about the piece midpoint, and the error bound explicitly accounts for that finite re-centring truncation. While Theorem~\ref{thm:contact} holds in exact arithmetic, our implementation evaluates the bound in IEEE-754 double precision and inflates it by a safety factor of $1+10^{-6}$; floating-point round-off in the coefficients and Horner evaluation contributes only $\sim 10^{-16}$. The Cauchy estimate in Eq.~(\ref{eq:tailbound}) is valid only if the expanded function is analytic on the whole complex disk $|\eta|\le R$ around the piece, which requires that $z(\eta)$ does not vanish and that every square-root argument keeps a positive real part on that disk. The implementation verifies these conditions numerically for each piece; if they cannot be verified for any admissible radius $r$, no bound is claimed for that piece, and its samples are computed by quadrature instead.
+
+As $z$ approaches $p$, $x\to 1$ and the $j$-series converges only as $x^J$. With our cap of $J=200$ terms, the innermost pieces therefore cannot reach $\tau=10^{-12}$ at $p=0.2$, and certain pieces fall short of $\tau=10^{-9}$ for $p\ge0.25$; whenever a piece is not certified, the implementation falls back to numerical quadrature for the affected samples. To assess the sharpness of Theorem~\ref{thm:contact}, we tested each certified piece individually against 40-digit reference integrations across 29 separations spanning the piece (including both endpoints). Across 60 test configurations --- covering the square-root, four-parameter, and three power-2 laws ($\alpha=0.6$, 1, and 1.7), radius ratios $p$ from 0.0092 to 0.3, and tolerances $\tau=10^{-9}$ and $10^{-12}$ --- none of the 355 certified pieces violated its theoretical bound, and the maximum ratio of actual error to proven bound in each configuration ranged between 0.56 and 0.98. The bound is therefore remarkably tight, with the certified pieces exhibiting actual errors of $\approx \tau/2$, compared with $\sim 10^{-15}$ for the degree-32 fixed-order expansions (Table~\ref{tab:contact}).
+
 \section{Proof of the bound for the contact pieces} \label{app:contactproof}
 
-This section proves Theorem~\ref{thm:contact} of the paper (restated above). Throughout, $0<p<\tfrac12$, $m=\gamma+\tfrac32$, and $u$ is the variable of a piece: $u=k$ (first contact), $u=y=1-k$ and $u=y'=1-\kappa$ (second contact), $u=k-k_0$ and $u=\kappa-\kappa_0$ (middle pieces centred at $k_0$ and $\kappa_0$). On each piece the variable satisfies $|u|\le w$. For a power series $F(u)=\sum_nt_nu^n$ we write $\hat F(r)=\sum_n|t_n|r^n$ and $\hat F^{>n_0}(r)=\sum_{n>n_0}|t_n|r^n$.
+This section proves Theorem~\ref{thm:contact} (stated in the notation section above). Throughout, $0<p<\tfrac12$, $m=\gamma+\tfrac32$, and $u$ is the variable of a piece: $u=k$ (first contact), $u=y=1-k$ and $u=y'=1-\kappa$ (second contact), $u=k-k_0$ and $u=\kappa-\kappa_0$ (middle pieces centred at $k_0$ and $\kappa_0$). On each piece the variable satisfies $|u|\le w$. For a power series $F(u)=\sum_nt_nu^n$ we write $\hat F(r)=\sum_n|t_n|r^n$ and $\hat F^{>n_0}(r)=\sum_{n>n_0}|t_n|r^n$.
 
 \subsection{Representation}
 
