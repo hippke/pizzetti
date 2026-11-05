@@ -561,6 +561,14 @@ def marg_theta_parts(B, y, gx, gw):
     """(marginal log-likelihood without the cone, log P of the cone) for the weighted theta design
     B and data y, as marg_loglike_parts (their sum is the marginal log-likelihood)."""
     G, r = normal_eqs(B, y)
+    return theta_parts_normal(G, r, B, y, 0.0, 0.0, gx, gw)
+
+
+@njit(cache=True)
+def theta_parts_normal(G, r, B, y, yy, shift, gx, gw):
+    """marg_theta_parts from the normal equations. With rows in B, chi2 comes from the explicit residual.
+    Without rows (the sums were built elsewhere): chi2 = yy - 2 th r + th G th, where r and yy belong to the data
+    minus shift x the first column of the design, so that the solution for f0 is the shift + the first solved value."""
     s = np.empty(3)
     for i in range(3):
         if not G[i, i] > 0.0:
@@ -592,12 +600,22 @@ def marg_theta_parts(B, y, gx, gw):
     x1 = (z1 - L[2, 1] * x2) / L[1, 1]
     x0 = (z0 - L[1, 0] * x1 - L[2, 0] * x2) / L[0, 0]
     th = np.array([x0 / s[0], x1 / s[1], x2 / s[2]])
-    if not th[0] > 0.0:
-        return -np.inf, 0.0
-    chi2 = 0.0
-    for t in range(B.shape[0]):
-        d = y[t] - B[t, 0] * th[0] - B[t, 1] * th[1] - B[t, 2] * th[2]
-        chi2 += d * d
+    if B.shape[0] > 0:
+        chi2 = 0.0
+        if not th[0] > 0.0:
+            return -np.inf, 0.0
+        for t in range(B.shape[0]):
+            d = y[t] - B[t, 0] * th[0] - B[t, 1] * th[1] - B[t, 2] * th[2]
+            chi2 += d * d
+    else:
+        chi2 = yy
+        for i in range(3):
+            chi2 -= 2.0 * th[i] * r[i]
+            for j in range(3):
+                chi2 += th[i] * G[i, j] * th[j]
+        th[0] += shift
+        if not th[0] > 0.0:
+            return -np.inf, 0.0
     for i in range(3):
         chi2 += ridge * (s[i] * th[i]) ** 2
     logdetG = 2.0 * (math.log(L[0, 0]) + math.log(L[1, 1]) + math.log(L[2, 2])) + \

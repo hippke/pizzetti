@@ -53,7 +53,7 @@ def test_whiten_is_cholesky(amp, tau, s):
     var = s ** 2 * rng.uniform(0.5, 2.0, 240)                                            # per-point errors
     L = np.linalg.cholesky(sho(t[:, None] - t[None, :], amp, tau) + np.diag(var))
     Y = Y0.copy()
-    ld = _gp.whiten(t, var, amp, tau, Y)
+    ld = _gp.whiten(*_gp.time_table(t, 0.0), var, amp, tau, Y)
     D = solve_triangular(L, Y0, lower=True)
     assert np.max(np.abs(Y - D)) < 1e-6 * np.max(np.abs(D))
     assert abs(ld - np.log(np.diag(L)).sum()) < 1e-6
@@ -107,6 +107,83 @@ def test_negligible_gp_is_white_noise():
     X[:, 3] = np.abs(X[:, 3])
     d = g.log_prob_internal(X) - white.log_prob_internal(X)
     assert np.max(np.abs(d + len(t) * math.log(5e-4))) < 1e-5
+
+
+def multi_epoch(jitter=0.0, seed=7):
+    """Three transits in windows with a gap in one of them, time stamps with a little jitter, a GP and white noise."""
+    rng = np.random.default_rng(seed)
+    t = np.concatenate([e * P + (np.arange(100) - 49.5) * 5.0 / 1440.0 for e in range(3)])
+    t = np.delete(t, np.arange(120, 135))
+    t = t + jitter * 5.0 / 1440.0 * rng.standard_normal(t.size)
+    pr = params()
+    gp = np.linalg.cholesky(sho(t[:, None] - t[None, :], 1e-3, 0.4) + 1e-13 * np.eye(t.size)) @ rng.standard_normal(t.size)
+    return t, pizzetti.TransitModel(pr, t).light_curve(pr) + gp + 5e-4 * rng.standard_normal(t.size)
+
+
+@pytest.mark.parametrize("tol", [0.0, 1e-6])
+def test_time_table(tol):
+    rng = np.random.default_rng(3)
+    t = np.cumsum(rng.choice([0.001, 0.002], 500) * (1.0 + 1e-7 * rng.standard_normal(500)))
+    idx, steps = _gp.time_table(t, tol)
+    assert len(steps) == (499 if tol == 0.0 else 2)
+    assert np.max(np.abs(steps[idx[1:]] / np.diff(t) - 1.0)) <= 2 * tol + 1e-12
+
+
+def test_table_tolerance_is_small():
+    """Jittered time stamps: the shared transitions change ln L by far less than the sampler's noise."""
+    t, y = multi_epoch(jitter=1e-7)
+    m = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=box(), free=("t0", "rp", "a", "b"))
+    assert len(m.gp_steps) < 20
+    X = m.to_internal(x_true(m))
+    a = m.log_prob_internal(X)[0]
+    m.gp_idx, m.gp_steps = _gp.time_table(t, 0.0)
+    assert abs(a - m.log_prob_internal(X)[0]) < 1e-5
+
+
+def test_threads_same_result():
+    t, y = data()
+    a = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=box(), free=("t0", "rp", "a", "b"))
+    b = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=box(), free=("t0", "rp", "a", "b"), threads=2)
+    X = a.to_internal(x_true(a))[0] + np.random.default_rng(1).normal(size=(40, 7)) * np.array([1e-3, 2e-3, 2e-3, 0.03, 0.1, 0.1, 0.02])
+    X[:, 3] = np.abs(X[:, 3])
+    assert np.array_equal(a.log_prob_internal(X), b.log_prob_internal(X))
+    assert np.array_equal(a.expand(a.to_physical(X[:30]), rng=np.random.default_rng(2), resample=False)[0],
+                          b.expand(b.to_physical(X[:30]), rng=np.random.default_rng(2), resample=False)[0])
+
+
+@pytest.mark.parametrize("k", [1, 3])
+def test_fixed_gp_blocks_against_full_filter(k):
+    """Fixed GP parameters: the block kernels against the full filter (and so dense algebra), inside and beyond the blocks."""
+    t, y = multi_epoch()
+    kw = dict(free=("t0", "rp", "a", "b"), supersample_factor=k, exp_time=5.0 / 1440.0 if k > 1 else 0.0,
+              gp=pizzetti.GP(amp=1.2e-3, tau=0.4, err_scale=1.1))
+    m = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, **kw)
+    assert m.gp_fx is not None and m.ndim == 4 and m.gp_fx[1].size < t.size
+    f = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, **kw)
+    f.gp_fx = None
+    X = m.to_internal(m.fixed_physical_free())[0] + np.random.default_rng(1).normal(size=(30, 4)) * np.array([2e-3, 3e-3, 2e-3, 0.1])
+    X[:, 3] = np.abs(X[:, 3])
+    X[-1, 2] *= 3.0                                    # long transit: beyond the blocks
+    lP, lPf = m.log_prob_internal(X, parts=True), f.log_prob_internal(X, parts=True)
+    assert np.max(np.abs(lP[0] - lPf[0])) < 1e-8 and np.max(np.abs(lP[1] - lPf[1])) < 1e-8
+    Sm = m.expand(m.to_physical(X[:10]), rng=np.random.default_rng(3), resample=False)[0]
+    Sf = f.expand(f.to_physical(X[:10]), rng=np.random.default_rng(3), resample=False)[0]
+    assert np.max(np.abs(Sm - Sf)) < 1e-6
+
+
+def test_fixed_gp_full_filter_when_needed():
+    t, y = multi_epoch()
+    gp = pizzetti.GP(amp=1e-3, tau=0.4, err_scale=1.0)
+    assert pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=gp, free=("t0", "per", "rp", "a", "b")).gp_fx is None
+    assert pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=pizzetti.GP(amp=1e-3)).gp_fx is None
+
+
+def test_fit_fixed_gp():
+    t, y = multi_epoch()
+    m = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=pizzetti.GP(amp=1e-3, tau=0.4, err_scale=1.0), free=("t0", "rp", "a", "b"))
+    r = m.fit(seed=1)
+    assert r.diagnostics["is_ok"] and r.labels == ["t0", "rp", "a", "b", "q1", "q2", "f0"]
+    assert abs(np.median(r.samples[:, 1]) - RP) < 3 * np.std(r.samples[:, 1])
 
 
 # -- the interface --------------------------------------------------------------------------------

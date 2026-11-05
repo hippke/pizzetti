@@ -8,15 +8,22 @@ kernel with Q = 1 / sqrt(2),
 
 is a two-state linear stochastic differential equation: the innovations of its Kalman filter divided by their
 standard deviation are L^-1 y, at O(N) per column, for any spacing of the times, and without storing a matrix.
+
+Two savings. The transition over a time step is computed once per distinct step (``time_table``): an even cadence costs a few
+exponentials and sines per set of GP parameters instead of one per point. With all GP parameters fixed (``fixed_setup``), the
+gains and the whitened flux are computed once, and each geometry only filters the points around the transits; the
+out-of-transit stretches between them, where the template is zero, are one transition in closed form
+(``_segment``, as the tail operators of the GP search in the TLS package).
 """
 import math
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 from . import _marginal as K
 
 _SQRT2 = math.sqrt(2.0)
+DT_TOL = 1e-6                # relative: time steps within this share their transition (stored times are rounded, or jitter)
 _NAMES = ("amp", "tau", "err_scale")
 _LABELS = ("ln_gp_amp", "ln_gp_tau", "ln_err_scale")
 
@@ -86,29 +93,68 @@ def _step(x, s2):
 
 
 @njit(cache=True)
-def whiten(t, var, amp, tau, Y):
-    """Replace the columns of Y (n x m, ascending t) by L^-1 Y, with L L^T = K + diag(var). Returns sum ln diag(L)."""
-    n, mc = Y.shape
+def time_table(t, tol):
+    """(entry of each time step, distinct steps): steps within a relative tol of a group's smallest step share its mean.
+    idx[i] is the step from t[i - 1] to t[i]; idx[0] is unused."""
+    n = t.shape[0]
+    dt = np.diff(t)
+    o = np.argsort(dt)
+    idx = np.zeros(n, dtype=np.int64)
+    steps = np.empty(max(n - 1, 1))
+    u = -1
+    ref = acc = 0.0
+    cnt = 0
+    for r in range(n - 1):
+        v = dt[o[r]]
+        if u < 0 or v > ref * (1.0 + tol):
+            if u >= 0:
+                steps[u] = acc / cnt
+            u += 1
+            ref, acc, cnt = v, 0.0, 0
+        acc += v
+        cnt += 1
+        idx[o[r] + 1] = u
+    if u >= 0:
+        steps[u] = acc / cnt
+    return idx, steps[:u + 1]
+
+
+@njit(cache=True)
+def _transitions(steps, amp, tau):
+    """The transition matrix and process noise per distinct step, n x 7 (see _step)."""
     s2 = amp * amp
     lam = 1.0 / (tau * 1.4142135623730951)
+    T = np.empty((steps.shape[0], 7))
+    for u in range(steps.shape[0]):
+        T[u, 0], T[u, 1], T[u, 2], T[u, 3], T[u, 4], T[u, 5], T[u, 6] = _step(lam * steps[u], s2)
+    return T
+
+
+@njit(cache=True)
+def whiten(idx, steps, var, amp, tau, Y):
+    """Replace the columns of Y (n x m, ascending times) by L^-1 Y, with L L^T = K + diag(var). Returns sum ln diag(L)."""
+    n, mc = Y.shape
+    s2 = amp * amp
+    T = _transitions(steps, amp, tau)
     m0 = np.zeros(mc)
     m1 = np.zeros(mc)
     p00, p01, p11 = s2, 0.0, s2
     ld = 0.0
     for i in range(n):
         if i > 0:
-            f00, f01, f10, f11, q00, q01, q11 = _step(lam * (t[i] - t[i - 1]), s2)
+            u = idx[i]
+            f00, f01, f10, f11 = T[u, 0], T[u, 1], T[u, 2], T[u, 3]
             a00 = f00 * p00 + f01 * p01
             a01 = f00 * p01 + f01 * p11
             a10 = f10 * p00 + f11 * p01
             a11 = f10 * p01 + f11 * p11
-            p00 = a00 * f00 + a01 * f01 + q00
-            p01 = a00 * f10 + a01 * f11 + q01
-            p11 = a10 * f10 + a11 * f11 + q11
+            p00 = a00 * f00 + a01 * f01 + T[u, 4]
+            p01 = a00 * f10 + a01 * f11 + T[u, 5]
+            p11 = a10 * f10 + a11 * f11 + T[u, 6]
             for j in range(mc):
-                u = f00 * m0[j] + f01 * m1[j]
+                v = f00 * m0[j] + f01 * m1[j]
                 m1[j] = f10 * m0[j] + f11 * m1[j]
-                m0[j] = u
+                m0[j] = v
         S = p00 + var[i]
         rs = math.sqrt(S)
         ld += math.log(rs)
@@ -193,13 +239,13 @@ def predict(t, var, amp, tau, r):
 
 
 @njit(cache=True)
-def _whitened(t, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, Gt):
-    n = t.shape[0]
+def _whitened(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, Gt):
+    n = y.shape[0]
     B = K.design_theta(tt, ksup, wts, P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt)
     Y = np.empty((n, 4))
     for i in range(n):
         Y[i, 0], Y[i, 1], Y[i, 2], Y[i, 3] = y[i], B[i, 0], B[i, 1], B[i, 2]
-    ld = whiten(t, var0 * s2, amp, tau, Y)
+    ld = whiten(idx, steps, var0 * s2, amp, tau, Y)
     yw = np.empty(n)
     Bw = np.empty((n, 3))
     for i in range(n):
@@ -208,67 +254,338 @@ def _whitened(t, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, Gt):
 
 
 @njit(cache=True)
-def loglike_batch(P, lj, E, ok, lo, hi, t, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+def _inside(P, i, ok_i, lo, hi):
+    """The checks of _marginal._loglike_row on canonical row i."""
+    good = ok_i
+    for k in range(7):
+        v = P[i, k]
+        if not (v == v and lo[k] < v < hi[k]):
+            good = False
+    rp, a, b, ecc, w = P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
+    return good and 0.0 <= ecc < 1.0 and 0.0 <= b and K.b_conj(b, ecc, w, 1) < 1.0 + rp and P[i, 1] > 0.0 and rp > 0.0 and a > 1.0
+
+
+@njit(cache=True)
+def _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i."""
+    if not _inside(P, i, ok[i], lo, hi):
+        return -np.inf, 0.0
+    Bw, yw, ld = _whitened(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half, Gt)
+    v, lP = K.marg_theta_parts(Bw, yw, K.GL_X, K.GL_W)
+    return v + lP - ld + lj[i], lP
+
+
+@njit(cache=True)
+def loglike_batch(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
     """Log-likelihood + box prior + log-Jacobian for canonical rows P and E = (amp, tau, err_scale) per row; rows with
     ok[i] False are outside the box of the GP parameters. As ``_marginal.loglike_batch``, with whitening."""
     n = P.shape[0]
     out = np.empty(n)
+    keep = logP_out.shape[0] == n
     for i in range(n):
-        good = ok[i]
-        for k in range(7):
-            v = P[i, k]
-            if not (v == v and lo[k] < v < hi[k]):
-                good = False
-        rp, a, b, ecc, w = P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
-        if not (good and 0.0 <= ecc < 1.0 and 0.0 <= b and K.b_conj(b, ecc, w, 1) < 1.0 + rp and P[i, 1] > 0.0
-                and rp > 0.0 and a > 1.0):
-            out[i] = -np.inf
-            if logP_out.shape[0] > 0:
-                logP_out[i] = 0.0
-            continue
-        Bw, yw, ld = _whitened(t, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half, Gt)
-        v, lP = K.marg_theta_parts(Bw, yw, K.GL_X, K.GL_W)
-        out[i] = v + lP - ld + lj[i]
-        if logP_out.shape[0] > 0:
+        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True, parallel=True)
+def loglike_batch_par(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+    """loglike_batch with the rows spread over numba's threads (identical results)."""
+    n = P.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in prange(n):
+        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        out[i] = v
+        if keep:
             logP_out[i] = lP
     return out
 
 
 @njit(cache=True)
-def theta_moments_batch(P, E, t, tt, ksup, wts, y, var0, tol, A_half, Gt):
+def _moments(G, r, T, S, i):
+    """Row i of the mean and covariance of theta = (f0, c1, c2) from the normal equations, as
+    ``_marginal.theta_moments_batch``; left unchanged where they are singular."""
+    s = np.empty(3)
+    for k in range(3):
+        if not G[k, k] > 0.0:
+            return
+        s[k] = math.sqrt(G[k, k])
+    Gs = np.empty((3, 3))
+    for k in range(3):
+        for j in range(3):
+            Gs[k, j] = G[k, j] / (s[k] * s[j])
+    L = np.zeros((3, 3))
+    ok, ld, Gsi = K.inv3_chol(Gs, L)
+    if not ok or L[2, 2] * L[2, 2] < 1e-12:
+        for k in range(3):
+            Gs[k, k] += 1e-9
+        ok, ld, Gsi = K.inv3_chol(Gs, L)
+        if not ok:
+            return
+    for k in range(3):
+        acc = 0.0
+        for j in range(3):
+            S[i, k, j] = Gsi[k, j] / (s[k] * s[j])
+            acc += S[i, k, j] * r[j]
+        T[i, k] = acc
+
+
+@njit(cache=True)
+def _moments_row(P, E, T, S, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    Bw, yw, ld = _whitened(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half, Gt)
+    G, r = K.normal_eqs(Bw, yw)
+    _moments(G, r, T, S, i)
+
+
+@njit(cache=True)
+def theta_moments_batch(P, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
     """Mean (n x 3) and covariance (n x 3 x 3) of the Gaussian of theta = (f0, c1, c2), as
     ``_marginal.theta_moments_batch``, with whitening."""
     n = P.shape[0]
     T = np.full((n, 3), np.nan)
     S = np.full((n, 3, 3), np.nan)
-    L = np.zeros((3, 3))
     for i in range(n):
-        Bw, yw, _ = _whitened(t, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half, Gt)
-        G, r = K.normal_eqs(Bw, yw)
-        s = np.empty(3)
-        ok = True
-        for k in range(3):
-            if not G[k, k] > 0.0:
-                ok = False
-            else:
-                s[k] = math.sqrt(G[k, k])
-        if not ok:
-            continue
-        Gs = np.empty((3, 3))
-        for k in range(3):
-            for j in range(3):
-                Gs[k, j] = G[k, j] / (s[k] * s[j])
-        ok, ld, Gsi = K.inv3_chol(Gs, L)
-        if not ok or L[2, 2] * L[2, 2] < 1e-12:
-            for k in range(3):
-                Gs[k, k] += 1e-9
-            ok, ld, Gsi = K.inv3_chol(Gs, L)
-            if not ok:
-                continue
-        for k in range(3):
-            acc = 0.0
-            for j in range(3):
-                S[i, k, j] = Gsi[k, j] / (s[k] * s[j])
-                acc += S[i, k, j] * r[j]
-            T[i, k] = acc
+        _moments_row(P, E, T, S, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    return T, S
+
+
+@njit(cache=True, parallel=True)
+def theta_moments_batch_par(P, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    """theta_moments_batch with the rows spread over numba's threads."""
+    n = P.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    for i in prange(n):
+        _moments_row(P, E, T, S, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    return T, S
+
+
+# -- all GP parameters fixed: one filter per light curve, then only the points around the transits -----------------------------
+@njit(cache=True)
+def _segment(j0, j1, T, idx, k0, k1, rs, ev, eu):
+    """Points j0 ... j1 - 1 with a zero template, from the filtered state x at j0 - 1: the state after them is Phi x, and
+    their sums are x' W x (template with template), wv' x (with the flux) and wu' x (with the constant column).
+    W_j = g g' + F' W_(j+1) F, w_j = e g + F' w_(j+1), with F = (I - K H) A and g = -(H A)' / sqrt(S), backwards."""
+    p00, p01, p10, p11 = 1.0, 0.0, 0.0, 1.0
+    w00, w01, w11 = 0.0, 0.0, 0.0
+    v0, v1, u0, u1 = 0.0, 0.0, 0.0, 0.0
+    for j in range(j1 - 1, j0 - 1, -1):
+        t = idx[j]
+        a00, a01, a10, a11 = T[t, 0], T[t, 1], T[t, 2], T[t, 3]
+        f00 = (1.0 - k0[j]) * a00
+        f01 = (1.0 - k0[j]) * a01
+        f10 = a10 - k1[j] * a00
+        f11 = a11 - k1[j] * a01
+        g0, g1 = -a00 / rs[j], -a01 / rs[j]
+        # F' W F + g g'
+        h00 = w00 * f00 + w01 * f10
+        h01 = w00 * f01 + w01 * f11
+        h10 = w01 * f00 + w11 * f10
+        h11 = w01 * f01 + w11 * f11
+        n00 = f00 * h00 + f10 * h10 + g0 * g0
+        n01 = f00 * h01 + f10 * h11 + g0 * g1
+        n11 = f01 * h01 + f11 * h11 + g1 * g1
+        w00, w01, w11 = n00, n01, n11
+        v0, v1 = f00 * v0 + f10 * v1 + ev[j] * g0, f01 * v0 + f11 * v1 + ev[j] * g1
+        u0, u1 = f00 * u0 + f10 * u1 + eu[j] * g0, f01 * u0 + f11 * u1 + eu[j] * g1
+        p00, p01 = p00 * f00 + p01 * f10, p00 * f01 + p01 * f11
+        p10, p11 = p10 * f00 + p11 * f10, p10 * f01 + p11 * f11
+    return p00, p01, p10, p11, w00, w01, w11, v0, v1, u0, u1
+
+
+@njit(cache=True)
+def fixed_setup(idx, steps, var, amp, tau, y, shift, inblock, tt, ksup):
+    """Everything that does not depend on the geometry, for fixed GP parameters. inblock: the points that may be in transit.
+    Returns the tuple that ``fixed_row`` reads. The flux minus shift is whitened (rather than the flux) to keep chi2 from cancelling."""
+    n = y.shape[0]
+    s2 = amp * amp
+    T = _transitions(steps, amp, tau)
+    k0, k1, rs = np.empty(n), np.empty(n), np.empty(n)
+    ev, eu = np.empty(n), np.empty(n)
+    mv0, mv1, mu0, mu1 = 0.0, 0.0, 0.0, 0.0
+    p00, p01, p11 = s2, 0.0, s2
+    ld = uu = uv = vv = 0.0
+    for i in range(n):
+        if i > 0:
+            t = idx[i]
+            f00, f01, f10, f11 = T[t, 0], T[t, 1], T[t, 2], T[t, 3]
+            a00 = f00 * p00 + f01 * p01
+            a01 = f00 * p01 + f01 * p11
+            a10 = f10 * p00 + f11 * p01
+            a11 = f10 * p01 + f11 * p11
+            p00 = a00 * f00 + a01 * f01 + T[t, 4]
+            p01 = a00 * f10 + a01 * f11 + T[t, 5]
+            p11 = a10 * f10 + a11 * f11 + T[t, 6]
+            mv0, mv1 = f00 * mv0 + f01 * mv1, f10 * mv0 + f11 * mv1
+            mu0, mu1 = f00 * mu0 + f01 * mu1, f10 * mu0 + f11 * mu1
+        S = p00 + var[i]
+        rs[i] = math.sqrt(S)
+        ld += math.log(rs[i])
+        k0[i], k1[i] = p00 / S, p01 / S
+        inn = y[i] - shift - mv0
+        ev[i] = inn / rs[i]
+        mv0 += k0[i] * inn
+        mv1 += k1[i] * inn
+        inn = 1.0 - mu0
+        eu[i] = inn / rs[i]
+        mu0 += k0[i] * inn
+        mu1 += k1[i] * inn
+        uu += eu[i] * eu[i]
+        uv += eu[i] * ev[i]
+        vv += ev[i] * ev[i]
+        p11 -= k1[i] * p01
+        p01 -= k1[i] * p00
+        p00 -= k0[i] * p00
+    # blocks of consecutive points, and the zero-template segment after each
+    starts = np.flatnonzero(inblock & ~np.concatenate((np.zeros(1, dtype=np.bool_), inblock[:-1])))
+    ends = np.flatnonzero(inblock & ~np.concatenate((inblock[1:], np.zeros(1, dtype=np.bool_)))) + 1
+    nb = starts.shape[0]
+    seg = np.empty((nb, 11))
+    for b in range(nb):
+        j1 = starts[b + 1] if b + 1 < nb else n
+        vals = _segment(ends[b], j1, T, idx, k0, k1, rs, ev, eu)
+        for q in range(11):
+            seg[b, q] = vals[q]
+    pts = np.flatnonzero(inblock)
+    ttb = np.empty(pts.shape[0] * ksup)
+    for r in range(pts.shape[0]):
+        for q in range(ksup):
+            ttb[r * ksup + q] = tt[pts[r] * ksup + q]
+    return (T[:, :4].copy(), idx[pts], k0[pts], k1[pts], rs[pts], ev[pts], eu[pts], ttb, starts, ends, seg,
+            np.array([ld, uu, uv, vv, shift]), np.flatnonzero(inblock))
+
+
+@njit(cache=True)
+def _fixed_normal(P, fx, ksup, tol, A_half, Gt):
+    """The normal equations of one geometry with the data of the blocks only: G, r and yy for the data minus shift x the first column."""
+    T, tab, k0, k1, rs, ev, eu, ttb, starts, ends, seg, c, _ = fx
+    uu, uv, vv, shift = c[1], c[2], c[3], c[4]
+    m = tab.shape[0]
+    B = K.design_theta(ttb, ksup, np.ones(m), P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt)
+    x = np.zeros((3, 2))
+    ss = np.zeros((3, 3))
+    su, sv = np.zeros(3), np.zeros(3)
+    e = np.empty(3)
+    r = 0
+    for b in range(starts.shape[0]):
+        for _i in range(ends[b] - starts[b]):
+            t = tab[r]
+            if starts[b] + _i > 0:
+                for q in range(3):
+                    v = T[t, 0] * x[q, 0] + T[t, 1] * x[q, 1]
+                    x[q, 1] = T[t, 2] * x[q, 0] + T[t, 3] * x[q, 1]
+                    x[q, 0] = v
+            for q in range(3):
+                inn = (B[r, 0] - 1.0 if q == 0 else B[r, q]) - x[q, 0]
+                e[q] = inn / rs[r]
+                x[q, 0] += k0[r] * inn
+                x[q, 1] += k1[r] * inn
+                su[q] += e[q] * eu[r]
+                sv[q] += e[q] * ev[r]
+            for q in range(3):
+                for h in range(q, 3):
+                    ss[q, h] += e[q] * e[h]
+            r += 1
+        s_ = seg[b]
+        for q in range(3):
+            a0, a1 = x[q, 0], x[q, 1]
+            su[q] += s_[9] * a0 + s_[10] * a1
+            sv[q] += s_[7] * a0 + s_[8] * a1
+            for h in range(q, 3):
+                d0, d1 = x[h, 0], x[h, 1]
+                ss[q, h] += a0 * (s_[4] * d0 + s_[5] * d1) + a1 * (s_[5] * d0 + s_[6] * d1)
+        for q in range(3):
+            a0, a1 = x[q, 0], x[q, 1]
+            x[q, 0] = s_[0] * a0 + s_[1] * a1
+            x[q, 1] = s_[2] * a0 + s_[3] * a1
+    G = np.empty((3, 3))
+    G[0, 0] = uu + 2.0 * su[0] + ss[0, 0]
+    G[0, 1] = G[1, 0] = su[1] + ss[0, 1]
+    G[0, 2] = G[2, 0] = su[2] + ss[0, 2]
+    G[1, 1], G[1, 2], G[2, 1], G[2, 2] = ss[1, 1], ss[1, 2], ss[1, 2], ss[2, 2]
+    rv = np.array([uv + sv[0] - shift * (su[0] + ss[0, 0]), sv[1] - shift * ss[0, 1], sv[2] - shift * ss[0, 2]])
+    yy = vv - 2.0 * shift * sv[0] + shift * shift * ss[0, 0]
+    return G, rv, yy
+
+
+@njit(cache=True)
+def _fits_blocks(P, t_ref, half, half_exp):
+    """All in-transit points of this circular geometry lie in the blocks (|time from t_ref, folded| < half)."""
+    rp, a, b = P[2], P[3], P[4]
+    q = max((1.0 + rp) * (1.0 + rp) - b * b, 0.0) / max(a * a - b * b, 1e-300)
+    d = P[1] / math.pi * math.asin(min(math.sqrt(q), 1.0))
+    return abs(P[0] - t_ref) + 0.5 * d + half_exp < half
+
+
+@njit(cache=True)
+def _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    if not _inside(P, i, ok[i], lo, hi):
+        return -np.inf, 0.0
+    if not _fits_blocks(P[i], t_ref, half, half_exp):
+        return _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    G, r, yy = _fixed_normal(P[i], fx, ksup, tol, A_half, Gt)
+    v, lP = K.theta_parts_normal(G, r, np.empty((0, 3)), np.empty(0), yy, fx[11][4], K.GL_X, K.GL_W)
+    return v + lP - fx[11][0] + lj[i], lP
+
+
+@njit(cache=True)
+def fixed_batch(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+    """loglike_batch for fixed GP parameters; a row whose transit reaches beyond the blocks takes the full filter."""
+    n = P.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in range(n):
+        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True, parallel=True)
+def fixed_batch_par(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+    """fixed_batch with the rows spread over numba's threads (identical results)."""
+    n = P.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in prange(n):
+        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True)
+def _fixed_moments_row(P, fx, T, S, i, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    if _fits_blocks(P[i], t_ref, half, half_exp):
+        G, r, yy = _fixed_normal(P[i], fx, ksup, tol, A_half, Gt)
+        _moments(G, r, T, S, i)
+        T[i, 0] += fx[11][4]
+    else:
+        _moments_row(P, E, T, S, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+
+
+@njit(cache=True)
+def fixed_moments_batch(P, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    """theta_moments_batch for fixed GP parameters."""
+    n = P.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    for i in range(n):
+        _fixed_moments_row(P, fx, T, S, i, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    return T, S
+
+
+@njit(cache=True, parallel=True)
+def fixed_moments_batch_par(P, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+    """fixed_moments_batch with the rows spread over numba's threads."""
+    n = P.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    for i in prange(n):
+        _fixed_moments_row(P, fx, T, S, i, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
     return T, S

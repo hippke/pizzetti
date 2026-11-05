@@ -160,7 +160,8 @@ $$ \log L(\theta, \eta) = -\tfrac12 \chi^2_{\min} - \tfrac12 \log\det F
 
 **Linear cost.** The SHO is a two-state linear stochastic differential equation. The innovations of its
 Kalman filter, divided by their standard deviation, are exactly L⁻¹y. So whitening costs O(N) per column for any spacing of the times, with no matrix stored. It agrees with a dense
-Cholesky factorisation to ~10⁻¹⁰ in log L.
+Cholesky factorisation to ~10⁻¹⁰ in log L. The transition over a time step is computed once per distinct step
+(steps within 10⁻⁶ of each other share one, which changes log L by ~10⁻⁶): a few dozen per set of GP parameters on real light curves.
 
 **Parameters.** Three more parameters are sampled, with log-uniform priors. Pass a tuple for other bounds, or a number to hold
 a parameter fixed:
@@ -185,21 +186,27 @@ well behaved, and the rescue adds draws over their whole box. The priors matter 
 - Clip outliers within each window, not on the fold: differences in level between windows look like outliers.
 - Flares are not modelled.
 
+**Fixed GP parameters.** With `amp`, `tau` and `err_scale` all numbers, on a circular orbit with a fixed period, the filter runs once. Each geometry then
+only filters the points within 0.75 T14 + one exposure of a transit, and the stretches between them are one transition in
+closed form (a row whose transit reaches beyond them takes the full filter). This is exact and costs 1.2–6 × less per evaluation on ±3 T14 windows, growing with the number of points, but it ignores the uncertainty of the GP parameters. For example, take their medians from a fit with free parameters: on 7 light curves with a circular orbit, plus AU Mic b on the full filter, the transit parameters then stayed within 0.05 σ of the free fit and their widths within 5%, and the fits took 1–6 s.
+
+**Threads.** `threads=` spreads the rows of a batch over threads, as without a GP. The optimiser's single evaluations stay serial.
+
 **Scope.** Quadratic law, primary transit, `ld_prior` "physical" or a callable. Anything else raises
-`NotImplementedError`. `threads` is not used with a GP.
+`NotImplementedError`.
 
 **Cost.** Single thread, on 14 raw light curves from Kepler, K2 and TESS (windows of ±3 T14, default priors):
 
 | points × sub-exposures | per evaluation | evaluations | whole fit |
 |---|---|---|---|
-| 170 × 15 to 1300 × 15 | 0.2–0.4 ms | 15 000–50 000 | 2.5–18 s |
-| 2000 × 3 to 8100 × 1 | 0.2–0.6 ms | 13 000–120 000 | 3–55 s |
-| 9000 × 5 | 1.6 ms | 19 000 | 32 s |
-| 28 000 × 1 | 4.2 ms | 12 000 | 51 s |
-| 47 000 × 3 | 10 ms | 14 000 | 2.4 min |
+| 170 × 15 to 1300 × 15 | 0.1–0.4 ms | 13 000–52 000 | 1–22 s |
+| 2000 × 3 to 8100 × 1 | 0.2–0.5 ms | 14 000–110 000 | 3–34 s |
+| 9000 × 5 | 0.75 ms | 18 000 | 14 s |
+| 28 000 × 1 | 1.0 ms | 13 000 | 13 s |
+| 47 000 × 3 | 3.3 ms | 15 000 | 49 s |
 
-The whole fit took a median of 2.3 × as long as biweight detrending + `fit()` on half the points, without counting the filter. It took 30 × as long
-where the retries ran (GJ 436 b, LP 791-18 c, about 110 000 evaluations). The timings come from a loaded machine.
+The whole fit took a median of about 1.6 × as long as biweight detrending + `fit()` on half the points, without counting the filter. It took about 19 × as long
+where the retries ran (GJ 436 b, LP 791-18 c, about 105 000 evaluations). The timings come from a loaded machine.
 
 **How far it has been tested.** Its likelihood agrees with dense algebra. On simulated light curves the posterior of the transit parameters agrees with long `emcee` runs to about the noise of those runs, and for a trend near the transit's time scale the error bars of Rp/R⋆ stayed honest where
 two-step fits did not (rms z of 0.55, against 1.6–1.8; 8 noise realisations). On the 14 real light curves all fits passed the diagnostics (k̂ < 0.45), and 10 of them agree with the biweight fits within 0.4 σ. GJ 436 b is at 0.9 σ in a and b and depends on two clipped in-transit points. WASP-62 b is at 1.1 σ with 40% narrower posteriors, because the biweight leaves red noise that its white-noise fit then counts as larger errors.

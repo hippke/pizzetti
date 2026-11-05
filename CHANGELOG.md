@@ -8,6 +8,9 @@
   sampled columns `ln_gp_amp`, `ln_gp_tau`, `ln_err_scale` (log-uniform priors, bounds or fixed values in `GP`;
   also passed to `log_prior`), and `gp_predict(row, t=None)` for the trend, at the data or at any times. `t` must be ascending. Models without `gp` are
   unchanged. New tutorial 18.
+- GP speed (ideas from the GP search in the TLS package): transitions per distinct time step (1.1-1.6 x per evaluation);
+  `threads=` over the rows of a batch; with all GP parameters fixed, on a circular orbit with a fixed period, one filter per
+  light curve and only the points around the transits per geometry (1.2-6 x per evaluation, exact). Log L changes by ~1e-6.
 - Cone probability of the quadratic marginal likelihood (`marg_theta_parts`) where the least-squares limb
   darkening lies outside the cone: the ray integral's outer quadrature was centred on the Gaussian's mean, while
   the mass sits at the nearest point of the cone's cross-section, between the nodes. `ln P` was off by up to 0.08

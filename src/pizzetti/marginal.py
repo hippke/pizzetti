@@ -401,7 +401,9 @@ class MarginalTransitModel:
     :param gp: a ``pizzetti.GP``: an additive Gaussian process in the noise model (``Sigma = K + diag((s yerr)^2)``),
         its parameters sampled with the free ones (labels ``ln_gp_amp``, ``ln_gp_tau``, ``ln_err_scale``, after the free
         ones; log-uniform priors). For light curves that are not detrended. ``t`` must be in ascending time order, not
-        folded. Quadratic law, primary transit, ``ld_prior`` "physical" or a callable; ``threads`` is not used.
+        folded. Quadratic law, primary transit, ``ld_prior`` "physical" or a callable. ``threads`` spreads the rows of a batch
+        over threads (not the points of one evaluation). With all three GP parameters fixed on a circular orbit with a fixed
+        period, each geometry only filters the points around the transits.
     """
 
     def __init__(self, params, t, y, yerr, free=("t0", "per", "rp", "a", "b"), bounds=None,
@@ -455,6 +457,7 @@ class MarginalTransitModel:
         if self.k > 1 and not exp_time > 0:
             raise ValueError("supersample_factor > 1 needs exp_time > 0")
         off = _exposure_offsets(exp_time, self.k, offsets)
+        self.max_off = float(np.max(np.abs(off)))
         self.tt = np.ascontiguousarray((self.t[:, None] + off[None, :]).ravel())
         self.tol = float(series_tol)
         a, inc = float(params.a), float(params.inc)
@@ -535,6 +538,7 @@ class MarginalTransitModel:
             raise ValueError("gp= needs t in strictly ascending order: the Gaussian process correlates neighbours in "
                              "time, so the light curve must not be folded or unsorted")
         T14 = self._start_t14()
+        self.gp_idx, self.gp_steps = _gp.time_table(self.t, _gp.DT_TOL)
         self.gp_free, self.gp_val, lo, hi, labels = self.gp._resolve(self.t, self.y, yerr, T14)
         self.gp_lo, self.gp_hi = lo[self.gp_free], hi[self.gp_free]
         self.gp_cols = np.arange(len(self.free), len(self.free) + len(labels))
@@ -543,12 +547,40 @@ class MarginalTransitModel:
         # start: an amplitude from the scatter of the flux, the transit's time scale, the given errors
         amp = math.log(max(np.std(self.y), np.median(yerr)))
         self.gp_x0 = np.clip(np.array([amp, math.log(T14), 0.0])[self.gp_free], self.gp_lo + 1e-3, self.gp_hi - 1e-3)
+        self.gp_fx = None
+        if len(self.gp_free) == 0 and self.fixed[5] < 1e-5 and not ({"per", "ecc", "w"} & set(self.free)):
+            self._setup_gp_fixed(T14)
+
+    def _setup_gp_fixed(self, T14):
+        """All GP parameters fixed, circular orbit, fixed period: filter once, and for each geometry only the blocks around the
+        transits (0.75 T14 of the start + one exposure from the centre). Rows that reach beyond them take the full filter."""
+        self.gp_half_exp = self.max_off
+        self.gp_half = 0.75 * T14 + 2.0 * self.max_off
+        t_ref, per = self.fixed[0], self.fixed[1]
+        phase = (self.t - t_ref + 0.5 * per) % per - 0.5 * per
+        inblock = np.abs(phase) < self.gp_half
+        if inblock.all() or not inblock.any():          # nothing to gain
+            return
+        amp, tau, s_ = np.exp(self.gp_val)
+        self.gp_fx = _gp.fixed_setup(self.gp_idx, self.gp_steps, self.gp_var0 * s_ * s_, amp, tau, self.y,
+                                     float(np.median(self.y)), inblock, self.tt, self.k)
 
     def _start_t14(self):
         """T14 of the starting parameters (for the defaults of the GP only)."""
         t0, per, rp, a, b, ecc, w = self.fixed
         arg = max((1.0 + rp) ** 2 - b * b, 1e-4) / max(a * a - b * b, 1.0)
         return per / math.pi * math.asin(min(math.sqrt(arg), 1.0))
+
+    @staticmethod
+    def _gp_threads(kern, arg, nthr):
+        if nthr == 1:
+            return kern(*arg)
+        old = numba.get_num_threads()
+        numba.set_num_threads(nthr)
+        try:
+            return kern(*arg)
+        finally:
+            numba.set_num_threads(old)
 
     def _gp_rows(self, Xi):
         """(amp, tau, err_scale) per row of internal coordinates, and whether the row is inside their prior."""
@@ -804,8 +836,16 @@ class MarginalTransitModel:
         if self.gp is not None:
             P, lj = self._canonical_internal(Xi)
             E, ok = self._gp_rows(Xi)
-            out = _gp.loglike_batch(P, lj, E, ok, self.lo, self.hi, self.t, self.tt, self.k, self.wts, self.y,
-                                    self.gp_var0, self.tol, _A_HALF, _series._GTAB, logP if parts else np.zeros(0))
+            lPo = logP if parts else np.zeros(0)
+            nthr = self._nthreads() if len(Xi) >= PAR_MIN_ROWS else 1
+            arg = (self.gp_idx, self.gp_steps, self.tt, self.k, self.wts, self.y, self.gp_var0, self.tol, _A_HALF, _series._GTAB, lPo)
+            if self.gp_fx is not None:
+                kern = _gp.fixed_batch_par if nthr > 1 else _gp.fixed_batch
+                arg = (P, lj, ok, self.lo, self.hi, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+            else:
+                kern = _gp.loglike_batch_par if nthr > 1 else _gp.loglike_batch
+                arg = (P, lj, E, ok, self.lo, self.hi) + arg
+            out = self._gp_threads(kern, arg, nthr)
         elif self.fast:
             args = (self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi, self.tt, self.k,
                     self.wts, self.yw, self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb,
@@ -1004,8 +1044,16 @@ class MarginalTransitModel:
             c = _draw_c(C, S, rng)
         elif self.gp is not None:
             E, _ = self._gp_rows(X)
-            T, S = _gp.theta_moments_batch(np.ascontiguousarray(P), E, self.t, self.tt, self.k, self.wts, self.y,
-                                           self.gp_var0, self.tol, _A_HALF, _series._GTAB)
+            Pc = np.ascontiguousarray(P)
+            nthr = self._nthreads() if len(X) >= PAR_MIN_ROWS else 1
+            arg = (self.gp_idx, self.gp_steps, self.tt, self.k, self.wts, self.y, self.gp_var0, self.tol, _A_HALF, _series._GTAB)
+            if self.gp_fx is not None:
+                kern = _gp.fixed_moments_batch_par if nthr > 1 else _gp.fixed_moments_batch
+                arg = (Pc, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+            else:
+                kern = _gp.theta_moments_batch_par if nthr > 1 else _gp.theta_moments_batch
+                arg = (Pc, E) + arg
+            T, S = self._gp_threads(kern, arg, nthr)
             c = _draw_c_theta(T, S, rng)
         else:
             T, S = K.theta_moments_batch(np.ascontiguousarray(P), self.tt, self.k, self.wts, self.yw,
