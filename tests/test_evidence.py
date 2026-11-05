@@ -138,3 +138,15 @@ def test_log_int_of_a_known_integrand():
     for f, kw in ((profile_is, dict(prof=2, lo_wall=None)), (laplace_is, dict())):
         r = f(lp, mu + 0.1 * sc, sc, n=4000, rng=np.random.default_rng(0), **kw)
         assert abs(r["log_int"] - ref) < 5 * r["log_int_err"] + 1e-3
+
+
+def test_profile_without_draws_has_nan_integral():
+    """The returns of ``_sampling.profile_is`` for a profile that cannot be built (no draws, a single row at the MAP)."""
+    from pizzetti._sampling import profile_is
+
+    def flat(X):                                # no finite value but at the start: no conditional optimum
+        X = np.atleast_2d(X)
+        return np.where(np.all(np.abs(X - 0.5) < 1e-6, axis=1), 0.0, -np.inf)
+    r = profile_is(flat, np.array([0.5, 0.5]), np.array([0.1, 0.1]), prof=1, n=100, rng=np.random.default_rng(0))
+    assert "log_int" in r and "log_int_err" in r
+    assert len(r["w"]) == 1 and math.isnan(r["log_int"])

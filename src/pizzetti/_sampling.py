@@ -532,7 +532,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     grid = {}
     f0 = cond_fit(theta_map[prof], theta_map[rest])
     if f0 is None:                       # conditional Hessian not positive definite at the MAP
-        return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1),
+        return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1), log_int=np.nan, log_int_err=np.nan,
                     khat=np.inf, ess=0.0, n_eval=int(nev), theta_map=theta_map,
                     grid_b=np.array([theta_map[prof]]), grid_logdens=np.zeros(1), stage=0,
                     n_grid=0, complete=False, n_eval_map=int(nev_map), n_refine=0,
@@ -583,7 +583,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             if hit_wall or (f[1] + 0.5 * f[3] - lref) < -drop:
                 break
     if len(grid) < 2:                    # no step away from the MAP succeeded: no proposal in b
-        return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1),
+        return dict(theta=np.atleast_2d(theta_map), w=np.ones(1), logw=np.zeros(1), log_int=np.nan, log_int_err=np.nan,
                     khat=np.inf, ess=0.0, n_eval=int(nev), theta_map=theta_map,
                     grid_b=np.array([theta_map[prof]]), grid_logdens=np.zeros(1), stage=0,
                     n_grid=1, complete=False, n_eval_map=int(nev_map), n_refine=0,
