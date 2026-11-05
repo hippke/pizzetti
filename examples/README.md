@@ -59,8 +59,14 @@ jupyter lab examples/
 |---|---|---|---|
 | 18 | [Detrending and fitting together](18_fitting_with_a_gaussian_process.ipynb) | a real K2 light curve (K2-24 b) without detrending: `gp=pizzetti.GP()`, `gp_predict`, reading the GP parameters, against no detrending and a biweight filter, when to be careful | ~1 min |
 
+## Model comparison
+
+| | Notebook | What you learn | Run time |
+|---|---|---|---|
+| 19 | [The Bayesian evidence](19_bayesian_evidence.ipynb) | `lnz` from `profile_is` and `fit`, piece by piece; against dynesty, on the marginal and the conventional fit, including a grazing transit; accuracy against cost; a Bayes factor for "is there a transit?"; how the prior enters; when not to trust the number | ~30 min (dynesty) |
+
 Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 → 03 → 05 → 06;
-**methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17 → 18.
+**methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17 → 18; **comparing models** 11 → 14 → 19.
 
 ## Feature coverage
 

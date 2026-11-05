@@ -88,7 +88,7 @@ emcee fits the likelihood is 3.4–4.4× faster than batman's, and 2–3.5× for
 
 | | |
 |---|---|
-| [Tutorials](examples/) | seventeen Python notebooks and [seven Julia notebooks](julia/examples), from a first light curve to certified, differentiable models, importance sampling, and [the Grand Tour](examples/17_the_grand_tour.ipynb) from a raw TESS light curve to a planet's posterior (with [wotan](https://github.com/hippke/wotan) and [TLS](https://github.com/hippke/tls)) |
+| [Tutorials](examples/) | nineteen Python notebooks and [seven Julia notebooks](julia/examples), from a first light curve to certified, differentiable models, importance sampling, and [the Grand Tour](examples/17_the_grand_tour.ipynb) from a raw TESS light curve to a planet's posterior (with [wotan](https://github.com/hippke/wotan) and [TLS](https://github.com/hippke/tls)) |
 | [Documentation](docs/) | method, accuracy, performance and API |
 | [Paper reproduction](examples/paper) | one command per table and figure of the paper |
 | [Proofs](docs/proofs) | self-contained proofs of the theorems, and [validation notebooks](validation) |
