@@ -18,7 +18,9 @@
 .. autofunction:: pizzetti.quadratic_from_terms
 
 .. autoclass:: pizzetti.MarginalTransitModel
-   :members: fit, log_prob, expand, EnsembleSampler
+   :members: fit, log_prob, expand, EnsembleSampler, gp_predict
+
+.. autoclass:: pizzetti.GP
 
 .. autoclass:: pizzetti.FitResult
    :members: summary, corner

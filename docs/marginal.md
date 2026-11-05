@@ -5,7 +5,8 @@
   power-2 law;
 - the limb-darkening coefficients and the out-of-transit flux are integrated out
   analytically over their physical region;
-- they are drawn afterwards, once per posterior sample.
+- they are drawn afterwards, once per posterior sample;
+- optionally, correlated noise is fitted together with the transit ([below](#correlated-noise-a-gaussian-process)).
 
 ## The Bernstein cone
 
@@ -124,6 +125,87 @@ A TESS-like hot Jupiter with each method run to convergence ([tutorial 06](https
 
 The posteriors agree within 0.11 σ. The timings were taken on a loaded machine, so the
 evaluation counts are the more reliable measure.
+
+## Correlated noise: a Gaussian process
+
+`gp=pizzetti.GP()` fits correlated noise together with the transit, instead of detrending first. The
+light curve stays in time order and is not filtered:
+
+```python
+model = pizzetti.MarginalTransitModel(params, t, y, yerr, free=["t0", "rp", "a", "b"],
+                                      gp=pizzetti.GP())
+result = model.fit()
+result.labels                    # t0, rp, a, b, ln_gp_amp, ln_gp_tau, ln_err_scale, q1, q2, f0
+trend = model.gp_predict(np.median(result.samples, axis=0))
+detrended = y - trend            # for one row of samples
+```
+
+[Tutorial 18](https://github.com/hippke/pizzetti/blob/main/examples/18_fitting_with_a_gaussian_process.ipynb)
+goes through a real light curve.
+
+**The model.** The noise covariance is
+
+$$ \Sigma = K(\text{amp}, \tau) + \mathrm{diag}\big((s\, \sigma_i)^2\big), \qquad
+   k(\Delta t) = \text{amp}^2\, e^{-x} (\cos x + \sin x), \quad x = \frac{|\Delta t|}{\sqrt{2}\, \tau} , $$
+
+with σᵢ = `yerr`. The kernel is a stochastically driven, damped harmonic oscillator with
+Q = 1/√2 (SHO; Foreman-Mackey et al. 2017): smooth, not periodic. The GP is additive and has zero mean, so its
+constant part is degenerate with f0, and the sum of the two is what the data constrain.
+
+**The marginalisation is unchanged.** With Σ = LLᵀ, the limb darkening and the baseline integrate
+out as in the white-noise case, using L⁻¹A and L⁻¹y:
+
+$$ \log L(\theta, \eta) = -\tfrac12 \chi^2_{\min} - \tfrac12 \log\det F
+   + \log P(c \in \text{cone}) - \sum_i \log L_{ii} + \text{const}, \qquad F = A^\top \Sigma^{-1} A . $$
+
+**Linear cost.** The SHO is a two-state linear stochastic differential equation. The innovations of its
+Kalman filter, divided by their standard deviation, are exactly L⁻¹y. So whitening costs O(N) per column for any spacing of the times, with no matrix stored. It agrees with a dense
+Cholesky factorisation to ~10⁻¹⁰ in log L.
+
+**Parameters.** Three more parameters are sampled, with log-uniform priors. Pass a tuple for other bounds, or a number to hold
+a parameter fixed:
+
+| argument | label | meaning | default bounds |
+|---|---|---|---|
+| `amp` | `ln_gp_amp` | rms of the GP, flux units | 0.02 × median `yerr` to 0.2 × median flux |
+| `tau` | `ln_gp_tau` | time scale 1/ω₀, days | median cadence to 180 T14 |
+| `err_scale` | `ln_err_scale` | factor s on `yerr` | 1/3 to 3 |
+
+`log_prior` also receives these three, by label. `fit()`, `profile_is`, `FitResult`, `log_prob`, `expand` and
+`EnsembleSampler` work as without a GP, with the extra columns.
+
+**Sampling.** The GP adds up to three dimensions to the geometry. Where the data constrain them, the
+profile along b works as usual. Where they do not, its first attempt fails: a weak GP gives only an upper limit on `amp`, with a flat `tau`, and a trend much slower than the windows fixes only about amp/τ. Then
+step 4 above takes over. The bounded retry samples the GP parameters in logit coordinates, where a uniform plateau is
+well behaved, and the rescue adds draws over their whole box. The priors matter on such a plateau, so the bounds are part of the model.
+
+**Data.**
+- `t` must be strictly ascending, so a folded light curve raises an error. Keep the epochs apart, with a fixed or free period.
+- Keep enough out-of-transit data around each transit for the trend, for example ±3 T14.
+- Clip outliers within each window, not on the fold: differences in level between windows look like outliers.
+- Flares are not modelled.
+
+**Scope.** Quadratic law, primary transit, `ld_prior` "physical" or a callable. Anything else raises
+`NotImplementedError`. `threads` is not used with a GP.
+
+**Cost.** Single thread, on 14 raw light curves from Kepler, K2 and TESS (windows of ±3 T14, default priors):
+
+| points × sub-exposures | per evaluation | evaluations | whole fit |
+|---|---|---|---|
+| 170 × 15 to 1300 × 15 | 0.2–0.4 ms | 15 000–50 000 | 2.5–18 s |
+| 2000 × 3 to 8100 × 1 | 0.2–0.6 ms | 13 000–120 000 | 3–55 s |
+| 9000 × 5 | 1.6 ms | 19 000 | 32 s |
+| 28 000 × 1 | 4.2 ms | 12 000 | 51 s |
+| 47 000 × 3 | 10 ms | 14 000 | 2.4 min |
+
+The whole fit took a median of 2.3 × as long as biweight detrending + `fit()` on half the points, without counting the filter. It took 30 × as long
+where the retries ran (GJ 436 b, LP 791-18 c, about 110 000 evaluations). The timings come from a loaded machine.
+
+**How far it has been tested.** Its likelihood agrees with dense algebra. On simulated light curves the posterior of the transit parameters agrees with long `emcee` runs to about the noise of those runs, and for a trend near the transit's time scale the error bars of Rp/R⋆ stayed honest where
+two-step fits did not (rms z of 0.55, against 1.6–1.8; 8 noise realisations). On the 14 real light curves all fits passed the diagnostics (k̂ < 0.45), and 10 of them agree with the biweight fits within 0.4 σ. GJ 436 b is at 0.9 σ in a and b and depends on two clipped in-transit points. WASP-62 b is at 1.1 σ with 40% narrower posteriors, because the biweight leaves red noise that its white-noise fit then counts as larger errors.
+
+**When to be careful.** On very active stars (AU Mic b, DS Tuc A b), the amplitude is 6–8 × the depth and τ is close to T14. Rp/R⋆ then differs from biweight fits by 2–3 σ, and it is not yet established which is right: a single-time-scale GP may absorb part of the transit. Compare with a filter, and test with injected transits. A sampler can also miss a tail in the GP parameters without k̂ noticing (seen on a simulated trend near T14, with the transit parameters unaffected).
+
 
 ## Cost per likelihood evaluation
 

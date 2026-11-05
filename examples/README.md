@@ -1,7 +1,7 @@
 # Tutorials
 
-Seventeen notebooks, from a first light curve to certified and linear-basis models, the importance
-sampler behind `fit()`, and the Grand Tour from a raw light curve to a posterior. Each one starts
+Eighteen notebooks, from a first light curve to certified and linear-basis models, the importance
+sampler behind `fit()`, the Grand Tour from a raw light curve to a posterior, and fitting with a Gaussian process. Each one starts
 with its level, prerequisites and run time, and ends with what you learned and where to go next. The
 first notebook you run also compiles pizzetti's numba kernels (about a minute, cached afterwards).
 
@@ -53,8 +53,14 @@ jupyter lab examples/
 |---|---|---|---|
 | 17 | [The Grand Tour](17_the_grand_tour.ipynb) | the whole chain for LHS 3844 b: download (lightkurve), detrending (wotan), the search with [TLS](https://github.com/hippke/tls), the fit with importance sampling, planet radius and stellar density | ~2 min |
 
+## Correlated noise
+
+| | Notebook | What you learn | Run time |
+|---|---|---|---|
+| 18 | [Detrending and fitting together](18_fitting_with_a_gaussian_process.ipynb) | a real K2 light curve (K2-24 b) without detrending: `gp=pizzetti.GP()`, `gp_predict`, reading the GP parameters, against no detrending and a biweight filter, when to be careful | ~1 min |
+
 Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 → 03 → 05 → 06;
-**methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17.
+**methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17 → 18.
 
 ## Feature coverage
 
@@ -77,6 +83,7 @@ Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 �
 | bounded retry, flat-limb-darkening proposal, adaptive rescue | 15 |
 | comparing samplers: quantile differences, Monte Carlo noise | 14, 16 |
 | real data: lightkurve download, wotan detrending, TLS search, `FitResult.corner` | 11, 17 |
+| correlated noise: `GP`, `gp=`, `gp_predict` | 18 |
 
 ## More
 

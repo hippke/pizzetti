@@ -12,9 +12,10 @@ _cachecheck.check()          # before any numba-compiled module is imported
 from .occult import SERIES_TOL, occult, series_cut  # noqa: E402
 from .transitmodel import TransitModel, TransitParams  # noqa: E402
 from .terms import occult_terms, quadratic_from_terms  # noqa: E402
+from ._gp import GP  # noqa: E402
 from .marginal import FitResult, MarginalTransitModel  # noqa: E402
 
 __version__ = "0.3.0"
-__all__ = ["TransitModel", "TransitParams", "MarginalTransitModel", "FitResult", "occult",
+__all__ = ["TransitModel", "TransitParams", "MarginalTransitModel", "FitResult", "GP", "occult",
            "occult_terms", "quadratic_from_terms",
            "series_cut", "SERIES_TOL", "__version__"]

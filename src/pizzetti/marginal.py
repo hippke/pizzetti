@@ -34,6 +34,9 @@ region x flat baseline f0 -- Kipping's (q1, q2) prior for the quadratic law),
 "flat" (no constraint), a Gaussian dict (quadratic law, exact) or a callable
 (importance reweighting).
 
+Correlated noise: ``gp=pizzetti.GP()`` fits an additive Gaussian process together with the transit, instead of
+detrending first (``_gp``; quadratic law, primary transit).
+
 emcee and scipy are only needed for sampling (``pip install pizzetti[fit]``).
 """
 import math
@@ -43,7 +46,7 @@ import numpy as np
 import numba
 from numba import njit
 
-from . import _laws, _orbit, _physnl, _powbasis
+from . import _gp, _laws, _orbit, _physnl, _powbasis
 from . import _marginal as K
 from . import _series
 from .terms import _A_HALF
@@ -263,6 +266,8 @@ class _BoundedCoords:
                 self.cols.append((j, "lo", lo, hi))
             elif np.isfinite(hi):
                 self.cols.append((j, "hi", lo, hi))
+        if model.gp is not None:                # log-uniform priors: boxes in the sampled logarithms
+            self.cols += [(j, "box", lo, hi) for j, lo, hi in zip(model.gp_cols, model.gp_lo, model.gp_hi)]
         self.active = bool(self.cols) or self.graze
 
     def _t14_range(self, X):
@@ -366,7 +371,7 @@ class MarginalTransitModel:
         "t_secondary" instead of "t0"
     :param bounds: dict name -> (lo, hi) of uniform priors (defaults are wide)
     :param log_prior: optional vectorised callback ``f(dict of arrays) -> array``
-        on the physical parameters
+        on the physical parameters (with ``gp``, also on its sampled logarithms, by their labels)
     :param ld_prior: prior on the linear (limb-darkening / eclipse) coefficients:
         "physical" (default): flat in the law's coefficients over its physical region
         (positive intensity, darkening towards the limb; for the quadratic and
@@ -393,11 +398,15 @@ class MarginalTransitModel:
         evaluated per chunk of data points), so a fit can take a slightly different but
         equivalent path. threads=1 reproduces earlier results exactly. Leave at 1 when running
         many fits in parallel processes.
+    :param gp: a ``pizzetti.GP``: an additive Gaussian process in the noise model (``Sigma = K + diag((s yerr)^2)``),
+        its parameters sampled with the free ones (labels ``ln_gp_amp``, ``ln_gp_tau``, ``ln_err_scale``, after the free
+        ones; log-uniform priors). For light curves that are not detrended. ``t`` must be in ascending time order, not
+        folded. Quadratic law, primary transit, ``ld_prior`` "physical" or a callable; ``threads`` is not used.
     """
 
     def __init__(self, params, t, y, yerr, free=("t0", "per", "rp", "a", "b"), bounds=None,
                  log_prior=None, ld_prior="physical", supersample_factor=1, exp_time=0.0,
-                 offsets="batman", reparam="auto", series_tol=1e-9, transittype="primary", threads=1):
+                 offsets="batman", reparam="auto", series_tol=1e-9, transittype="primary", threads=1, gp=None):
         if transittype not in ("primary", "secondary"):
             raise ValueError('transittype must be "primary" or "secondary"')
         self.secondary = transittype == "secondary"
@@ -435,7 +444,12 @@ class MarginalTransitModel:
         yerr = np.broadcast_to(np.asarray(yerr, dtype=float), self.t.shape)
         if np.any(~(yerr > 0)):
             raise ValueError("yerr must be positive")
-        self.wts = np.ascontiguousarray(1.0 / yerr)
+        self.gp = gp
+        if gp is None:
+            self.wts = np.ascontiguousarray(1.0 / yerr)
+        else:                                # the weights are in the whitening
+            self.gp_var0 = np.ascontiguousarray(yerr ** 2)
+            self.wts = np.ones(self.t.shape)
         self.yw = self.y * self.wts
         self.k = int(supersample_factor) if supersample_factor > 1 else 1
         if self.k > 1 and not exp_time > 0:
@@ -491,6 +505,8 @@ class MarginalTransitModel:
             self._setup_general()
         self.labels = list(self.free)
         self.ndim = len(self.free)
+        if gp is not None:
+            self._setup_gp(yerr)
         if not (threads == "all" or (isinstance(threads, (int, np.integer)) and threads >= 1)):
             raise ValueError('threads must be a positive integer or "all"')
         self.threads = threads
@@ -510,6 +526,60 @@ class MarginalTransitModel:
         if float(params.rp) < 0:
             raise NotImplementedError("MarginalTransitModel needs rp > 0; inverse transits "
                                       "(rp < 0) are not implemented yet.")
+
+    def _setup_gp(self, yerr):
+        if not self.fast or self.has_ldp:
+            raise NotImplementedError('gp= is implemented for limb_dark="quadratic", transittype="primary" and '
+                                      'ld_prior="physical" or a callable')
+        if not np.all(np.diff(self.t) > 0):
+            raise ValueError("gp= needs t in strictly ascending order: the Gaussian process correlates neighbours in "
+                             "time, so the light curve must not be folded or unsorted")
+        T14 = self._start_t14()
+        self.gp_free, self.gp_val, lo, hi, labels = self.gp._resolve(self.t, self.y, yerr, T14)
+        self.gp_lo, self.gp_hi = lo[self.gp_free], hi[self.gp_free]
+        self.gp_cols = np.arange(len(self.free), len(self.free) + len(labels))
+        self.labels += labels
+        self.ndim += len(labels)
+        # start: an amplitude from the scatter of the flux, the transit's time scale, the given errors
+        amp = math.log(max(np.std(self.y), np.median(yerr)))
+        self.gp_x0 = np.clip(np.array([amp, math.log(T14), 0.0])[self.gp_free], self.gp_lo + 1e-3, self.gp_hi - 1e-3)
+
+    def _start_t14(self):
+        """T14 of the starting parameters (for the defaults of the GP only)."""
+        t0, per, rp, a, b, ecc, w = self.fixed
+        arg = max((1.0 + rp) ** 2 - b * b, 1e-4) / max(a * a - b * b, 1.0)
+        return per / math.pi * math.asin(min(math.sqrt(arg), 1.0))
+
+    def _gp_rows(self, Xi):
+        """(amp, tau, err_scale) per row of internal coordinates, and whether the row is inside their prior."""
+        L = np.tile(self.gp_val, (len(Xi), 1))
+        G = Xi[:, self.gp_cols]
+        L[:, self.gp_free] = G
+        ok = np.all((G > self.gp_lo) & (G < self.gp_hi), axis=1)
+        return np.exp(np.clip(L, -700.0, 700.0)), ok
+
+    def gp_predict(self, row, return_var=False):
+        """The Gaussian process at the data times for one row of ``FitResult.samples`` (ld="q"): its posterior mean
+        given that row's transit, so that ``y - gp_predict(row)`` is the detrended light curve; with
+        ``return_var``, also its variance given that row."""
+        if self.gp is None:
+            raise ValueError("gp_predict needs a model with gp=")
+        row = np.asarray(row, dtype=float)
+        if row.shape != (self.ndim + 3,):
+            raise ValueError(f"row needs {self.ndim + 3} values: {self.labels} + q1, q2, f0")
+        Xi = self.to_internal(row[:self.ndim][None])
+        P, _ = self._canonical_internal(Xi)
+        E, ok = self._gp_rows(Xi)
+        if not ok[0]:
+            raise ValueError("row is outside the prior of the GP parameters")
+        q1, q2, f0 = row[self.ndim:]
+        sq = math.sqrt(q1)
+        c = np.asarray(self.law.from_u((2.0 * sq * q2, sq * (1.0 - 2.0 * q2))), dtype=float)
+        c = c * f0 / (K.DISK @ c)
+        B = K.design_theta(self.tt, self.k, self.wts, *P[0], self.tol, _A_HALF, _series._GTAB)
+        r = self.y - B @ np.array([f0, c[1], c[2]])
+        mean, var = _gp.predict(self.t, self.gp_var0 * E[0, 2] ** 2, E[0, 0], E[0, 1], r)
+        return (mean, var) if return_var else mean
 
     # -- coordinates -----------------------------------------------------------
     def _alpha(self, X):
@@ -719,7 +789,12 @@ class MarginalTransitModel:
         if self._budget is not None:
             self._budget.charge(len(Xi))
         logP = np.zeros(len(Xi))
-        if self.fast:
+        if self.gp is not None:
+            P, lj = self._canonical_internal(Xi)
+            E, ok = self._gp_rows(Xi)
+            out = _gp.loglike_batch(P, lj, E, ok, self.lo, self.hi, self.t, self.tt, self.k, self.wts, self.y,
+                                    self.gp_var0, self.tol, _A_HALF, _series._GTAB, logP if parts else np.zeros(0))
+        elif self.fast:
             args = (self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi, self.tt, self.k,
                     self.wts, self.yw, self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb,
                     logP if (parts and not self.has_ldp) else np.zeros(0))
@@ -768,6 +843,8 @@ class MarginalTransitModel:
                 d = self._as_dict(P)
                 if self.law.has_alpha:
                     d["alpha"] = self._alpha(Xi[ok])
+                if self.gp is not None:
+                    d.update(zip(self.labels[len(self.free):], Xi[ok][:, self.gp_cols].T))
                 out[ok] += np.asarray(self.log_prior(d), dtype=float)
         return (out, logP) if parts else out
 
@@ -913,6 +990,11 @@ class MarginalTransitModel:
             C, S = K.c_moments_batch(np.ascontiguousarray(P), self.tt, self.k, self.wts, self.yw,
                                      self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb)
             c = _draw_c(C, S, rng)
+        elif self.gp is not None:
+            E, _ = self._gp_rows(X)
+            T, S = _gp.theta_moments_batch(np.ascontiguousarray(P), E, self.t, self.tt, self.k, self.wts, self.y,
+                                           self.gp_var0, self.tol, _A_HALF, _series._GTAB)
+            c = _draw_c_theta(T, S, rng)
         else:
             T, S = K.theta_moments_batch(np.ascontiguousarray(P), self.tt, self.k, self.wts, self.yw,
                                          self.tol, _A_HALF, _series._GTAB)
@@ -1086,6 +1168,48 @@ class MarginalTransitModel:
         finally:
             self._budget = None
 
+    def _gp_seed(self, xm, n, rng, nev):
+        """Weighted draws for the rescue that need no curvature in the GP parameters: a flat amplitude or time scale (a
+        weak GP, a trend slower than the windows) makes the profile fail before it has draws. Geometry: a heavy-tailed
+        Laplace proposal at xm, whose GP parameters are held fixed. GP parameters: half uniform over their box, half a
+        t around xm."""
+        from ._sampling import hessian, _mvt_logpdf, _mvt_sample
+        ng = len(self.free)
+        sc = self._default_scales(xm)
+        xm = np.array(xm)
+        xm[self.gp_cols] = np.clip(xm[self.gp_cols], self.gp_lo + 1e-3, self.gp_hi - 1e-3)
+        jb = self.free.index("b")
+        xm[jb] = abs(xm[jb])
+
+        def fg(G):                               # mirrored in b: the maximum is often at b = 0
+            G = np.array(G)
+            G[:, jb] = np.abs(G[:, jb])
+            return self.log_prob_internal(np.column_stack([G, np.tile(xm[ng:], (len(G), 1))]))
+        H, k1 = hessian(fg, xm[:ng], 0.5 * sc[:ng])
+        with np.errstate(invalid="ignore"):
+            sd = np.sqrt(np.abs(np.diag(np.linalg.pinv(-np.nan_to_num(H)))))
+        H, k2 = hessian(fg, xm[:ng], 0.3 * np.minimum(np.where(sd > 0, sd, sc[:ng]), 5.0 * sc[:ng]))
+        H = np.nan_to_num(H)
+        d = np.sqrt(np.clip(np.abs(np.diag(H)), 1e-300, None))
+        ev, V = np.linalg.eigh(-0.5 * (H + H.T) / np.outer(d, d))
+        Lg = np.linalg.cholesky(((V / np.clip(np.abs(ev), 1e-6, None)) @ V.T) / np.outer(d, d) * 4.0)
+        nu = 5.0
+        m = 2 * n
+        Xg = _mvt_sample(rng, xm[:ng], Lg, nu, m)
+        lq = _mvt_logpdf(Xg, xm[:ng], Lg, nu)
+        ngp = len(self.gp_cols)
+        Lh = np.diag(np.array([0.4, 0.4, 0.05])[self.gp_free])
+        Xb = rng.uniform(self.gp_lo, self.gp_hi, size=(m, ngp))
+        Xt = _mvt_sample(rng, xm[ng:], Lh, nu, m)
+        Xe = np.where((rng.random(m) < 0.5)[:, None], Xb, Xt)
+        inb = np.all((Xe > self.gp_lo) & (Xe < self.gp_hi), axis=1)
+        lq = lq + np.logaddexp(math.log(0.5) - np.log(self.gp_hi - self.gp_lo).sum() + np.where(inb, 0.0, -np.inf),
+                               math.log(0.5) + _mvt_logpdf(Xe, xm[ng:], Lh, nu))
+        X = np.column_stack([Xg, Xe])
+        logw = self.log_prob_internal(X) - lq
+        nev.append(k1 + k2 + m)
+        return dict(theta=X, logw=logw, w=np.exp(np.where(np.isfinite(logw), logw - np.max(logw[np.isfinite(logw)]), -np.inf)))
+
     def _profile_is(self, n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue, rescue_iters,
                     khat_ok, budget):
         from ._sampling import pmc_refine, profile_is
@@ -1197,6 +1321,8 @@ class MarginalTransitModel:
             lp_u = T.log_prob if T.active else self.log_prob_internal
             Us, lws = [], []
             seeds = [r for r in tried if r is not None and np.sum(np.asarray(r["w"]) > 0) > 50]
+            if self.gp is not None:
+                seeds.append(self._gp_seed(res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0, n, rng, nev))
             for r in seeds:
                 lw = np.asarray(r["logw"], float)
                 U = to_u(r["theta"])
@@ -1397,6 +1523,8 @@ class MarginalTransitModel:
             X[0, self.geo_cols[self.geo_names.index("w")]] /= _DEG
         if self.alpha_col >= 0:
             X[0, self.alpha_col] = self.alpha_fixed
+        if self.gp is not None:
+            X[0, self.gp_cols] = self.gp_x0
         return X
 
     def _start_internal(self):
@@ -1418,7 +1546,11 @@ class MarginalTransitModel:
         sc = {"t0": 1e-2 * T14, "t_secondary": 1e-2 * T14, "per": 1e-6 * P[1], "rp": 1e-2 * P[2],
               "a": (1e-2 * T14 if self.t14 else 1e-2 * P[3]), "b": 0.05, "ecc": 0.01, "w": 1.0,
               "alpha": 0.05}
-        return np.array([sc[q] for q in self.free])
+        out = np.array([sc[q] for q in self.free])
+        if self.gp is not None:
+            gs = np.array([0.2, 0.2, 0.05])[self.gp_free]
+            out = np.concatenate([out, gs])
+        return out
 
 
 class FitResult:
@@ -1436,9 +1568,10 @@ class FitResult:
     def summary(self):
         """Table of median and 16th/84th-percentile offsets for every column."""
         q = np.percentile(self.samples, [16, 50, 84], axis=0)
-        lines = [f"{'':5s} {'median':>14s} {'-1sigma':>11s} {'+1sigma':>11s}"]
+        wl = max(5, *(len(name) for name in self.labels))
+        lines = [f"{'':{wl}s} {'median':>14s} {'-1sigma':>11s} {'+1sigma':>11s}"]
         for j, name in enumerate(self.labels):
-            lines.append(f"{name:5s} {q[1, j]:14.7g} {q[1, j] - q[0, j]:11.3g} {q[2, j] - q[1, j]:11.3g}")
+            lines.append(f"{name:{wl}s} {q[1, j]:14.7g} {q[1, j] - q[0, j]:11.3g} {q[2, j] - q[1, j]:11.3g}")
         return "\n".join(lines)
 
     def corner(self, **kwargs):

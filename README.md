@@ -54,6 +54,8 @@ flux = pizzetti.TransitModel(p, t).light_curve(p)
   reports which samples carry it.
 - **`MarginalTransitModel`** integrates the limb darkening and the baseline out analytically, so a
   fit samples only the geometry; `fit()` returns posterior draws in about a second.
+- **Gaussian-process noise**: `gp=pizzetti.GP()` fits correlated noise together with the transit, so a light
+  curve need not be detrended first; O(N) per evaluation, with the limb darkening still integrated out.
 
 Single thread, 10⁵ points, 35 % in transit, every call recomputing the orbit as in a fit
 (`benchmarks/benchmark.py`, Intel Xeon, numba 0.68, batman 2.5.3):
