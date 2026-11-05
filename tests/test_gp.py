@@ -167,6 +167,14 @@ def test_gp_predict():
     assert np.max(np.abs(tr - ref)) < 1e-6 and np.all(v > 0)
     with pytest.raises(ValueError):
         m.gp_predict(row[:-1])
+    # at other times: unsorted, between the data, outside them, and on a data time
+    tn = np.array([0.31, t[40], -0.5 + 1e-3, t[0] - 0.2, (t[10] + t[11]) / 2, t[-1] + 0.1])
+    mn, vn = m.gp_predict(row, t=tn, return_var=True)
+    Ks = sho(tn[:, None] - t[None, :], 1e-3, 0.15)
+    Si = np.linalg.inv(Kt + (5e-4) ** 2 * np.eye(len(t)))
+    assert np.max(np.abs(mn - Ks @ Si @ r)) < 1e-6
+    assert np.max(np.abs(vn - (1e-6 - np.sum((Ks @ Si) * Ks, axis=1)))) < 1e-10
+    assert np.allclose(m.gp_predict(row, t=t), tr, atol=1e-9)
 
 
 # -- sampling -------------------------------------------------------------------------------------

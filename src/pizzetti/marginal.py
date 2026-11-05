@@ -558,10 +558,10 @@ class MarginalTransitModel:
         ok = np.all((G > self.gp_lo) & (G < self.gp_hi), axis=1)
         return np.exp(np.clip(L, -700.0, 700.0)), ok
 
-    def gp_predict(self, row, return_var=False):
-        """The Gaussian process at the data times for one row of ``FitResult.samples`` (ld="q"): its posterior mean
-        given that row's transit, so that ``y - gp_predict(row)`` is the detrended light curve; with
-        ``return_var``, also its variance given that row."""
+    def gp_predict(self, row, t=None, return_var=False):
+        """The Gaussian process for one row of ``FitResult.samples`` (ld="q"): its posterior mean given that row's
+        transit, at the data times, so that ``y - gp_predict(row)`` is the detrended light curve, or at any times
+        ``t``, in any order (for plotting between the data); with ``return_var``, also its variance given that row."""
         if self.gp is None:
             raise ValueError("gp_predict needs a model with gp=")
         row = np.asarray(row, dtype=float)
@@ -578,7 +578,19 @@ class MarginalTransitModel:
         c = c * f0 / (K.DISK @ c)
         B = K.design_theta(self.tt, self.k, self.wts, *P[0], self.tol, _A_HALF, _series._GTAB)
         r = self.y - B @ np.array([f0, c[1], c[2]])
-        mean, var = _gp.predict(self.t, self.gp_var0 * E[0, 2] ** 2, E[0, 0], E[0, 1], r)
+        var0 = self.gp_var0 * E[0, 2] ** 2
+        if t is None:
+            mean, var = _gp.predict(self.t, var0, E[0, 0], E[0, 1], r)
+        else:                                # new times: points without a measurement (infinite variance)
+            t = np.atleast_1d(np.asarray(t, dtype=float))
+            ta = np.concatenate([self.t, t])
+            o = np.argsort(ta, kind="stable")
+            pad = np.full(t.shape, np.inf)
+            mo, vo = _gp.predict(ta[o], np.concatenate([var0, pad])[o], E[0, 0], E[0, 1],
+                                 np.concatenate([r, np.zeros(t.shape)])[o])
+            mean, var = np.empty(ta.shape), np.empty(ta.shape)
+            mean[o], var[o] = mo, vo
+            mean, var = mean[len(self.t):], var[len(self.t):]
         return (mean, var) if return_var else mean
 
     # -- coordinates -----------------------------------------------------------

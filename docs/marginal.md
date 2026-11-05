@@ -137,7 +137,7 @@ model = pizzetti.MarginalTransitModel(params, t, y, yerr, free=["t0", "rp", "a",
 result = model.fit()
 result.labels                    # t0, rp, a, b, ln_gp_amp, ln_gp_tau, ln_err_scale, q1, q2, f0
 trend = model.gp_predict(np.median(result.samples, axis=0))
-detrended = y - trend            # for one row of samples
+detrended = y - trend            # for one row of samples; gp_predict(row, t=times) between the data
 ```
 
 [Tutorial 18](https://github.com/hippke/pizzetti/blob/main/examples/18_fitting_with_a_gaussian_process.ipynb)

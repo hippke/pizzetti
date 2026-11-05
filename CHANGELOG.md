@@ -6,7 +6,7 @@
   with the transit instead of detrending first (quadratic law, primary transit). SHO kernel with Q = 1/sqrt(2),
   whitened by a Kalman filter at O(N) per column; the limb darkening and f0 are integrated out as before. New
   sampled columns `ln_gp_amp`, `ln_gp_tau`, `ln_err_scale` (log-uniform priors, bounds or fixed values in `GP`;
-  also passed to `log_prior`), and `gp_predict(row)` for the trend. `t` must be ascending. Models without `gp` are
+  also passed to `log_prior`), and `gp_predict(row, t=None)` for the trend, at the data or at any times. `t` must be ascending. Models without `gp` are
   unchanged. New tutorial 18.
 - `fit(max_evals=, max_time=)` and `profile_is(max_evals=, max_time=)`: an evaluation and wall-time
   budget for profile importance sampling (default: none). An expensive likelihood (a weak, many-epoch
