@@ -37,9 +37,9 @@ $$ \log L(\theta) = -\tfrac12 \chi^2_{\min}(\theta) - \tfrac12 \log\det F(\theta
    + \log P\big(c \in \text{cone} \mid \hat c, F^{-1}\big) + \text{const},
    \qquad F = A^\top \Sigma^{-1} A . $$
 
-The orthant probability is computed deterministically (Genz separation of variables on a
-fixed Gauss–Legendre grid, error ≲ 10⁻⁴ nats). The likelihood is therefore smooth in θ and
-free of Monte Carlo noise. The quadratic law has a fused numba path: orbit, basis light curves
+The orthant probability is computed deterministically on a fixed Gauss–Legendre grid (a ray
+integral, or Genz separation of variables far inside the cone; error typically 10⁻⁵ nats,
+≲ 10⁻³ down to ln P ≈ −30). The likelihood is therefore smooth in θ and free of Monte Carlo noise. The quadratic law has a fused numba path: orbit, basis light curves
 (`occult_terms`, one pass) and the 3×3 algebra together cost about 15–20 µs for 1300 points.
 
 ## Laws and physical regions

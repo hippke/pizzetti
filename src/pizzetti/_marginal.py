@@ -9,8 +9,8 @@ exactly the cone 0 <= c0 <= c1 <= c2. With a flat prior on c over the cone,
     log L(theta) = -chi2_min/2 - log det F / 2 + log P(c in cone)  (+ const),
 F = A^T W A, where P is a trivariate normal orthant probability. The quadratic fast path
 solves in theta = (f0, c1, c2) (design_theta, marg_theta_parts; well conditioned for any
-transit depth) and evaluates the cone term by a ray integral (broad limb-darkening
-posteriors) or the Genz transform on a fixed Gauss-Legendre grid (narrow ones), blended
+transit depth) and evaluates the cone term by a ray integral, or by the Genz transform on a
+fixed Gauss-Legendre grid where the Gaussian lies far inside the cone (P = 1), blended
 smoothly; deterministic and smooth in theta.
 """
 import math
@@ -453,33 +453,31 @@ def _lse_add(m, acc, v):
 
 
 @njit(cache=True)
-def _cone_extent(s, Gs, th):
-    """Smaller extent of the triangle T1 in the whitened coordinates of the Gaussian approximation
-    of the cone integrand (in sd): small for a broad limb-darkening posterior (shallow transit,
-    low S/N), large for a narrow one."""
-    eh1, eh2 = th[1] / th[0], th[2] / th[0]
-    es0, es1, es2 = s[0], s[1] * eh1, s[2] * eh2
-    g0 = Gs[0, 0] * es0 + Gs[0, 1] * es1 + Gs[0, 2] * es2
-    g1 = Gs[1, 0] * es0 + Gs[1, 1] * es1 + Gs[1, 2] * es2
-    g2 = Gs[2, 0] * es0 + Gs[2, 1] * es1 + Gs[2, 2] * es2
-    ege = es0 * g0 + es1 * g1 + es2 * g2
-    f2 = th[0] * th[0]
-    pa = f2 * s[1] * s[1] * (Gs[1, 1] - g1 * g1 / ege)
-    pb = f2 * s[1] * s[2] * (Gs[1, 2] - g1 * g2 / ege)
-    pc = f2 * s[2] * s[2] * (Gs[2, 2] - g2 * g2 / ege)
-    phi = 0.5 * math.atan2(2.0 * pb, pa - pc)
-    cs, sn = math.cos(phi), math.sin(phi)
-    q0 = math.sqrt(max(pa * cs * cs + 2.0 * pb * cs * sn + pc * sn * sn, 1e-300))
-    q1 = math.sqrt(max(pa * sn * sn - 2.0 * pb * cs * sn + pc * cs * cs, 1e-300))
-    lo0 = lo1 = np.inf
-    hi0 = hi1 = -np.inf
+def _outer_centre(Z, oa, ia):
+    """Outer coordinate of the point of the triangle (vertices Z, whitened about the Gaussian's mean)
+    nearest to the mean; 0 for a mean inside the triangle. The cone integrand concentrates there."""
+    sign0, inside = 0.0, True
     for i in range(3):
-        dv1, dv2 = _TRI[i, 0] - eh1, _TRI[i, 1] - eh2
-        z0 = q0 * (cs * dv1 + sn * dv2)
-        z1 = q1 * (-sn * dv1 + cs * dv2)
-        lo0, hi0 = min(lo0, z0), max(hi0, z0)
-        lo1, hi1 = min(lo1, z1), max(hi1, z1)
-    return min(hi0 - lo0, hi1 - lo1)
+        j = (i + 1) % 3
+        cr = Z[i, oa] * Z[j, ia] - Z[i, ia] * Z[j, oa]
+        if i == 0:
+            sign0 = cr
+        elif cr * sign0 < 0.0:
+            inside = False
+    if inside:
+        return 0.0
+    ts, best = 0.0, np.inf
+    for i in range(3):
+        j = (i + 1) % 3
+        dt, du = Z[j, oa] - Z[i, oa], Z[j, ia] - Z[i, ia]
+        ll = dt * dt + du * du
+        if ll <= 0.0:
+            continue
+        al = min(max(-(Z[i, oa] * dt + Z[i, ia] * du) / ll, 0.0), 1.0)
+        pt, pu = Z[i, oa] + al * dt, Z[i, ia] + al * du
+        if pt * pt + pu * pu < best:
+            best, ts = pt * pt + pu * pu, pt
+    return ts
 
 
 @njit(cache=True)
@@ -522,6 +520,9 @@ def log_cone_integral(L, s, Gs, th, gx, gw):
         i1, i2 = i2, i1
     if Z[i0, oa] > Z[i1, oa]:
         i0, i1 = i1, i0
+    # the outer rule is centred on the integrand's mass: for a mean outside the triangle that is the
+    # nearest point of the triangle, not the mean (the integrand itself is evaluated exactly)
+    ts = _outer_centre(Z, oa, ia)
     n = gx.shape[0]
     xt, lwt, xu, lwu = np.empty(n), np.empty(n), np.empty(n), np.empty(n)
     m_all, acc_all = -np.inf, 0.0
@@ -530,9 +531,9 @@ def log_cone_integral(L, s, Gs, th, gx, gw):
         ta, tb = Z[ja, oa], Z[jb, oa]
         if not tb > ta:
             continue
-        _nodes(ta, tb, gx, gw, xt, lwt)
+        _nodes(ta - ts, tb - ts, gx, gw, xt, lwt)
         for k in range(n):
-            t = xt[k]
+            t = ts + xt[k]
             # cross-section: the edge (ja, jb) and the long edge (i0, i2)
             ua = Z[ja, ia] + (Z[jb, ia] - Z[ja, ia]) * (t - ta) / (tb - ta)
             ub = Z[i0, ia] + (Z[i2, ia] - Z[i0, ia]) * (t - Z[i0, oa]) / (Z[i2, oa] - Z[i0, oa])
@@ -602,35 +603,38 @@ def marg_theta_parts(B, y, gx, gw):
     logdetG = 2.0 * (math.log(L[0, 0]) + math.log(L[1, 1]) + math.log(L[2, 2])) + \
         2.0 * (math.log(s[0]) + math.log(s[1]) + math.log(s[2]))
     v = -0.5 * chi2 - 0.5 * logdetG + math.log(6.0)
-    # log P of the cone: the ray integral where the limb-darkening Gaussian is broad on the cone
-    # (whitened extent < 15 sd), the Genz orthant probability (log_orthant_prob, its moments from the
-    # theta solution) where it is narrow (> 35 sd; there the cone's boundary can cut the Gaussian far
-    # in its tail, which the ray quadrature resolves poorly, while the orthant transform is exact),
-    # blended smoothly in between
-    E = _cone_extent(s, Gs, th)
-    w = min(max((E - 15.0) / 20.0, 0.0), 1.0)
+    # log P of the cone: the ray integral, except where every constraint holds by more than 6 sd (P = 1
+    # to 1e-9), where the Genz orthant probability (log_orthant_prob, its moments from the theta
+    # solution) is exact and far cheaper; blended smoothly from 4.5 sd
+    ok, ld_, Gsi = inv3_chol(Gs, np.zeros((3, 3)))
+    St = np.empty((3, 3))
+    for i in range(3):
+        for j in range(3):
+            St[i, j] = Gsi[i, j] / (s[i] * s[j])
+    c0 = 6.0 * th[0] - 2.0 * th[1] - 3.0 * th[2]
+    # Fi in c = Mi St Mi^T, Mi = [[6, -2, -3], [0, 1, 0], [0, 0, 1]]
+    r0 = np.array([6.0 * St[0, 0] - 2.0 * St[1, 0] - 3.0 * St[2, 0],
+                   6.0 * St[0, 1] - 2.0 * St[1, 1] - 3.0 * St[2, 1],
+                   6.0 * St[0, 2] - 2.0 * St[1, 2] - 3.0 * St[2, 2]])
+    Fi = np.empty((3, 3))
+    Fi[0, 0] = 6.0 * r0[0] - 2.0 * r0[1] - 3.0 * r0[2]
+    Fi[0, 1] = Fi[1, 0] = r0[1]
+    Fi[0, 2] = Fi[2, 0] = r0[2]
+    Fi[1, 1], Fi[1, 2], Fi[2, 1], Fi[2, 2] = St[1, 1], St[1, 2], St[2, 1], St[2, 2]
+    m, S = cone_ms(c0, th[1], th[2], Fi)
+    zmin = np.inf
+    for i in range(3):
+        zmin = min(zmin, m[i] / math.sqrt(S[i, i])) if S[i, i] > 0.0 else -np.inf
+    w = min(max((zmin - 4.5) / 1.5, 0.0), 1.0)
     w = w * w * (3.0 - 2.0 * w)
+    lG = log_orthant_prob(m, S, GL_X, GL_W) if w > 0.0 else -np.inf
+    if lG == -np.inf:                     # S rounded to singular: the ray integral does not need it
+        w = 0.0
     lP = 0.0
     if w < 1.0:
         lP += (1.0 - w) * (log_cone_integral(L, s, Gs, th, gx, gw) - 1.5 * _LOG2PI + 0.5 * logdetG)
     if w > 0.0:
-        ok, ld_, Gsi = inv3_chol(Gs, np.zeros((3, 3)))
-        St = np.empty((3, 3))
-        for i in range(3):
-            for j in range(3):
-                St[i, j] = Gsi[i, j] / (s[i] * s[j])
-        c0 = 6.0 * th[0] - 2.0 * th[1] - 3.0 * th[2]
-        # Fi in c = Mi St Mi^T, Mi = [[6, -2, -3], [0, 1, 0], [0, 0, 1]]
-        r0 = np.array([6.0 * St[0, 0] - 2.0 * St[1, 0] - 3.0 * St[2, 0],
-                       6.0 * St[0, 1] - 2.0 * St[1, 1] - 3.0 * St[2, 1],
-                       6.0 * St[0, 2] - 2.0 * St[1, 2] - 3.0 * St[2, 2]])
-        Fi = np.empty((3, 3))
-        Fi[0, 0] = 6.0 * r0[0] - 2.0 * r0[1] - 3.0 * r0[2]
-        Fi[0, 1] = Fi[1, 0] = r0[1]
-        Fi[0, 2] = Fi[2, 0] = r0[2]
-        Fi[1, 1], Fi[1, 2], Fi[2, 1], Fi[2, 2] = St[1, 1], St[1, 2], St[2, 1], St[2, 2]
-        m, S = cone_ms(c0, th[1], th[2], Fi)
-        lP += w * log_orthant_prob(m, S, GL_X, GL_W)
+        lP += w * lG
     return v, lP
 
 

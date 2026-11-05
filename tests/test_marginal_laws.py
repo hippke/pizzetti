@@ -44,8 +44,9 @@ def test_generic_path_equals_fast_quadratic():
     a, b = fast.log_prob(X), gen.log_prob(X)
     fin = np.isfinite(a)
     assert np.array_equal(fin, np.isfinite(b))
-    # same model; the two paths use slightly different series bounds (both < 1e-9 in flux)
-    assert np.max(np.abs(a[fin] - b[fin])) < 1e-4
+    # same model; the generic path evaluates the cone by the Genz rule, the fast path by the ray integral
+    # (1e-5 nats here, 2e-4 at the deepest point, ln P = -1008, where Genz is exact)
+    assert np.max(np.abs(a[fin] - b[fin])) < 5e-4
 
 
 def _brute(model, geo, alpha):

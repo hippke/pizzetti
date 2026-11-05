@@ -8,6 +8,18 @@
   sampled columns `ln_gp_amp`, `ln_gp_tau`, `ln_err_scale` (log-uniform priors, bounds or fixed values in `GP`;
   also passed to `log_prior`), and `gp_predict(row, t=None)` for the trend, at the data or at any times. `t` must be ascending. Models without `gp` are
   unchanged. New tutorial 18.
+- Cone probability of the quadratic marginal likelihood (`marg_theta_parts`) where the least-squares limb
+  darkening lies outside the cone: the ray integral's outer quadrature was centred on the Gaussian's mean, while
+  the mass sits at the nearest point of the cone's cross-section, between the nodes. `ln P` was off by up to 0.08
+  nats at 3-4 sd outside the cone and several nats beyond 6 sd (worst beyond c0 = 0), at any posterior width. The
+  rule is now centred on that nearest point: better than 1e-3 nats down to `ln P` = -30 in random tests, 3e-5 at the
+  posterior draws of 100 light curves (4e-3 before). The blend no longer depends on the width of the Gaussian: the ray
+  integral is used everywhere except where all constraints hold by more than 4.5 to 6 sd, since the 12-point Genz
+  rule is off by 2e-3 inside the cone at strong correlation and by far more outside it; its rare -inf (covariance
+  rounded to singular, grazing small planets) can no longer reach the likelihood. Posteriors do not change measurably
+  (<= 1e-4 sd over those 100 light curves); seeded runs differ slightly. About 8 us more per evaluation. Where the
+  Gaussian is narrow and far outside the cone, the Genz rule was the more accurate one when it worked (1e-9 nats against
+  1e-5, 2e-4 at `ln P` = -1000).
 - `fit(max_evals=, max_time=)` and `profile_is(max_evals=, max_time=)`: an evaluation and wall-time
   budget for profile importance sampling (default: none). An expensive likelihood (a weak, many-epoch
   Kepler long-cadence signal: ~3600 binned points x 15 sub-exposures, 2e5 evaluations with the retry

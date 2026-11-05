@@ -697,3 +697,86 @@ def test_fit_barely_detected_transit():
     assert not any("diagnostics failed" in str(x.message) for x in wl)
     rp = r.samples[:, r.labels.index("rp")]
     assert 0.02 < np.median(rp) < 0.08 and np.percentile(rp, 97.5) > 0.2
+
+
+_CONE_FACES = np.array([[6.0, -2.0, -3.0], [-6.0, 3.0, 3.0], [0.0, -1.0, 1.0]])    # (c0, c1 - c0, c2 - c1) from theta
+_IN_CONE = np.array([1.0, 0.97, 1.21])                                             # theta, c = (0.43, 0.97, 1.21)
+
+
+def _cone_design(rp, b, sigma):
+    """Whitened theta design of a white-noise light curve."""
+    from pizzetti import _series
+    from pizzetti.marginal import _A_HALF
+    t = np.linspace(-0.25, 0.25, 400)
+    return K.design_theta(t, 1, np.full(t.size, 1.0 / sigma), 0.0, 4.0, rp, 12.9, b, 0.0, math.pi / 2, 1e-9,
+                          _A_HALF, _series._GTAB)
+
+
+def _beyond_face(B, face, nsd):
+    """Mean nsd marginal sd beyond one face of the cone (0: c0 = 0, 1: c0 = c1, 2: c1 = c2)."""
+    Gi = np.linalg.inv(B.T @ B)
+    a = _CONE_FACES[face]
+    sd = math.sqrt(a @ Gi @ a)
+    return _IN_CONE - (a @ _IN_CONE / sd + nsd) * Gi @ a / sd
+
+
+def _orthant_reference(B, th, n=300):
+    """ln P of the cone by the Genz transform in log space on an n x n grid, with none of the kernel's
+    shortcuts (independent of log_orthant_prob and of the ray integral)."""
+    from scipy.special import log_ndtr, logsumexp, ndtri_exp
+    Gi = np.linalg.inv(B.T @ B)
+    m, S = _CONE_FACES @ th, _CONE_FACES @ Gi @ _CONE_FACES.T
+    o = np.argsort(m / np.sqrt(np.diag(S)))
+    m, S = m[o], S[np.ix_(o, o)]
+    L = np.linalg.cholesky(S)
+    t, w = np.polynomial.legendre.leggauss(n)
+    t = 0.5 * (t + 1.0)
+    x, w = t * t * (3.0 - 2.0 * t), 0.5 * w * 6.0 * t * (1.0 - t)
+    le1 = log_ndtr(m[0] / L[0, 0])
+    z1 = -ndtri_exp(np.log1p(-x) + le1)
+    le2 = log_ndtr((m[1] + L[1, 0] * z1) / L[1, 1])
+    z2 = -ndtri_exp(np.log1p(-x)[None, :] + le2[:, None])
+    le3 = log_ndtr((m[2] + L[2, 0] * z1[:, None] + L[2, 1] * z2) / L[2, 2])
+    return le1 + logsumexp(le2 + logsumexp(le3, b=w[None, :], axis=1), b=w)
+
+
+@pytest.mark.parametrize("face", [0, 1, 2])
+@pytest.mark.parametrize("nsd", [3.0, 4.0, 6.0, 8.0])
+@pytest.mark.parametrize("rp,b,sigma", [(0.1, 0.3, 1.2e-3), (0.1, 0.3, 7e-4), (0.05, 0.46, 1.1e-4), (0.012, 0.73, 1.2e-5),
+                                        (0.012, 0.73, 4e-6)])
+def test_cone_probability_outside_cone(rp, b, sigma, face, nsd):
+    """The Gaussian's mean outside the cone (limb-darkening widths of 1/12 to 1/60 of the cone's cross-section): the
+    ray integral's outer rule follows the mass to the nearest point of the triangle. Centred on the mean it was
+    off by 0.08 nats at 3-4 sd and by nats beyond 6 sd, worst beyond c0 = 0, whatever the width."""
+    pytest.importorskip("scipy")
+    B = _cone_design(rp, b, sigma)
+    th = _beyond_face(B, face, nsd)
+    ref = _orthant_reference(B, th)
+    assert abs(ref - _orthant_reference(B, th, 150)) < 2e-5
+    assert abs(K.marg_theta_parts(B, B @ th, K.GL_X, K.GL_W)[1] - ref) < 2e-4
+
+
+def test_cone_probability_smooth_leaving_cone():
+    """ln P along a line of the mean out through c0 = 0 (0.04 sd steps): the error stays small, without jumps."""
+    pytest.importorskip("scipy")
+    B = _cone_design(0.012, 0.73, 1.2e-5)
+    th1 = _beyond_face(B, 0, 8.0)
+    err = []
+    for s in np.linspace(0.0, 1.0, 301):
+        th = _IN_CONE + s * (th1 - _IN_CONE)
+        err.append(K.marg_theta_parts(B, B @ th, K.GL_X, K.GL_W)[1] - _orthant_reference(B, th))
+    err = np.array(err)
+    assert np.abs(err).max() < 2e-4
+    assert np.abs(np.diff(err)).max() < 5e-5
+
+
+def test_cone_probability_blend_inside_cone():
+    """A mean inside the cone, through the blend to the Genz rule (nearest constraint 4.5 to 6 sd), to P = 1."""
+    pytest.importorskip("scipy")
+    B1 = _cone_design(0.1, 0.3, 1.0)
+    Gi = np.linalg.inv(B1.T @ B1)
+    z1 = (_CONE_FACES @ _IN_CONE / np.sqrt(np.diag(_CONE_FACES @ Gi @ _CONE_FACES.T))).min()
+    for z in (3.0, 4.5, 5.0, 5.25, 5.5, 6.0, 7.0):
+        B = B1 * z / z1
+        lP = K.marg_theta_parts(B, B @ _IN_CONE, K.GL_X, K.GL_W)[1]
+        assert abs(lP - _orthant_reference(B, _IN_CONE)) < 2e-5
