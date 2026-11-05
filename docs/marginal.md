@@ -111,6 +111,15 @@ the prior uniform in a). `fit()` proceeds in four steps:
    stable. It does not fall back to MCMC; `diagnostics["is_ok"]` says whether the draws pass, and
    `fit()` warns if they do not. Tutorials 12–16 explain each step.
 
+The raw weights also give the Bayesian evidence, without nested sampling: `profile_is()` returns `lnz` and
+`lnz_err`, and `fit()` puts them in `diagnostics`. This needs finite `bounds` on every free parameter, since `per`
+and `a` have no upper bound by default, and the evidence depends on them. The prior is uniform over the bounds and
+over (q₁, q₂). The flat prior on the baseline has unit density, so subtract ln(width) for a flat f₀ of that width.
+Where the prior has no known normalisation (`log_prior`, a Gaussian or callable `ld_prior`, `gp`, free `ecc` or `w`,
+other laws), `lnz` is nan and `lnz_note` says why; `log_int` is still the integral of the log posterior. Trust it only
+if `is_ok`: `lnz_err` is a Monte Carlo error and cannot see a mode that no draw reached. On a grazing branch that reaches the
+`rp` bound, the evidence depends on that bound.
+
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb
 darkening and baseline as extra columns.

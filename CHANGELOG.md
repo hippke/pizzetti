@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bayesian evidence from profile importance sampling: `profile_is` returns `lnz`, `lnz_err` (and `fit` puts them in
+  `diagnostics`), from the raw weights of the returned draws, with the Gaussian constants, the prior volume and the
+  limb-darkening weight. For the quadratic law, `ld_prior="physical"`, finite `bounds` and no `log_prior`, `gp`, free
+  `ecc` or `w`; otherwise nan and `lnz_note` says why. The flat prior on f0 has unit density: subtract ln(width).
+  `log_int`, `log_int_err` are the bare integral of `log_prob_internal`, for any law and prior. Tested against
+  quadrature and dynesty (`tests/test_evidence.py`, grazing cases included). `profile_is(evidence=False)` skips the 1000
+  limb-darkening draws; seeded draws and evaluation counts do not change either way.
 - `MarginalTransitModel(..., gp=pizzetti.GP())`: an additive Gaussian process in the noise model, fitted together
   with the transit instead of detrending first (quadratic law, primary transit). SHO kernel with Q = 1/sqrt(2),
   whitened by a Kalman filter at O(N) per column; the limb darkening and f0 are integrated out as before. New

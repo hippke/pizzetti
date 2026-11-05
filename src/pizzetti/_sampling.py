@@ -88,6 +88,21 @@ def psis(logw):
 # ----------------------------------------------------------------------------
 # Laplace approximation
 # ----------------------------------------------------------------------------
+def log_mean_weight(logw):
+    """(ln mean, sd of the ln mean) of raw importance weights p / q, for a normalised q: the estimate of the
+    integral of exp(logp). Draws outside the support (not finite) count as zero. No Pareto smoothing: it
+    biases the mean, which the normalised weights of ``psis`` do not need. Over a deterministic mixture of
+    proposals, q is the mixture. The sd is only meaningful for k-hat < 0.7."""
+    logw = np.asarray(logw, float)
+    ok = np.isfinite(logw)
+    if not ok.any():
+        return -np.inf, np.inf
+    top = np.max(logw[ok])
+    v = np.where(ok, np.exp(logw - top), 0.0)
+    m = np.mean(v)
+    return float(top + np.log(m)), float(np.std(v) / (m * np.sqrt(len(v))))
+
+
 def find_map(logp_batch, theta0, scale, n_restarts=1, nelder_mead=True):
     theta0 = np.asarray(theta0, float)
     scale = np.asarray(scale, float)
@@ -223,7 +238,7 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
     more stable than the weights of a single iteration. For posteriors that a Laplace-based
     proposal covers badly (skewed or curved conditionals), where k-hat need not see the missing
     mass. The start draws (X, logw) seed the first fit only. Returns dict(theta, w, logw, khat,
-    ess, n_eval, history, converged).
+    ess, n_eval, history, converged, log_int, log_int_err); log_int: ``log_mean_weight`` of all draws.
 
     ``extra``: fixed components (weight, mean, covariance) added to every iteration's proposal
     (e.g. a component over the whole prior box: then every region of the support keeps a proposal
@@ -235,7 +250,7 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
     from scipy.special import logsumexp
     logw = np.asarray(logw, float)
     fail = dict(theta=np.atleast_2d(X), w=np.zeros(len(logw)), logw=np.full(len(logw), -np.inf),
-                khat=np.inf, ess=0.0, n_eval=0, history=[], converged=False)
+                khat=np.inf, ess=0.0, n_eval=0, history=[], converged=False, log_int=np.nan, log_int_err=np.nan)
     if np.sum(np.isfinite(logw)) < 10 * (np.atleast_2d(X).shape[1] + 1):
         return fail                              # too few weighted draws to fit a proposal
     w = np.exp(logw - np.max(logw[np.isfinite(logw)]))
@@ -307,8 +322,9 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
             if (it + 1 >= min_iters and khat < khat_ok and ess >= ess_min * n and dq < dq_tol):
                 converged = True
                 break
+    log_int, log_int_err = log_mean_weight(lps - lqa)
     return dict(theta=Xs, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n_eval=int(nev),
-                history=hist, converged=converged)
+                history=hist, converged=converged, log_int=log_int, log_int_err=log_int_err)
 
 def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
                adapt=2, khat_target=0.5, batch=2000):
@@ -348,9 +364,10 @@ def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
         Xc = X - mu
         cov = (w[:, None] * Xc).T @ Xc
         cov = 0.5 * (cov + cov.T)
+    log_int, log_int_err = log_mean_weight(lw_raw)
     return dict(theta=X, w=w, logw=lw, khat=float(khat), ess=float(ess), n_eval=int(nev),
                 theta_map=theta_map, lp_map=float(lp_map), cov_laplace=np.linalg.inv(-H),
-                history=hist)
+                history=hist, log_int=log_int, log_int_err=log_int_err)
 
 
 # ----------------------------------------------------------------------------
@@ -371,7 +388,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     * proposal: b ~ piecewise-linear density exp(l) on the grid; the others ~
       multivariate t(nu) with mean/covariance linearly interpolated in b
       (covariance x inflate^2);
-    * PSIS-smoothed weights with the exact log posterior.
+    * PSIS-smoothed weights with the exact log posterior; ``log_int``, ``log_int_err``: the integral
+      of exp(logp_target or logp_batch) from the raw weights (``log_mean_weight``).
     Defensive options for the b proposal: ``b_temper`` < 1 uses exp(b_temper * l)
     (wider tails), ``b_uniform`` > 0 mixes in a uniform density over the grid range.
     ``refine_tol``: after the grid is built, intervals with probability mass are
@@ -736,12 +754,12 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             lqa = np.logaddexp(np.log(na / (na + md)) + lq_old, np.log(md / (na + md)) + _mvt_logpdf(Xa, md_mu, Ld, nu))
             lw, khat = psis(lpa - lqa)
             w = np.exp(lw)
-            X = Xa
-        return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok
+            X, lp, lq = Xa, lpa, lqa
+        return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lp - lq
 
     can_refine = refine_tol is not None and len(grid) > 1
     n_ref = refine() if (can_refine and not lazy_refine) else 0
-    X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok = stages(build())
+    X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(build())
     if can_refine and lazy_refine and not (khat < khat_refine):
         # last resort before giving up: refine the grid and sample again (the draws so far are
         # discarded). Most poor stage-1 proposals come from non-Gaussian conditionals, which
@@ -749,10 +767,11 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         # more expensive.
         n_ref = refine()
         if n_ref:
-            X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok = stages(build())
+            X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(build())
+    log_int, log_int_err = log_mean_weight(lraw)
     return dict(theta=X, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)),
                 n_eval=int(nev), theta_map=theta_map, grid_b=bs, grid_logdens=lb, stage=stage,
                 n_grid=len(bs), complete=bool(end_lo_ok and end_hi_ok), n_eval_map=int(nev_map),
-                n_refine=int(n_ref),
+                n_refine=int(n_ref), log_int=log_int, log_int_err=log_int_err,
                 grid_lpmax=np.array([grid[b][1] for b in bs]),
                 grid_logdet=np.array([grid[b][3] for b in bs]))

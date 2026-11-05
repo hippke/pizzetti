@@ -34,6 +34,9 @@ region x flat baseline f0 -- Kipping's (q1, q2) prior for the quadratic law),
 "flat" (no constraint), a Gaussian dict (quadratic law, exact) or a callable
 (importance reweighting).
 
+Evidence: profile importance sampling also returns the ln evidence, as ``lnz`` of ``profile_is`` and in
+``diagnostics`` of ``fit`` (needs finite ``bounds``).
+
 Correlated noise: ``gp=pizzetti.GP()`` fits an additive Gaussian process together with the transit, instead of
 detrending first (``_gp``; quadratic law, primary transit).
 
@@ -351,6 +354,9 @@ class _BoundedCoords:
         X, lj = self.to_x(U)
         out = self.m.log_prob_internal(X)
         return np.where(np.isfinite(out), out + lj, -np.inf)
+
+
+_LNZ_LD_DRAWS = 1000       # conditional limb-darkening draws of profile_is for ln <f0 / c2^3> of its lnz
 
 
 class MarginalTransitModel:
@@ -1074,6 +1080,7 @@ class MarginalTransitModel:
         with np.errstate(invalid="ignore"):
             logw = np.where(np.isfinite(logw), logw, -np.inf)
         self.last_ld_from_prior = False
+        self._ld_logw = logw                             # ln(f0 / c2^3) (for lnz); -inf: no valid draw
         if not np.isfinite(logw).any():
             if self.has_ldp or callable(self.ld_prior):
                 raise RuntimeError("no valid limb-darkening draws for these geometries")
@@ -1161,7 +1168,8 @@ class MarginalTransitModel:
         return x0
 
     def profile_is(self, n=4000, rng=None, x0=None, retry=True, flat_proposal=True, last_resort=True,
-                   ess_min=0.25, rescue=True, rescue_iters=30, khat_ok=0.5, max_evals=None, max_time=None):
+                   ess_min=0.25, rescue=True, rescue_iters=30, khat_ok=0.5, max_evals=None, max_time=None,
+                   evidence=True):
         """Profile importance sampling along b (``_sampling.profile_is``) in internal coordinates.
 
         The walls of the b profile are b = 0 (the likelihood depends on b^2) or the bounds on b,
@@ -1219,12 +1227,26 @@ class MarginalTransitModel:
         spent, the best attempt so far is returned with ``budget_exceeded`` True and ``is_ok`` False
         (the rescue's iterations are capped to fit an evaluation budget); if the first proposal
         could not be completed, RuntimeError.
+
+        Evidence: ``log_int``, ``log_int_err``: ln of the integral of exp(``log_prob_internal``) over the
+        free parameters, from the raw importance weights of the returned draws, and its sd (any law or
+        prior). ``lnz``, ``lnz_err`` (``evidence``, default True): the ln evidence with every constant, for
+        the uniform prior on the free parameters (normalised over ``bounds``) and the physical limb darkening
+        (uniform (q1, q2)). Its flat prior on f0 has unit density: subtract ln(width) for a flat f0 of that
+        width. It costs ``_LNZ_LD_DRAWS`` conditional limb-darkening draws; seeded draws do not change.
+        ``lnz`` is nan where the prior has no known normalisation (``lnz_note`` says why): an infinite bound
+        (per and a/R* have none by default), ecc or w free, ``log_prior``, a Gaussian or callable ``ld_prior``,
+        ``gp`` or another law. Only trust it if ``is_ok``: a mode that no draw reached is missing from it
+        without a sign in ``lnz_err``.
         """
         budget = _Budget(max_evals, max_time) if (max_evals is not None or max_time is not None) else None
         self._budget = budget
         try:
-            return self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
-                                    rescue_iters, khat_ok, budget)
+            res = self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
+                                   rescue_iters, khat_ok, budget)
+            if evidence:
+                res.update(self._lnz_from_draws(res))
+            return res
         finally:
             self._budget = None
 
@@ -1269,6 +1291,98 @@ class MarginalTransitModel:
         logw = self.log_prob_internal(X) - lq
         nev.append(k1 + k2 + m)
         return dict(theta=X, logw=logw, w=np.exp(np.where(np.isfinite(logw), logw - np.max(logw[np.isfinite(logw)]), -np.inf)))
+
+    def _log_prior_volume(self):
+        """ln volume of the region of the free parameters with a prior density (box, 0 <= b_conj < 1 + rp,
+        a > b and a > 1; with T14 sampled a >= 1 + rp, which T14 cannot leave). inf for an infinite box."""
+        out = 0.0
+        for q in self.free:
+            if q not in ("rp", "a", "b"):
+                k = CANON.index(q)
+                lo, hi = max(self.lo[k], 0.0) if q == "per" else self.lo[k], self.hi[k]
+                if not np.isfinite(hi - lo):
+                    return np.inf
+                out += math.log(hi - lo)
+        x, wx = np.polynomial.legendre.leggauss(200)
+        x, wx = 0.5 * (x + 1.0), 0.5 * wx
+        if "rp" in self.free:
+            r_lo, r_hi = max(self.lo[2], 0.0), self.hi[2]
+            if not np.isfinite(r_hi):
+                return np.inf
+            rp, wr = r_lo + (r_hi - r_lo) * x, (r_hi - r_lo) * wx
+        else:
+            rp, wr = np.array([self.fixed[2]]), np.ones(1)
+        g = float(self._conj_factor(self.fixed_physical_free())[0])
+        b_lo = max(self.lo[4], 0.0)
+        b_hi = np.minimum(self.hi[4], (1.0 + rp) / g)
+        if "a" in self.free:
+            a_lo, a_hi = max(self.lo[3], 1.0), self.hi[3]
+            if not np.isfinite(a_hi):
+                return np.inf
+        else:
+            b_hi = np.minimum(b_hi, self.fixed[3])
+        wb = np.clip(b_hi - b_lo, 0.0, None)                # b: rows of rp, columns of the b nodes
+        b = b_lo + wb[:, None] * x
+        if "a" in self.free:
+            lo_ab = np.maximum(a_lo, b)
+            if self.t14:
+                lo_ab = np.maximum(lo_ab, 1.0 + rp[:, None])
+            area = np.clip(a_hi - lo_ab, 0.0, None)
+        else:
+            area = np.ones_like(b)
+        vol = np.sum(wr * wb * (area @ wx))
+        return out + math.log(vol) if vol > 0 else np.inf
+
+    def _lnz_note(self):
+        """Why ``lnz`` is not available, or None."""
+        if not self.fast or self.gp is not None or self.has_ldp or callable(self.ld_prior):
+            return 'lnz needs limb_dark="quadratic", a primary transit, ld_prior="physical" and no gp'
+        if self.log_prior is not None:
+            return "lnz needs a normalised prior: log_prior is not known to be"
+        if "ecc" in self.free or "w" in self.free:
+            return "lnz: the prior volume with a free ecc or w is not implemented"
+        if not np.isfinite(self._log_prior_volume()):
+            return "lnz needs finite bounds on every free parameter (and an upper bound on rp and a)"
+        return None
+
+    def _lnz_from_ld(self, log_int, log_int_err, logw_ld, weights):
+        """ln Z = ln of the integral of exp(log_prob_internal) + the Gaussian constants of the kernel
+        (the integral of L over the cone is (2 pi)^(3/2) exp(log_prob) / prod(sqrt(2 pi) yerr)) - ln(prior
+        volume) + ln <f0 / c2^3> over the joint posterior (flat in c -> flat in f0, beta0, beta1) + ln 2 (uniform
+        density on the triangle of beta0, beta1, of area 1/2). logw_ld: ln(f0 / c2^3) of draws with these
+        weights. See the paper, Sect. 3."""
+        note = self._lnz_note()
+        ok = np.isfinite(logw_ld) & (weights > 0)
+        if note is None and not ok.any():
+            note = "lnz: no valid limb-darkening draws"
+        if note is not None:
+            return dict(lnz=np.nan, lnz_err=np.nan, lnz_note=note)
+        p = weights[ok] / weights[ok].sum()
+        top = np.max(logw_ld[ok])
+        v = np.exp(logw_ld[ok] - top)
+        mean = p @ v
+        err = math.sqrt(np.sum(p * p * (v - mean) ** 2)) / mean
+        const = -0.5 * (len(self.y) - 3) * math.log(2.0 * math.pi) + np.sum(np.log(self.wts))
+        lnz = log_int + const - self._log_prior_volume() + top + math.log(mean) + math.log(2.0)
+        return dict(lnz=float(lnz), lnz_err=float(math.hypot(log_int_err, err)), lnz_note=None)
+
+    def _lnz_from_draws(self, res):
+        """``_lnz_from_ld`` for the draws of ``profile_is``, with ``_LNZ_LD_DRAWS`` conditional limb-darkening
+        draws of its own (a generator of its own: the caller's stream, and so its seeded draws, do not change)."""
+        if self._lnz_note() is not None:
+            return self._lnz_from_ld(res["log_int"], res["log_int_err"], np.zeros(0), np.zeros(0))
+        rng = np.random.default_rng(0)
+        w = np.asarray(res["w"], float)
+        if not w.sum() > 0:
+            return self._lnz_from_ld(res["log_int"], res["log_int_err"], np.zeros(0), np.zeros(0))
+        j = systematic_resample(w / w.sum(), _LNZ_LD_DRAWS, rng)
+        P = self._canonical_physical(self.to_physical(res["theta"][j]))
+        T, S = K.theta_moments_batch(np.ascontiguousarray(P), self.tt, self.k, self.wts, self.yw,
+                                     self.tol, _A_HALF, _series._GTAB)
+        c = _draw_c_theta(T, S, rng)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            logw = np.log(c @ K.DISK) - 3.0 * np.log(c[:, 2])
+        return self._lnz_from_ld(res["log_int"], res["log_int_err"], logw, np.ones(len(logw)))
 
     def _profile_is(self, n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue, rescue_iters,
                     khat_ok, budget):
@@ -1315,7 +1429,7 @@ class MarginalTransitModel:
                 r["last_resort_pmc"] = bool(pm["khat"] < r["khat"])
                 if r["last_resort_pmc"]:
                     r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
-                             stage="pmc", pmc=pm["history"])
+                             stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"])
             r["n_eval"] = int(sum(nev))
             return r
 
@@ -1364,7 +1478,7 @@ class MarginalTransitModel:
                 pm = pmc_refine(T.log_prob, r["theta"], r["logw"], rng, n=n)
                 nev.append(pm["n_eval"])
                 r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
-                         stage="pmc", pmc=pm["history"])
+                         stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"])
             r["theta"] = T.to_x(r["theta"])[0]
             r["theta_map"] = T.to_x(np.atleast_2d(r["theta_map"]))[0][0]
             return r
@@ -1423,6 +1537,7 @@ class MarginalTransitModel:
             X = T.to_x(pm["theta"])[0] if T.active else pm["theta"]
             out.update(theta=X, w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"], stage="amis",
                        pmc=pm["history"], rescue=True, is_ok=bool(pm["converged"]),
+                       log_int=pm["log_int"], log_int_err=pm["log_int_err"],
                        budget_exceeded=bool(capped and not pm["converged"]))
             return out
 
@@ -1465,7 +1580,8 @@ class MarginalTransitModel:
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
         rescue of ``profile_is`` where the profile is not usable; no fallback to MCMC: a warning if
         the final diagnostics fail (``diagnostics["is_ok"]``); ``max_evals`` / ``max_time`` (seconds)
-        limit its cost (``profile_is``; ``diagnostics["budget_exceeded"]``);
+        limit its cost (``profile_is``; ``diagnostics["budget_exceeded"]``); the evidence is in
+        ``diagnostics["lnz"]``, ``"lnz_err"``, ``"lnz_note"``, ``"log_int"``, ``"log_int_err"`` (``profile_is``);
         "emcee": vectorised emcee until convergence (N > ntau * tau, tau stable to 1 %);
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
@@ -1475,9 +1591,9 @@ class MarginalTransitModel:
         x0 = self._start_internal()
         scale = self._default_scales(x0)
         diag = dict(method=None)
-        Xw = w = None
+        Xw = w = res = None
         if method in ("is", "auto") and "b" in self.free:
-            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time)
+            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time, evidence=False)
             ok = bool(res["is_ok"])
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
                         complete=res["complete"], n_grid=res["n_grid"], is_ok=ok,
@@ -1570,6 +1686,10 @@ class MarginalTransitModel:
         diag["ld_from_prior"] = bool(getattr(self, "last_ld_from_prior", False))
         if self.physical and self.law.D is None:
             diag["physical_fraction"] = self.last_physical_frac
+        if res is not None:
+            diag.update(log_int=res["log_int"], log_int_err=res["log_int_err"])
+            diag.update(self._lnz_from_ld(res["log_int"], res["log_int_err"], self._ld_logw, w) if self.fast
+                        else dict(lnz=np.nan, lnz_err=np.nan, lnz_note=self._lnz_note()))
         wc = w * wl
         wc /= wc.sum()
         diag["ess_total"] = float(1.0 / np.sum(wc ** 2))

@@ -6,6 +6,7 @@ and the Julia package (`julia/test/test_reference.jl`), and available to further
 | file | content | generator |
 |---|---|---|
 | `blocked_reference.json` | The blocked integral `P_γ(z, p) = ∫ (1 - r²)^γ dA` over the occulted part of the unit stellar disk, for 11 exponents (γ = 0, ¼, ½, ¾, 1, 3/2, 2, 0.05, 0.3, 0.6, 1.37) × 7 radius ratios (0.0092 … 1.3) at the contacts (±1e-12, ±1e-7, ±1e-3), `z = p`, the interior and the limb, in double precision; and a 30-digit subset (strings). | `make_testdata.py` |
+| `evidence_refs.json` | Nested-sampling (dynesty) ln evidence of simulated light curves, grazing ones included, for `tests/test_evidence.py` (Python only). | `tests/_evidence_refs.py` |
 | `python_lightcurves.json` | Light curves and separations of the Python package (Keplerian orbits incl. eccentric, five laws, radius ratios 0.009–0.3) for cross-implementation checks. | `make_crosscheck.py` |
 
 The references in `blocked_reference.json` are **independent** of the paper's derivations and of the
