@@ -192,6 +192,18 @@ def _mvt_logpdf(x, mu, L, nu):
             - 0.5 * (nu + d) * np.log1p(q / nu))
 
 
+def _chol_floored(C):
+    """Cholesky factor of a proposal covariance, for any C from weighted draws (few effective draws: rank deficient,
+    possibly zero). The eigenvalues are floored in the scale of the diagonal: an absolute floor is lost to rounding
+    next to a large eigenvalue, and the factorisation of the rebuilt matrix fails."""
+    C = 0.5 * (C + C.T)
+    d = np.sqrt(np.clip(np.diag(C), 1e-30, None))
+    R = C / np.outer(d, d)
+    np.fill_diagonal(R, 1.0)
+    ev, V = np.linalg.eigh(R)
+    return np.linalg.cholesky((V * np.clip(ev, 1e-12, None)) @ V.T) * d[:, None]
+
+
 def _mvt_sample(rng, mu, L, nu, n):
     d = mu.size
     z = rng.standard_normal((n, d))
@@ -288,12 +300,16 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
 
     for it in range(iters):
         ess = 1.0 / np.sum(w ** 2)
+        if ess < 1.0 + 1e-6:                     # one draw holds all the weight: no proposal to fit, no covariance
+            if it == 0:
+                return fail
+            break
         pi, mu, cov = _weighted_gmm(X, w, min(K, max(1, int(ess) // 50)), rng)
         m0 = w @ X
         C0 = np.cov(X.T, aweights=w).reshape(X.shape[1], X.shape[1])
         comps = [(p * (1 - defensive) * (1 - f_extra), m, np.linalg.cholesky(c * inflate ** 2))
                  for p, m, c in zip(pi, mu, cov)]
-        comps.append((defensive * (1 - f_extra), m0, np.linalg.cholesky(C0 * 4.0)))
+        comps.append((defensive * (1 - f_extra), m0, _chol_floored(C0 * 4.0)))
         comps += extra
         k = rng.multinomial(n, [c[0] for c in comps])
         Xn = np.vstack([_mvt_sample(rng, m, L, nu, c) for (p, m, L), c in zip(comps, k) if c > 0])
@@ -340,13 +356,10 @@ def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
     H, k2 = hessian(logp_batch, theta_map, 0.5 * sd)
     nev += k1 + k2
     cov = np.linalg.inv(-H)
-    cov = 0.5 * (cov + cov.T)
-    w_ev, V = np.linalg.eigh(cov)
-    cov = (V * np.clip(w_ev, 1e-30, None)) @ V.T                      # ensure PD
     mu = theta_map.copy()
     hist = []
     for it in range(adapt + 1):
-        L = np.linalg.cholesky(cov * inflate ** 2)
+        L = _chol_floored(cov * inflate ** 2)
         X = _mvt_sample(rng, mu, L, nu, n)
         lp = np.concatenate([logp_batch(X[i:i + batch]) for i in range(0, n, batch)])
         nev += n
@@ -724,10 +737,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             # Laplace-marginal profile l(b) is distorted by non-Gaussian conditionals)
             m1 = np.sum(w[:, None] * X, axis=0)
             C1 = (w[:, None] * (X - m1)).T @ (X - m1)
-            C1 = 0.5 * (C1 + C1.T)
-            ev, V = np.linalg.eigh(C1)
-            C1 = (V * np.clip(ev, 1e-30, None)) @ V.T
-            L1 = np.linalg.cholesky(C1 * inflate ** 2)
+            L1 = _chol_floored(C1 * inflate ** 2)
             n1 = n // 2
             X2 = np.vstack([q_prof_sample(n - n1), _mvt_sample(rng, m1, L1, nu, n1)])
             lp2 = evaluate(X2)
@@ -754,9 +764,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             md = max(int(round(defensive * len(X))), 10 * (d + 1))
             md_mu = w @ X / w.sum()
             Cd = ((w[:, None] * (X - md_mu)).T @ (X - md_mu)) / w.sum()
-            ev, V = np.linalg.eigh(0.5 * (Cd + Cd.T))
-            Cd = (V * np.clip(ev, 1e-30, None)) @ V.T
-            Ld = np.linalg.cholesky(Cd * (2.0 * inflate) ** 2)
+            Ld = _chol_floored(Cd * (2.0 * inflate) ** 2)
             Xd = _mvt_sample(rng, md_mu, Ld, nu, md)
             lpd = evaluate(Xd)
             nev += md

@@ -118,10 +118,10 @@ def systematic_resample(w, n, rng):
     return np.minimum(np.searchsorted(cw, u), len(w) - 1)
 
 
-def _chol_rows(S):
+def _chol_rows(S, jitter=(0.0, 1e-12, 1e-10)):
     """Cholesky factors of the rows of S; a row that is not positive definite (a geometry whose
     light curve hardly constrains the coefficients, e.g. a barely grazing transit) is retried
-    with a small diagonal jitter and otherwise left NaN."""
+    with a small diagonal jitter (relative to the mean variance) and otherwise left NaN."""
     try:
         return np.linalg.cholesky(S)
     except np.linalg.LinAlgError:
@@ -131,9 +131,9 @@ def _chol_rows(S):
         Si = 0.5 * (S[i] + S[i].T)
         if not np.all(np.isfinite(Si)):
             continue
-        for jit in (0.0, 1e-12, 1e-10):
+        for jit in jitter:
             try:
-                L[i] = np.linalg.cholesky(Si + jit * np.trace(Si) / 3.0 * np.eye(3))
+                L[i] = np.linalg.cholesky(Si + jit * np.trace(Si) / len(Si) * np.eye(len(Si)))
                 break
             except np.linalg.LinAlgError:
                 continue
@@ -425,6 +425,7 @@ class _StratumCoords:
 
 _LNZ_LD_DRAWS = 1000       # conditional limb-darkening draws of profile_is for ln <f0 / c2^3> of its lnz
 _STRATUM_MIN_MASS = 1e-3   # a stratum below this share of the posterior needs no refinement
+_COLLAPSED_RP = 1e-3      # with ld_prior="flat", fit warns if most of the posterior has an effective rp below this (or 2 x the bound)
 
 
 class MarginalTransitModel:
@@ -452,8 +453,13 @@ class MarginalTransitModel:
         square-root laws this is Kipping 2013's prior) x flat baseline; for eclipses
         flat in fp >= 0 x flat baseline.
         "flat": no physical constraint; flat in the absolute linear coefficients
-        (always proper -- a flat prior in the normalised coefficients u can be improper,
-        e.g. for the nonlinear law, when the data allow I(1) -> 0).
+        (a flat prior in the normalised coefficients u can be improper, e.g. for the
+        nonlinear law, when the data allow I(1) -> 0). Proper at fixed geometry, but not
+        where the planet's area vanishes: the shape coefficients scale as 1 / rp^2, so the
+        marginal likelihood grows as rp^(-2 (K - 1)) for rp -> 0 (K coefficients). Such
+        coefficients can still give the observed dip, even a deep one, so a strong transit
+        is no protection: the posterior can pile up there, on the bounds, also towards
+        b = 1 + rp (``fit`` warns). For a parameter fit with free rp use "physical".
         A dict {"mean": (u1, u2), "cov": 2x2} (quadratic law): physical region x
         Gaussian, included exactly. A callable f(u1, u2, ...) -> log prior: physical
         region x f, applied by importance reweighting (fine for priors broader than
@@ -1025,7 +1031,9 @@ class MarginalTransitModel:
         if self.cone:
             c = self._draw_cone(C, S, rng)
         else:
-            L = np.linalg.cholesky(S)
+            # no jitter: the coefficients have variances many orders of magnitude apart (f0 is known, the shape not),
+            # jitter on the scale of the largest would swamp f0. Rows without a factor have weight 0
+            L = _chol_rows(S, jitter=(0.0,))
             if self.curved:
                 # nonlinear, physical: the region probability is in the likelihood, so c is
                 # drawn from its Gaussian truncated to the (curved) physical region, by
@@ -1040,15 +1048,19 @@ class MarginalTransitModel:
             # flat in c over the cone -> flat in the law's coefficients x flat baseline
             logw = np.log(f0) - Kc * np.log(I1)
         else:
-            # "flat": flat in the absolute coefficients c (always proper; a flat prior in
-            # the normalised coefficients can be improper when I(1) -> 0 is allowed)
-            logw = np.zeros(len(c))
+            # "flat": flat in the absolute coefficients c (see the note on ld_prior: improper in rp)
+            logw = np.where(np.all(np.isfinite(c), axis=1), 0.0, -np.inf)
         out_c, out_l = self.law.outputs(c, al, ld)
         if callable(self.ld_prior):
             uu, _ = self.law.outputs(c, al, "u")
             logw = logw + np.asarray(self.ld_prior(*uu.T), dtype=float)
         logw = np.where(np.isfinite(logw), logw, -np.inf)
         if not np.isfinite(logw).any():
+            if not self.physical:
+                raise RuntimeError(f"no limb-darkening draws: the coefficient covariance is numerically singular at "
+                                   f"all {len(X)} geometries (median rp {np.median(P[:, 2]):.3g}, b "
+                                   f'{np.median(P[:, 4]):.3g}). ld_prior="flat" is improper where the planet\'s area '
+                                   'vanishes (rp -> 0 or b -> 1 + rp), so the fit can end there; use ld_prior="physical"')
             raise RuntimeError("no physical limb-darkening draws: the data prefer an unphysical "
                                'profile (try ld_prior="flat" to inspect)')
         w = np.exp(logw - logw.max())
@@ -1069,7 +1081,7 @@ class MarginalTransitModel:
         the first chunk, i.e. the mean physical probability over the rows)."""
         n, Kc = C.shape
         out = np.full((n, Kc), np.nan)
-        todo = np.arange(n)
+        todo = np.flatnonzero(np.all(np.isfinite(L.reshape(n, -1)), axis=1))
         tried = 0
         rate = np.nan
         while todo.size and tried < max_draws:
@@ -1091,9 +1103,9 @@ class MarginalTransitModel:
     def _draw_cone(self, C, S, rng):
         D = self.law.D
         n, Kc = C.shape
-        out = np.empty((n, Kc))
-        todo = np.arange(n)
-        L = np.linalg.cholesky(S)
+        out = np.full((n, Kc), np.nan)
+        L = _chol_rows(S, jitter=(0.0,))
+        todo = np.flatnonzero(np.all(np.isfinite(L.reshape(n, -1)), axis=1))
         for _ in range(60):
             if todo.size == 0:
                 break
@@ -1985,10 +1997,27 @@ class MarginalTransitModel:
         wc = w * wl
         wc /= wc.sum()
         diag["ess_total"] = float(1.0 / np.sum(wc ** 2))
+        if not self.physical and "rp" in self.free:
+            diag["collapsed_fraction"] = self._collapsed_fraction(Xw, wc)
+            if diag["collapsed_fraction"] > 0.5:
+                warnings.warn(f'ld_prior="flat": {diag["collapsed_fraction"]:.0%} of the posterior is where the planet\'s '
+                              "area vanishes (rp -> 0 or b -> 1 + rp), up to the bounds, and coefficients ~ 1 / rp^2 can "
+                              "still give the observed dip. This prior is improper there (at fixed b, marginal likelihood "
+                              f"~ rp^-{2 * (self.law.K - 1)}), so this is no measurement of rp or the limb darkening; "
+                              'use ld_prior="physical"', stacklevel=2)
         j = systematic_resample(wc, len(wc), rng)
         orbit = dict(per=self.fixed[1], rp=self.fixed[2], a=self.fixed[3], b=self.fixed[4], ecc=self.fixed[5],
                      a_bounds=(self.lo[3], self.hi[3]), secondary=self.secondary, free=tuple(self.free))
         return FitResult(S_[j], labels, weighted=(S_, wc), diagnostics=diag, orbit=orbit)
+
+    def _collapsed_fraction(self, X, w):
+        """Share of the weights w of physical rows X with hardly any planet area: effective radius below _COLLAPSED_RP
+        or 2 x the lower bound on rp, with the squared radius rp^2, or about rp (1 + rp - b_conj) for a grazing transit."""
+        P = self._canonical_physical(X)
+        rp = P[:, 2]
+        g = (1.0 - P[:, 5] ** 2) / (1.0 + (-1.0 if self.secondary else 1.0) * P[:, 5] * np.sin(P[:, 6]))
+        r2 = rp * np.clip(1.0 + rp - P[:, 4] * g, 0.0, rp)
+        return float(np.sum(w[r2 < max(2.0 * self.lo[2], _COLLAPSED_RP) ** 2]) / np.sum(w))
 
     def fixed_physical_free(self):
         X = np.empty((1, self.ndim))

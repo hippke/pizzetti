@@ -22,6 +22,14 @@
   Seeded runs with a usable first profile do not change. The split follows the windows of Gilbert (2022).
 - `profile_is`: where no attempt has any draws (a nearly flat posterior at S/N of about 3 with wide bounds: no conditional
   Hessian anywhere), the rescue now starts from draws over the prior box instead of returning nothing.
+- `fit` no longer stops with `LinAlgError: Matrix is not positive definite`. `expand` outside the quadratic fast path:
+  a geometry whose coefficient covariance is numerically singular gets weight 0, as in the fast path, and counts in
+  `diagnostics["ld_dropped_weight"]`; a `RuntimeError` that says why if no geometry is left. `profile_is`, `laplace_is`,
+  `pmc_refine`: the proposal covariance from weighted draws is floored relative to its diagonal; the absolute floor
+  could be lost to rounding; `pmc_refine` stops if one draw holds all the weight. `ld_prior="flat"` is not proper where
+  the planet's area vanishes, contrary to the docstring: the marginal likelihood grows as rp^(-2 (K - 1)) for rp -> 0,
+  with coefficients ~ 1 / rp^2 that can still give the observed dip. `fit` warns if the posterior has collapsed there
+  (`diagnostics["collapsed_fraction"]`).
 - Bayesian evidence from profile importance sampling: `profile_is` returns `lnz`, `lnz_err` (and `fit` puts them in
   `diagnostics`), from the raw weights of the returned draws, with the Gaussian constants, the prior volume and the
   limb-darkening weight. For the quadratic law, `ld_prior="physical"`, finite `bounds` and no `log_prior`, `gp`, free

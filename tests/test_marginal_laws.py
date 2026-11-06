@@ -1,5 +1,6 @@
 """MarginalTransitModel for all limb-darkening laws and secondary eclipses."""
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -162,3 +163,100 @@ def test_nonlinear_physicality_test_is_exact():
     grid = (I.min(1) >= -1e-12) & (dI.min(1) >= -1e-9)
     exact = law.is_physical(b)
     assert np.mean(grid == exact) > 0.999
+
+
+def _singular_from(m, first):
+    """m._gen with the covariances of rows first[0]: not positive definite. The real ones appear where rp -> 0 or
+    b -> 1 + rp, at values that depend on rounding (kepler74_lc, ld_prior="flat": LinAlgError in fit)."""
+    gen = m._gen
+
+    def singular(*a):
+        r, C, S = gen(*a)
+        S = S.copy()
+        S[first[0]:] = -S[first[0]:]
+        return r, C, S
+    m._gen = singular
+
+
+@pytest.mark.parametrize("law,u,prior,msg", [("nonlinear", [0.5, 0.1, 0.1, -0.1], "flat", "numerically singular"),
+                                             ("nonlinear", [0.5, 0.1, 0.1, -0.1], "physical", "no physical"),     # _draw_curved
+                                             ("squareroot", [0.3, 0.4], "physical", "no physical")])              # _draw_cone
+def test_expand_drops_rows_without_a_covariance_factor(law, u, prior, msg):
+    t, y, p = setup(law, u, sigma=3e-4)
+    m = pizzetti.MarginalTransitModel(p, t, y, 3e-4, ld_prior=prior)
+    m.fast = False
+    first = [1]
+    _singular_from(m, first)
+    X = np.repeat(m.fixed_physical_free(), 2, axis=0)
+    out, labels, w = m.expand(X, rng=np.random.default_rng(1), resample=False)
+    assert w[0] == 1.0 and w[1] == 0.0
+    assert np.all(np.isfinite(out[0]))
+    first[0] = 0
+    with pytest.raises(RuntimeError, match=msg):
+        m.expand(X, rng=np.random.default_rng(1), resample=False)
+
+
+def test_collapsed_fraction():
+    t, y, p = setup("nonlinear", [0.5, 0.1, 0.1, -0.1])
+    m = pizzetti.MarginalTransitModel(p, t, y, 3e-4, ld_prior="flat", bounds={"rp": (1e-4, 0.5)})
+    X = np.repeat(m.fixed_physical_free(), 4, axis=0)
+    jr, jb = m.free.index("rp"), m.free.index("b")
+    X[:, jr] = 0.05, 1.5e-4, 0.05, 0.05
+    X[:, jb] = 0.3, 0.3, 1.05 - 1e-6, 1.04                   # transit, small, barely grazing, grazing with a depth
+    w = np.array([1.0, 2.0, 4.0, 8.0])
+    assert m._collapsed_fraction(X, w) == pytest.approx(6.0 / 15.0)
+
+
+def test_flat_prior_without_a_transit_in_the_data():
+    """The flat prior is improper where the planet's area vanishes (marginal likelihood ~ rp^-2(K-1) at fixed b). fit ends
+    there: a warning or an error that names the prior, no LinAlgError."""
+    sigma = 3e-3
+    t, y, p = setup("nonlinear", [0.5, 0.1, 0.1, -0.1], sigma=sigma, ntr=1)
+    m = pizzetti.MarginalTransitModel(p, t, y, sigma, ld_prior="flat", bounds={"rp": (1e-4, 0.5)})
+    x0, x1 = m.fixed_physical_free(), m.fixed_physical_free()
+    jr = m.free.index("rp")
+    x0[0, jr], x1[0, jr] = 2e-3, 1e-3
+    assert abs(m.log_prob(x1[0]) - m.log_prob(x0[0]) - 8 * np.log(2)) < 0.5       # K = 5
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            r = m.fit(seed=1, n=500)
+        except RuntimeError as ex:
+            assert "improper where the planet's area vanishes" in str(ex)
+        else:
+            assert r.diagnostics["collapsed_fraction"] > 0.5
+            assert any("improper there" in str(c.message) for c in caught)
+
+
+def test_pmc_refine_with_all_weight_on_one_draw_fails_softly():
+    """np.cov of such draws is inf: no LinAlgError, the caller gets the usual failure."""
+    from pizzetti._sampling import pmc_refine
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((200, 3))
+    logw = np.full(200, -2000.0)
+    logw[7] = 0.0
+    r = pmc_refine(lambda Y: -0.5 * np.sum(Y ** 2, axis=1), X, logw, rng, n=100, iters=2)
+    assert not np.isfinite(r["khat"]) and r["n_eval"] == 0
+
+
+def test_chol_floored_keeps_rank_deficient_covariances_factorable():
+    """Few effective draws, large and small variances: an absolute floor on the eigenvalues does not survive the
+    rebuild of the matrix (profile_is on kepler45_lc: LinAlgError)."""
+    from pizzetti._sampling import _chol_floored
+    d = np.array([1e-6, 1e-3, 1e3, 1.0])
+    n_old = 0
+    for seed in range(30):
+        Z = np.random.default_rng(seed).standard_normal((1 + seed % 3, 4)) * d          # rank 1 to 3
+        C = Z.T @ Z / len(Z)
+        ev, V = np.linalg.eigh(C)
+        try:
+            np.linalg.cholesky((V * np.clip(ev, 1e-30, None)) @ V.T)
+        except np.linalg.LinAlgError:
+            n_old += 1
+        L = _chol_floored(C)
+        assert np.all(np.diag(L) > 0)
+        s = np.sqrt(np.diag(C))
+        np.testing.assert_allclose((L @ L.T) / np.outer(s, s), C / np.outer(s, s), atol=1e-10)
+    assert n_old > 0
+    assert np.all(np.diag(_chol_floored(np.zeros((4, 4)))) > 0)                         # all weight on one draw
+    np.testing.assert_allclose(np.diag(_chol_floored(np.diag(d ** 2))), d, rtol=1e-12)
