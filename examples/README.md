@@ -65,6 +65,12 @@ jupyter lab examples/
 |---|---|---|---|
 | 19 | [The Bayesian evidence](19_bayesian_evidence.ipynb) | `lnz` from `profile_is` and `fit`, piece by piece; against dynesty, on the marginal and the conventional fit, including a grazing transit; accuracy against cost; a Bayes factor for "is there a transit?"; how the prior enters; when not to trust the number | ~30 min (dynesty) |
 
+## Eccentricity
+
+| | Notebook | What you learn | Run time |
+|---|---|---|---|
+| 20 | [Eccentricity from a stellar density](20_eccentricity_from_a_stellar_density.ipynb) | `FitResult.reweight_density`: the photoeccentric effect; one circular fit for any density and prior on (e, ω); why the Jacobian and the centre of the transit matter; checks against dynesty and a grid, where the reference itself was wrong; calibration on 1100 light curves; the limit at high S/N | ~1 min |
+
 Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 → 03 → 05 → 06;
 **methods** 07 → 08 → 09; **sampling** 11 → 12 → 13 → 14 → 15 → 16; **real data, start to end** 11 → 17 → 18; **comparing models** 11 → 14 → 19.
 
