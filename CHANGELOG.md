@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `FitResult.reweight_density(rho=(mean, sd))`: the posterior of e and omega from a stellar density, after a fit of a
+  circular orbit, with no new likelihood evaluation. Each draw is repeated with (e, omega) from their prior, keeping the
+  duration and the centre of the transit (exact contact times on the Keplerian orbit), and weighted with the exact Jacobian
+  of the density. One fit serves any density and any prior on (e, omega) (`log_prior`). Calibrated on 1100 prior-drawn light
+  curves, with reference posteriors from dynesty and a grid in (e, omega); above an S/N of about 1000 the intervals of
+  b_conj and rp are too narrow (a 95 % interval covers 86 % and 92 %). Tutorial 20.
+- `profile_is`: `strata[...]["mass_err"]` of the two sides now has the same value, from both integrals; each side's used
+  only its own integral, which understated the error.
 - `profile_is` / `fit()`: where the first profile is not usable and the bounds allow grazing geometries, the posterior is
   split at the grazing boundary b_conj = 1 - rp and each side is integrated on its own, with no overlap: on the grazing
   side a profile in (ln lambda, v), lambda = rp^2 (1 + gamma) about twice the depth, v the position along the ridge between

@@ -23,5 +23,5 @@
 .. autoclass:: pizzetti.GP
 
 .. autoclass:: pizzetti.FitResult
-   :members: summary, corner
+   :members: summary, corner, reweight_density
 ```

@@ -123,6 +123,16 @@ other laws), `lnz` is nan and `lnz_note` says why; `log_int` is still the integr
 if `is_ok`: `lnz_err` is a Monte Carlo error and cannot see a mode that no draw reached. On a grazing branch that reaches the
 `rp` bound, the evidence depends on that bound.
 
+**Eccentricity from a stellar density.** A transit hardly depends on e and ω once its duration and centre are fixed, so a
+fit of a circular orbit serves any orbit: the density it implies is then wrong by a factor g³, g = (1 + e sin ω)/√(1 − e²),
+which is the photoeccentric effect (Dawson & Johnson 2012). `fit().reweight_density(rho=(1.41, 0.14))` turns that around, with no new
+likelihood evaluation. It repeats each draw with (e, ω) from their prior, with a/R⋆ and t₀ such that the duration
+and the centre of the transit on the Keplerian orbit stay what they were, and weights it with N(ρ) |∂ρ/∂T14| / |∂a_circ/∂T14|, because the fit
+is flat in the circular a/R⋆. The result has `ecc`, `w`, `b_conj` and `rho` as extra columns, and `a`, `b`, `t0` of the eccentric orbit. Fit with `ecc=0`
+and bounds on `a` wide enough not to cut its posterior. The prior is flat in e, ω (or `log_prior`), rp and b_conj.
+Orbits with periastron a(1 − e) ≤ 1 + rp are excluded. Prior-drawn light curves give calibrated ranks for all parameters up to an S/N of about 1000. Above that,
+the intervals of `b_conj` and `rp` are too narrow, and a free fit of `ecc` and `w` with dynesty is the check ([tutorial 20](https://github.com/hippke/pizzetti/blob/main/examples/20_eccentricity_from_a_stellar_density.ipynb)).
+
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb
 darkening and baseline as extra columns.

@@ -59,6 +59,16 @@ def test_both_sides_found_and_match_the_references(case):
     assert r["n_eval"] < 50_000          # the retry and the rescue took 55 000 to 90 000
 
 
+def test_shares_of_the_posterior_have_one_error():
+    """Two shares that sum to one have the same error, from both integrals."""
+    m, _ = build("b100lo")
+    r = m.profile_is(n=2000, rng=np.random.default_rng(1), evidence=False)
+    assert r["stratified"]
+    a, b = r["strata"]["nongrazing"], r["strata"]["grazing"]
+    assert a["mass"] + b["mass"] == pytest.approx(1.0)
+    assert a["mass_err"] == pytest.approx(b["mass_err"]) and a["mass_err"] > 0
+
+
 def test_side_without_proposal_is_not_dropped(monkeypatch):
     """No proposal on the grazing side, which holds most of the mass: the old attempts run, nothing is lost."""
     m, _ = build("b100lo")

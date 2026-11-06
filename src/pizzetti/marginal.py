@@ -68,6 +68,7 @@ _NO_ASTACK = (np.zeros((1, _powbasis.DEG_A + 1, _powbasis.DEG + 1, 7, _powbasis.
               np.zeros((1, 7), np.int64), np.zeros(1, np.bool_), np.zeros(1), np.full(1, -1.0),
               np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1.0), np.full(1, -1, np.int64))
 _DEG = math.pi / 180.0
+_G_CGS = 6.6743e-8          # the constant of gravitation, cm3 / g / s2 (CODATA 2018)
 
 
 @njit(cache=True)
@@ -1700,8 +1701,8 @@ class MarginalTransitModel:
             err = np.array([r["log_int_err"] for _, _, r in out])
             relevant = [r["khat"] for (_, _, r), m_ in zip(out, mk) if m_ >= _STRATUM_MIN_MASS]
             strata = {}
-            for (lab, T, r), m_, e_ in zip(out, mk, err):
-                strata[lab] = dict(mass=float(m_), mass_err=float(m_ * (1.0 - m_) * e_), khat=float(r["khat"]),
+            for (lab, T, r), m_ in zip(out, mk):                               # a share depends on both integrals
+                strata[lab] = dict(mass=float(m_), mass_err=float(m_ * (1.0 - m_) * math.sqrt(np.sum(err ** 2))), khat=float(r["khat"]),
                                    ess=float(r["ess"]), n_grid=int(r["n_grid"]), amis_iters=int(r["amis_iters"]),
                                    coord=T.kind)
             with np.errstate(divide="ignore"):
@@ -1985,7 +1986,9 @@ class MarginalTransitModel:
         wc /= wc.sum()
         diag["ess_total"] = float(1.0 / np.sum(wc ** 2))
         j = systematic_resample(wc, len(wc), rng)
-        return FitResult(S_[j], labels, weighted=(S_, wc), diagnostics=diag)
+        orbit = dict(per=self.fixed[1], rp=self.fixed[2], a=self.fixed[3], b=self.fixed[4], ecc=self.fixed[5],
+                     a_bounds=(self.lo[3], self.hi[3]), secondary=self.secondary, free=tuple(self.free))
+        return FitResult(S_[j], labels, weighted=(S_, wc), diagnostics=diag, orbit=orbit)
 
     def fixed_physical_free(self):
         X = np.empty((1, self.ndim))
@@ -2024,17 +2027,41 @@ class MarginalTransitModel:
         return out
 
 
+def _contact_times(per, rp, a, bo, e, om):
+    """Times of first and last contact of a transit, relative to conjunction, on a Keplerian orbit (arrays): solves
+    z(f) = 1 + rp for the true anomaly on both sides of conjunction, f = pi / 2 - om + u, z^2 = r(f)^2 (cos^2 i + sin^2 i sin^2 u)."""
+    cos2 = (bo / a) ** 2
+    fc = 0.5 * np.pi - om
+    p_ = a * (1.0 - e * e)
+    M = np.empty((2,) + np.shape(e))
+
+    def mean_anomaly(f):
+        E = 2.0 * np.arctan2(np.sqrt(1.0 - e) * np.sin(0.5 * f), np.sqrt(1.0 + e) * np.cos(0.5 * f))
+        return E - e * np.sin(E)
+
+    m0 = mean_anomaly(fc)
+    for k, sign in enumerate((-1.0, 1.0)):
+        u = np.zeros_like(e)
+        for _ in range(8):                                     # r varies slowly over a transit: a contraction
+            r = p_ / (1.0 + e * np.cos(fc + sign * u))
+            u = np.arcsin(np.sqrt(np.maximum(((1.0 + rp) / r) ** 2 - cos2, 0.0) / (1.0 - cos2)))
+        M[k] = (mean_anomaly(fc + sign * u) - m0 + np.pi) % (2.0 * np.pi) - np.pi
+    return per / (2.0 * np.pi) * M[0], per / (2.0 * np.pi) * M[1]
+
+
 class FitResult:
     """Result of ``MarginalTransitModel.fit``: equal-weight ``samples`` (emcee-like
     flat array, systematic resampling) with ``labels``; ``weighted_samples`` and
     ``weights`` are the exact weighted draws (preferred for histograms / corner plots:
     resampled draws repeat values in proportion to their weights)."""
 
-    def __init__(self, samples, labels, weighted, diagnostics):
+    def __init__(self, samples, labels, weighted, diagnostics, orbit=None):
         self.samples = samples
         self.labels = labels
         self.weighted_samples, self.weights = weighted
         self.diagnostics = diagnostics
+        self._orbit = orbit
+        self._parents = None                 # reweight_density: row of the fit that each weighted draw comes from
 
     def summary(self):
         """Table of median and 16th/84th-percentile offsets for every column."""
@@ -2049,6 +2076,146 @@ class FitResult:
         """Corner plot of the weighted draws (no resampling duplicates)."""
         import corner
         return corner.corner(self.weighted_samples, weights=self.weights, labels=self.labels, **kwargs)
+
+    def reweight_density(self, rho, ecc_max=0.92, log_prior=None, repeats=20, min_ess=2000, seed=None):
+        """Eccentricity from a stellar density: the posterior of (e, omega) and the rest under a Gaussian prior on the
+        density, from this fit of a circular orbit, with no new likelihood evaluation.
+
+        A transit hardly differs from that of a circular orbit with the same duration, centre and depth: only the
+        density implied by a/R* changes (Dawson & Johnson 2012; MacDougall et al. 2023). Each draw of the fit is
+        repeated with (e, omega) from their prior, with a/R* such that the duration T14 of the Keplerian orbit is
+        unchanged and t0, the time of conjunction, such that the middle of the transit is, and weighted by
+        N(rho) |d rho / d T14| / |d a_circular / d T14|, since the fit is flat in the circular a/R*.
+
+        Calibrated on 1100 light curves drawn from this prior (tutorial 20). Above an S/N of about 1000 the transit shape
+        differs measurably: e, omega and a stay calibrated, but the intervals of b_conj and rp are too narrow, with a 95 %
+        interval covering 86 % and 92 %.
+
+        The prior is N(rho) on the density, flat in e and omega (or ``log_prior``), flat in rp and b_conj with
+        b_conj < 1 + rp, as in the fit. Orbits with periastron inside a(1 - e) <= 1 + rp are excluded. A ``log_prior``
+        of the model stays in the weights, so it must not involve a. Fit with finite bounds on a wide enough not to cut
+        the circular a/R* (``density["a_wall_mass"]``): orbits that need a value outside them are not reached.
+
+        :param rho: (mean, sd) of the stellar density in g/cm3
+        :param ecc_max: upper limit of the prior on e
+        :param log_prior: optional vectorised ``f(ecc, w) -> array``, w in degrees, on top of the flat prior; for
+            example the factor of transit probability, ``lambda e, w: np.log1p(e * np.sin(np.radians(w))) -
+            np.log(1 - e**2)``
+        :param repeats: draws of (e, omega) per draw of the fit in each pass
+        :param min_ess: passes are added (at most 25) until the weights reach this ESS
+        :param seed: seed of the draws of (e, omega)
+        :return: a ``FitResult`` with the columns of this one, t0, a = a/R* and b = a cos(inc) of the eccentric orbit, then
+            ``ecc``, ``w`` (degrees), ``b_conj`` (the transit impact parameter) and ``rho``.
+            ``diagnostics["density"]`` has ``ess``, ``ess_parents`` (the ESS counted in draws of the fit, which limits
+            what extra repeats can add), ``a_wall_mass``, ``passes``. The evidence of the fit does not apply: ``lnz`` is nan.
+        """
+        o = self._orbit
+        if o is None:
+            raise ValueError("reweight_density needs the result of fit() on a circular orbit, once")
+        if o["secondary"]:
+            raise ValueError("reweight_density needs a transit, not an eclipse")
+        if o["ecc"] >= 1e-5 or "ecc" in o["free"] or "w" in o["free"]:
+            raise ValueError("reweight_density needs a fit with ecc = 0 and neither ecc nor w free")
+        if "a" not in o["free"]:
+            raise ValueError('reweight_density needs "a" in free')
+        mean, sd = float(rho[0]), float(rho[1])
+        if not (mean > 0.0 and sd > 0.0 and 0.0 < ecc_max < 1.0):
+            raise ValueError("reweight_density needs rho = (mean > 0, sd > 0) and 0 < ecc_max < 1")
+
+        def col(name):
+            return S[:, L.index(name)] if name in L else np.full(len(S), float(o[name]))
+
+        rng = np.random.default_rng(seed)
+        S, L = self.weighted_samples, self.labels
+        per, rp, b_c, a_c = col("per"), col("rp"), np.abs(col("b")), col("a")
+        Q = (1.0 + rp) ** 2 - b_c ** 2
+        with np.errstate(all="ignore"):
+            s_c = np.arcsin(np.sqrt(Q / (a_c ** 2 - b_c ** 2)))                # pi T14 / P of the circular orbit
+            da_c = Q * np.cos(s_c) / (a_c * np.sin(s_c) ** 3)                  # |d a_c / d s_c|
+            lw0 = np.log(self.weights) - np.log(da_c)
+        rows, best = [], -np.inf
+        ess = 0.0
+        for passes in range(1, 26):
+            j = np.repeat(np.arange(len(S)), repeats)
+            e, om = rng.uniform(0.0, ecc_max, len(j)), rng.uniform(-0.5 * np.pi, 1.5 * np.pi, len(j))
+            esw = e * np.sin(om)
+            g = (1.0 + esw) / np.sqrt(1.0 - e * e)                             # T14 = g^-1 x P / pi x arcsin(...)
+            bo = b_c[j] * (1.0 + esw) / (1.0 - e * e)                          # a cos(inc)
+            with np.errstate(all="ignore"):
+                # first the constant-speed duration, to set aside the draws far from the density
+                s = s_c[j] * g
+                a = np.sqrt(Q[j] / np.sin(s) ** 2 + bo * bo)
+                r = 3.0 * np.pi * a ** 3 / (_G_CGS * (per[j] * 86400.0) ** 2)
+                keep = (s < 0.5 * np.pi) & (a * (1.0 - e) > 1.0 + rp[j]) & (np.abs(r - mean) < 12.0 * sd)
+            j, e, om, g, bo, esw = j[keep], e[keep], om[keep], g[keep], bo[keep], esw[keep]
+            a, s = a[keep], s[keep]
+            with np.errstate(all="ignore"):
+                # a such that the duration of the Keplerian orbit is that of the fit: kappa = T14 / constant-speed T14
+                # varies slowly with a, so that da / dT14 = (da / dT14 at constant speed) / kappa
+                kappa = np.ones_like(a)
+                T = s_c[j] * per[j] / np.pi
+                for _ in range(4):
+                    t1, t4 = _contact_times(per[j], rp[j], a, bo, e, om)
+                    kappa = kappa * (t4 - t1) / T
+                    s = s_c[j] * g / kappa
+                    a = np.sqrt(Q[j] / np.sin(s) ** 2 + bo * bo)
+                t1, t4 = _contact_times(per[j], rp[j], a, bo, e, om)
+                r = 3.0 * np.pi * a ** 3 / (_G_CGS * (per[j] * 86400.0) ** 2)
+                da = Q[j] * np.cos(s) * g / kappa / (a * np.sin(s) ** 3)       # |d a / d s_c| at this e, omega
+                lw = lw0[j] - 0.5 * ((r - mean) / sd) ** 2 + np.log(3.0 * r / a * da)
+                if log_prior is not None:
+                    lw = lw + np.asarray(log_prior(e, np.degrees(om)), dtype=float)
+                keep = np.isfinite(lw) & (s < 0.5 * np.pi) & (a * (1.0 - e) > 1.0 + rp[j])
+            best = max(best, np.max(lw[keep], initial=-np.inf))
+            keep &= lw > best - 25.0                                           # the rest would not change any weight
+            rows.append((j[keep], e[keep], np.degrees(om[keep]), a[keep], bo[keep], b_c[j][keep], r[keep],
+                         0.5 * (t1 + t4)[keep], lw[keep]))
+            lw_all = np.concatenate([q[-1] for q in rows])
+            if len(lw_all) == 0:
+                continue
+            w = np.exp(lw_all - best)
+            ess = float(np.sum(w) ** 2 / np.sum(w * w))
+            if ess >= min_ess:
+                break
+        if ess == 0.0:
+            raise ValueError("reweight_density: no draw reaches this density with e < ecc_max")
+        j, e, om, a, bo, bc, r, mid, lw = (np.concatenate(q) for q in zip(*rows))
+        keep = lw > best - 25.0
+        j, e, om, a, bo, bc, r, mid, lw = (q[keep] for q in (j, e, om, a, bo, bc, r, mid, lw))
+        w = np.exp(lw - best)
+        w /= w.sum()
+        T = S[j].copy()
+        T[:, L.index("a")] = a
+        if "t0" in L:
+            T[:, L.index("t0")] -= mid                                         # the middle of the transit stays
+        labels = list(L)
+        extra = [e, om, bc, r]
+        names = ["ecc", "w", "b_conj", "rho"]
+        if "b" in L:
+            T[:, L.index("b")] = bo
+        else:
+            extra.insert(0, bo)
+            names.insert(0, "b")
+        T = np.column_stack([T] + extra)
+        labels += names
+        ess_parents = float(1.0 / np.sum(np.bincount(j, w, minlength=len(S)) ** 2))
+        lo, hi = o["a_bounds"]
+        wall = float(np.sum(self.weights[(a_c < 1.01 * lo) | (a_c > 0.99 * hi)]) / np.sum(self.weights))
+        if ess < 0.25 * min_ess or ess_parents < 100.0:
+            warnings.warn(f"reweight_density: few effective draws (ESS {ess:.0f}, {ess_parents:.0f} counted in draws of "
+                          "the fit): a density far from what the fit allows, or a very narrow one; use a larger n in "
+                          "fit() or raise repeats", RuntimeWarning, stacklevel=2)
+        if wall > 0.01:
+            warnings.warn(f"reweight_density: {wall:.1%} of the fit lies at the bounds on a; wider bounds may change "
+                          "the result", RuntimeWarning, stacklevel=2)
+        diag = dict(self.diagnostics, ess_total=ess, lnz=np.nan, lnz_err=np.nan,
+                    lnz_note="reweight_density: the evidence of the circular fit does not apply",
+                    density=dict(rho=mean, sd=sd, ecc_max=float(ecc_max), ess=ess, ess_parents=ess_parents,
+                                 a_wall_mass=wall, passes=passes))
+        jr = systematic_resample(w, max(len(S), min(len(w), 100_000)), rng)
+        out = FitResult(T[jr], labels, weighted=(T, w), diagnostics=diag)
+        out._parents = j
+        return out
 
 
 _SAMPLER_CLASS = None
