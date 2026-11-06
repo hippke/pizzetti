@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Seeded runs no longer depend on whether the kernels were just compiled or came from the cache (or on which kernel was
+  loaded first in a process). numba keeps a copy of each kernel in every caller, and with `fastmath=True` the copies rounded
+  differently (a few 1e-14 on the limb, 1e-12 in the log likelihood, which an optimiser amplifies to a different path:
+  tutorial 19 took 11336 evaluations after compiling and 12128 from the cache). The kernels no longer allow reassociation
+  (`_cachecheck.FASTMATH`). Seeded numbers change once. Time per evaluation: quadratic +2 %, power-2 +7 %, linear +12 %;
+  light curves +5 %.
 - `FitResult.reweight_density(rho=(mean, sd))`: the posterior of e and omega from a stellar density, after a fit of a
   circular orbit, with no new likelihood evaluation. Each draw is repeated with (e, omega) from their prior, keeping the
   duration and the centre of the transit (exact contact times on the Keplerian orbit), and weighted with the exact Jacobian

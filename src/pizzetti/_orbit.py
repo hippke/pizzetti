@@ -4,6 +4,8 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
+
 #: separation returned when the planet is behind the star (primary) or in
 #: front of it (secondary), as in batman
 BIGD = 100.0
@@ -24,7 +26,7 @@ _C5 = 2.08757232129817482790e-09
 _C6 = -1.13596475577881948265e-11
 
 
-@njit(cache=True, fastmath=True, inline="always")
+@njit(cache=True, fastmath=FASTMATH, inline="always")
 def sin_turns(u):
     """sin(2 pi u) for a phase u in turns, branch-free polynomial (vectorises);
     error ~1e-16 independent of |u| (the phase is reduced in turns)."""
@@ -39,7 +41,7 @@ def sin_turns(u):
     return -v if k >= 2 else v
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _rsky_circular(t, tp, per, a, si, w_turns, transittype, d):
     """Circular orbit: d = a sqrt(1 - sin^2(f + w) sin^2 i), f = 2 pi (t - tp) / per."""
     inv_per = 1.0 / per

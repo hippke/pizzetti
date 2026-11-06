@@ -29,6 +29,7 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from . import _exact, _series
 from ._exact import ELL_BATCH_ITERATIONS, KC_MIN, Z_K_MIN, ell_combo_kc, limb_terms
 
@@ -46,7 +47,7 @@ def terms_cut(k, tol, Gt):
     return _series.zcut(k, _GH, _ONE, k * k, 0.25 * tol, Gt)
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def exact_point_terms(z, k):
     """(lex, ldx, edx) at one on-star z (z != k, not fully occulted), scalar
     early-exit version (fallback for lanes the batch does not converge)."""
@@ -82,7 +83,7 @@ def exact_point_terms(z, k):
     return lex, ldx, edx
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def exact_batch_terms(zb, m, k, lex, ldx, edx, dev):
     """Vectorised (lex, ldx, edx) for zb[:m]; dev[j] > 0 marks lanes for the
     scalar fallback. Same arithmetic as _exact.exact_batch."""
@@ -138,7 +139,7 @@ def exact_batch_terms(zb, m, k, lex, ldx, edx, dev):
         dev[j] = dd
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _series_terms(z, a, k, z_c, one_k, T, bcnt):
     """Interior series pass in blocks of BLK (cf. occult._series_select):
     T[:, i] = (k^2, sqrt(w) P(v), k^2 (k^2 + 2 z^2) / 2) where z <= z_c, 0 elsewhere.

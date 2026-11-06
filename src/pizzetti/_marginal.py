@@ -18,6 +18,7 @@ import math
 import numpy as np
 from numba import njit, prange
 
+from ._cachecheck import FASTMATH
 from . import _orbit
 from ._powbasis import alpha_column, columns_kernel
 from ._physnl import log_prob_physical_line
@@ -1222,12 +1223,20 @@ def _qr_solve(A, y):
     return True, c, Fi, logdet, chi2
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _dot(a, b):
-    s = 0.0
-    for t in range(a.shape[0]):
-        s += a[t] * b[t]
-    return s
+    # four running sums: vectorises without reassociation
+    n = a.shape[0]
+    m = n - n % 4
+    s0 = s1 = s2 = s3 = 0.0
+    for t in range(0, m, 4):
+        s0 += a[t] * b[t]
+        s1 += a[t + 1] * b[t + 1]
+        s2 += a[t + 2] * b[t + 2]
+        s3 += a[t + 3] * b[t + 3]
+    for t in range(m, n):
+        s0 += a[t] * b[t]
+    return (s0 + s2) + (s1 + s3)
 
 
 @njit(cache=True)
@@ -1354,7 +1363,7 @@ def gibbs_cone_gen(mu, cov, D, rng_u, sweeps):
 # ----------------------------------------------------------------------------
 # Fused general path: all laws with fixed exponents, and secondary eclipses
 # ----------------------------------------------------------------------------
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def gen_design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, ttype, tol, A_half, Gt,
                dvec, W, gams, sertabs, ptol, cheb, lens, valid, ycs, plo, phi, ju, jw, has,
                amode, alpha, cheb2, lens2, valid2, yc2, plo2, phi2, alo2, ahi2, nreg2):

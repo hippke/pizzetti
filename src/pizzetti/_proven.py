@@ -35,6 +35,7 @@ from math import lgamma, log, pi, sqrt
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from . import _contact
 from ._lens import _digamma
 
@@ -716,7 +717,7 @@ def build(p, gams, cs, tabs, lens, z_lo, total, tau):
     return zb, kinds[:npc].copy(), s0s[:npc].copy(), store[:npc].copy(), degs[:npc].copy(), ok, bnds[:npc] / total
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _horner(c, N, x):
     r = 0.0
     for i in range(N, -1, -1):
@@ -724,7 +725,7 @@ def _horner(c, N, x):
     return r
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def evaluate(z, p, gams, zb, kinds, s0s, store, degs, out):
     """Blocked flux from the proven pieces; NaN outside them."""
     nt = gams.shape[0]

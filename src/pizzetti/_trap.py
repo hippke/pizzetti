@@ -32,6 +32,7 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from ._exact import acos_poly
 from ._series import _vexp, _vlog
 
@@ -101,7 +102,7 @@ def rules(gams, h=None):
     return out
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def blocked_cross(zl, m, p, gams, cs, W, tt, b, out):
     """out[j] = sum_i cs[i] P_{2 gams[i]}(zl[j], p) for occultors crossing the limb
     (1 - p < z < 1 + p, z > p; requires p < 0.5)."""
@@ -252,7 +253,7 @@ def band_ok(p, z_lo):
     return band_gamma(p, z_lo) > 0.0
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def blocked_band(zl, m, p, gams, cs, Wr, Wi, ttr, tti, br, bi, gamma, out):
     """out[j] = sum_i cs[i] P_{2 gams[i]}(zl[j], p) for occultors inside the disk
     near the limb (p < z < 1 - p, band_ok)."""

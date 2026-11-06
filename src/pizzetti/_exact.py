@@ -21,6 +21,8 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
+
 # fixed Bulirsch steps of the vectorised pass; non-converged lanes fall back
 ELL_BATCH_ITERATIONS = 5
 # floor of the complementary modulus (kc = 0 only at internal tangency)
@@ -43,7 +45,7 @@ _QS4 = 7.70381505559019352791e-02
 _HALF_PI = 1.5707963267948966
 
 
-@njit(cache=True, fastmath=True, error_model="numpy", inline="always")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy", inline="always")
 def acos_poly(x):
     """arccos(x) for -1 <= x <= 1, branch-free (fdlibm with selects), so that
     loops calling it vectorise; <= 1 ulp from libm."""
@@ -60,7 +62,7 @@ def acos_poly(x):
     return a_small if small else a_big
 
 
-@njit(cache=True, fastmath=True, error_model="numpy", inline="always")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy", inline="always")
 def acos_acc(x, om, op):
     """arccos(x) from x and accurately computed om = 1 - x, op = 1 + x
     (both >= 0), branch-free: no loss of accuracy near x = +-1, where
@@ -82,7 +84,7 @@ def acos_acc(x, om, op):
     return a_small if small else a_big
 
 
-@njit(cache=True, fastmath=True, error_model="numpy", inline="always")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy", inline="always")
 def limb_terms(z, k):
     """lex, edx on the limb (Case III) with the arccos arguments and the
     kite area in factored form (accurate at the contact points)."""
@@ -108,7 +110,7 @@ def limb_terms(z, k):
     return lex, edx
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def ell_combo_kc(kc, p, A, B, C, Cp):
     """A K + B E + C Pi from one Bulirsch iteration with early exit.
     kc: complementary modulus, p = sqrt(n + 1), Cp = C / p."""
@@ -138,7 +140,7 @@ def ell_combo_kc(kc, p, A, B, C, Cp):
     return np.nan
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def exact_point(z, k, c1, c2, u2, omega):
     """Exact flux at one on-star z (0 <= z < 1 + k, z != k, not fully
     occulted), scalar."""
@@ -174,7 +176,7 @@ def exact_point(z, k, c1, c2, u2, omega):
     return 1 - (c1 * lex + c2 * ldx + u2 * edx) * omega
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def exact_batch(zb, m, k, c1, c2, u2, omega, flux, dev):
     """Exact flux for zb[:m] (on-star, z != k, not fully occulted), branch-free
     so that LLVM vectorises the loop. dev[j] > 0 marks lanes that need the

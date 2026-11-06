@@ -14,6 +14,8 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
+
 
 from . import _contact, _exact, _general, _interp, _lens, _proven, _series, _trap
 from .laws import QUADRATIC_FAMILY, check_law, power_terms, quadratic_coefficients
@@ -38,7 +40,7 @@ _A_HALF = _series.table(0.5, _series.M)
 BLK = 64
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _series_select(z, a, A0, A1, z_c, one_k, out, bcnt):
     """Branch-free, vectorised series pass, in blocks of BLK samples:
     out[i] = series flux if z <= z_c, else 1. A block in which no sample lies on
@@ -79,7 +81,7 @@ def _series_select(z, a, A0, A1, z_c, one_k, out, bcnt):
     return tot
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _count_rest(z, z_c, one_k):
     cnt = 0
     for i in range(z.shape[0]):

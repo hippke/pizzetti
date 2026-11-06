@@ -33,6 +33,7 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from ._exact import acos_poly
 from ._series import _vexp, _vlog
 
@@ -52,7 +53,7 @@ P_MAX = 0.3
 LAM_MIN = -1.0
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def core_real(lam, x, c0, gams, W, tt, b, out):
     """out[i] = J(lam; x, c0) for the exponents 2 gams[i] by the real rule
     (W, tt, b) of _trap.rules (b holds the step after the nodes)."""
@@ -77,7 +78,7 @@ def core_real(lam, x, c0, gams, W, tt, b, out):
             out[i] -= base * _vexp(-(gams[i] + 1.5) * lx)
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def core_band(lam, x, c0, gams, Wr, Wi, ttr, tti, br, bi, gamma, hin, out):
     """out[i] = Re J(lam - i0; x, c0), lam < 0, by the complex-contour rule of _trap.rules_in."""
     nt = gams.shape[0]
@@ -137,7 +138,7 @@ def _cheb_coef(vals, D, out):
         out[m] = s
 
 
-@njit(cache=True, fastmath=True, inline="always")
+@njit(cache=True, fastmath=FASTMATH, inline="always")
 def _clenshaw(c, t):
     b1 = 0.0
     b2 = 0.0
@@ -239,7 +240,7 @@ def build(p, gams, lam_lo, W, tt, b, Wr, Wi, ttr, tti, br, bi, gamma, hin, Wc, t
     return EO, AC, BC, AN, BN
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _clen_block(C, t, m, b1, b2):
     """b1 <- sum_k C[k] T_k(t[j]) for j < m, vectorised over the samples."""
     for j in range(m):
@@ -256,7 +257,7 @@ def _clen_block(C, t, m, b1, b2):
         b1[j] = t[j] * b1[j] - b2[j] + c
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def evaluate(zl, m, p, gams, cs, lam_lo, EO, AC, BC, AN, BN, out):
     """out[j] = sum_i cs[i] P_i(zl[j]) where a piece covers zl[j] (z > p,
     lam >= lam_lo); NaN elsewhere. Samples are grouped by piece and the

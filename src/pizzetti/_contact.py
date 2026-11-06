@@ -32,6 +32,7 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from . import _exact, _lens
 
 #: order of the contact series (polynomial degree)
@@ -306,7 +307,7 @@ def build(p, gams, cs, tabs, lens, z_lo, N):
     return bounds, REG, SA, SB, SCc, ms, est
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _horner(c, x):
     r = 0.0
     for i in range(c.shape[0] - 1, -1, -1):
@@ -314,7 +315,7 @@ def _horner(c, x):
     return r
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _pw(x, sx, qx, lx, e):
     """x^e from sqrt(x), x^(1/4) and ln x: quarter-integer e without exp."""
     e4 = 4.0 * e
@@ -334,7 +335,7 @@ def _pw(x, sx, qx, lx, e):
     return np.exp(e * lx)
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def p01(z, p):
     """Blocked integrals of the exponents 0 and 1 in closed form (Mandel & Agol
     2002): P_0 = pi lambda_e (the blocked area), P_1 = pi (lambda_e - eta_d)."""
@@ -346,7 +347,7 @@ def p01(z, p):
     return pi * lex, pi * (lex - edx)
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def evaluate(z, p, bounds, REG, SA, SB, SCc, ms, out, c0=0.0, c1=0.0):
     """out[j] = blocked flux sum_i c_i P_{g_i}(z[j]) for samples inside the
     three pieces; NaN elsewhere. c0, c1: coefficients of the exponents 0 and 1,

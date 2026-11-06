@@ -34,6 +34,7 @@ import math
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
 from . import _contact, _general, _series
 from .occult import _cut_terms, limb_tables, series_tables
 
@@ -70,7 +71,7 @@ def _cheb_nodes(lo, hi, deg):
 # ----------------------------------------------------------------------------
 # numba kernels
 # ----------------------------------------------------------------------------
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _clenshaw_coefs(cc, x, out, L):
     """out[s, :L[s]] = sum_j cc[j, s, :L[s]] T_j(x) (Clenshaw, vectorised over the
     coefficients); cc (DEG+1, 7, NB+1)."""
@@ -96,7 +97,7 @@ def _clenshaw_coefs(cc, x, out, L):
             o[i] = x * b1[i] - b2[i] + c[i]
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _horner_n(c, n, x):
     r = 0.0
     for i in range(n - 1, -1, -1):
@@ -104,7 +105,7 @@ def _horner_n(c, n, x):
     return r
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _contact_point(zj, p, m, S, L, yc):
     """Blocked flux (absolute) of one term from the expansions S (7, NB+1) with
     lengths L (7,); NaN if zj is outside the validated pieces."""
@@ -142,7 +143,7 @@ def _contact_point(zj, p, m, S, L, yc):
     return np.nan
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _horner_vec(c, L, u, n, out):
     """out[:n] = sum_i c[i] u^i (Horner across samples: vectorises)."""
     v = c[L - 1]
@@ -154,7 +155,7 @@ def _horner_vec(c, L, u, n, out):
             out[t] = out[t] * u[t] + ci
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _logpow(u, n, m, lu, um):
     """lu = ln u, um = u^m for u[:n] > 0 (branch-free, vectorises)."""
     for t in range(n):
@@ -163,7 +164,7 @@ def _logpow(u, n, m, lu, um):
         um[t] = _series._vexp(m * l_)
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def _pieces_vec(kind, u, n, m, S, L, out, nreg=-1):
     """Blocked flux (absolute) of one term at arguments u[:n] of piece kind
     (0: A, k; 1: B, y; 2: C, y'), from the expansions S (7, NB+1), lengths L.
@@ -495,7 +496,7 @@ def alpha_range(ia):
     return ia * WIDTH_A, (ia + 1) * WIDTH_A
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _clenshaw_outer(cc2, x, out, L):
     """out[j, s, :L[s]] = sum_k cc2[k, j, s, :L[s]] T_k(x): collapse the alpha axis."""
     nk = cc2.shape[0]

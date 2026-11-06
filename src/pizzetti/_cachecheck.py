@@ -12,6 +12,12 @@ import glob
 import hashlib
 import os
 
+# numba links a copy of a kernel into the object code of each caller, as a weak symbol, and optimises it again; at run
+# time every call goes to the copy loaded first. With reassociation ("fast") the copies round differently, so results
+# depended on the load order, which differs between a run that compiles and one on the cache (a seeded profile_is:
+# 11336 and 12128 evaluations). Without it, re-optimising a kernel does not change its values.
+FASTMATH = {"nnan", "ninf", "nsz", "contract"}
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CACHE = os.path.join(_HERE, "__pycache__")
 _STAMP = os.path.join(_CACHE, "numba_sources.sha256")

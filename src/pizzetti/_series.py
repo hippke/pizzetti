@@ -18,6 +18,8 @@ from math import pi
 import numpy as np
 from numba import njit
 
+from ._cachecheck import FASTMATH
+
 #: Truncation order of the series (odd): polynomial of degree M in 1/(1 - z^2).
 M = 11
 
@@ -186,7 +188,7 @@ def zcut(p, gams, cabs, scale, tol, Gt):
     return lo
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def series_quadratic(z, a, A0, A1, out):
     """out[i] = A0 + A1 z^2 - sqrt(w) * sum_j a_j v^j for all i (branch-free,
     vectorised; meaningful only where the caller selects z <= z_c).
@@ -202,14 +204,14 @@ def series_quadratic(z, a, A0, A1, out):
         out[i] = A0 + A1 * z2 - np.sqrt(w) * P
 
 
-@njit(cache=True, fastmath=True, error_model="numpy", inline="always")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy", inline="always")
 def _h12(a, v):
     """Horner of degree 11 (unrolled)."""
     return (((((((((((a[11] * v + a[10]) * v + a[9]) * v + a[8]) * v + a[7]) * v + a[6]) * v
                   + a[5]) * v + a[4]) * v + a[3]) * v + a[2]) * v + a[1]) * v + a[0])
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def series_quarter(zb, m, aq, ah, a3q, A0, A1, out):
     """out[j] = A0 + A1 z^2 - w^(1/4) P_q(v) - w^(1/2) P_h(v) - w^(3/4) P_3q(v)
     for zb[:m] (exponents 1/4, 1/2, 3/4: square-root and nonlinear laws)."""
@@ -262,7 +264,7 @@ def _vexp(y):
     return p * sc
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def series_pow(zb, m, a, g, A0, A1, out):
     """out[j] = A0 + A1 z^2 - w^g P(v) for zb[:m] (one arbitrary exponent:
     power-2 law). w^g by the branch-free log and exp above."""
@@ -273,7 +275,7 @@ def series_pow(zb, m, a, g, A0, A1, out):
         out[j] = A0 + A1 * z2 - _vexp(g * _vlog(w)) * _h12(a, v)
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def _wpow(w, g):
     if g == 0.0:
         return 1.0
@@ -289,7 +291,7 @@ def _wpow(w, g):
     return w ** g
 
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=FASTMATH)
 def series_general(zb, m, gams, T, out):
     """out[j] = 1 - sum_i w^{g_i} sum_l T[i, l] v^l for zb[:m] (T already
     scaled by c_i p^2 / (2 N))."""
@@ -312,7 +314,7 @@ def series_general(zb, m, gams, T, out):
 BLK = 64
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def select_quarter(z, aq, ah, a3q, ag, g, A0, A1, z_c, one_k, out, bcnt):
     """Fused, branch-free pass for the exponents {1/4, 1/2, 3/4} (as _series_select of
     occult for the quadratic law): out[i] = series flux where |z| <= z_c, 1 elsewhere;
@@ -349,7 +351,7 @@ def select_quarter(z, aq, ah, a3q, ag, g, A0, A1, z_c, one_k, out, bcnt):
     return tot
 
 
-@njit(cache=True, fastmath=True, error_model="numpy")
+@njit(cache=True, fastmath=FASTMATH, error_model="numpy")
 def select_pow(z, aq, ah, a3q, ag, g, A0, A1, z_c, one_k, out, bcnt):
     """As select_quarter, for one arbitrary exponent g (power-2 law)."""
     n = z.shape[0]
