@@ -378,7 +378,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
                mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
                lazy_refine=True, khat_refine=0.7, logp_target=None, carry_cov=None, max_carry=3,
-               defensive=0.1):
+               defensive=0.1, clip_map=False):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -414,6 +414,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     such steps fail, the step is halved and the grid can end early (incomplete profile). In 36
     grazing injections that fell back to emcee it made 14 usable instead of 10, but 4 of the 10 failed
     instead: not adopted.
+    ``clip_map``: a maximum beyond a wall (at a wall that bounds the support, within rounding) is moved onto the wall, where
+    the conditional fits have a finite target.
     ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
     neighbouring grid point's sd; "map" ``h_sd`` x the conditional sd at the MAP for
     every grid point (smoother log det Sigma(b) for strongly curved conditionals, but
@@ -426,6 +428,17 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     d = len(theta0)
     rest = [i for i in range(d) if i != prof]
     theta_map, lp_map, nev = find_map(logp_batch, theta0, scale, nelder_mead=nelder_mead)
+    if clip_map:
+        v = theta_map[prof]
+        if lo_wall is not None:
+            v = max(v, lo_wall)
+        if hi_wall is not None:
+            v = min(v, hi_wall)
+        if v != theta_map[prof]:
+            theta_map = np.array(theta_map)
+            theta_map[prof] = v
+            lp_map = float(logp_batch(theta_map[None, :])[0])
+            nev += 1
     nev_map = nev
 
     sd_ref = [None]                       # conditional sd at the MAP (h_ref="map")

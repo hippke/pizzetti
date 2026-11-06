@@ -356,7 +356,74 @@ class _BoundedCoords:
         return np.where(np.isfinite(out), out + lj, -np.inf)
 
 
+class _StratumCoords:
+    """Coordinates of one stratum of the posterior of ``profile_is``, split at the grazing boundary b_conj = 1 - rp,
+    i.e. gamma = (1 - b_conj) / rp = 1 (Gilbert 2022), where the shape of the posterior changes. Two columns replace
+    (rp, b); log_prob is the integrand of ``log_prob_internal`` with the Jacobian, so integrals are unchanged.
+    ``beta``: non-grazing, (rp, beta = b_conj / (1 - rp)); the walls 0 and 1 of beta are fixed.
+    ``graze``: grazing, (ln lambda, v), with lambda = rp^2 (1 + gamma), about twice the transit depth, which is what the
+    data fix along the ridge, and v = (ln rp - ln r0) / (ln rp_hi - ln r0), r0 = max(sqrt(lambda / 2), rp_lo): the
+    position along the ridge. The walls v = 0 (gamma = 1, or the lower bound on rp) and v = 1 (the upper bound on rp)
+    are fixed, so that the conditional in ln lambda has no edge; in ln rp it would be cut off at gamma = 1, in
+    ln(1 + gamma) at the bound on rp."""
+
+    def __init__(self, model, kind):
+        self.m, self.kind = model, kind
+        self.jr, self.jb = model.free.index("rp"), model.free.index("b")
+        self.r_lo, self.r_hi = max(model.lo[2], 1e-300), model.hi[2]
+
+    def _r0(self, ln_lam):
+        return np.maximum(0.5 * (ln_lam - math.log(2.0)), math.log(self.r_lo))
+
+    def to_x(self, U):
+        """Internal rows and log|d(rp, b) / d(columns)|."""
+        U = np.atleast_2d(np.asarray(U, float))
+        p, q = U[:, self.jr], U[:, self.jb]
+        with np.errstate(all="ignore"):
+            if self.kind == "beta":
+                r, bc, lj = p, q * (1.0 - p), np.log(1.0 - p)
+            else:
+                ln_r0 = self._r0(p)
+                span = math.log(self.r_hi) - ln_r0     # > 0: lambda < 2 rp_hi^2, else not finite below
+                r = np.exp(ln_r0 + q * span)
+                bc, lj = 1.0 - np.exp(p) / r + r, p + np.log(span)
+            g = self.m._conj_factor(U)
+            X = U.copy()
+            X[:, self.jr], X[:, self.jb] = r, bc / g
+            return X, lj - np.log(g)
+
+    def to_u(self, X):
+        X = np.atleast_2d(np.asarray(X, float))
+        U = X.copy()
+        r = X[:, self.jr]
+        with np.errstate(all="ignore"):
+            bc = X[:, self.jb] * self.m._conj_factor(X)
+            lam1 = (1.0 - bc) / r + 1.0                # 1 + gamma
+            if self.kind == "beta":
+                U[:, self.jb] = bc / (1.0 - r)
+            else:
+                ln_lam = np.log(r * r * lam1)
+                ln_r0 = self._r0(ln_lam)
+                U[:, self.jr], U[:, self.jb] = ln_lam, (np.log(r) - ln_r0) / (math.log(self.r_hi) - ln_r0)
+        return U
+
+    def log_prob(self, U):
+        U = np.atleast_2d(np.asarray(U, float))
+        X, lj = self.to_x(U)
+        r, b = X[:, self.jr], X[:, self.jb]
+        with np.errstate(all="ignore"):
+            bc = b * self.m._conj_factor(U)
+            gam = (1.0 - bc) / r
+            ok = gam > 1.0 if self.kind == "beta" else (gam > -1.0) & (gam < 1.0)
+            ok &= np.isfinite(r) & np.isfinite(b) & (b >= 0.0) & (r > 0.0) & np.isfinite(lj)
+        out = np.full(len(U), -np.inf)
+        if ok.any():
+            out[ok] = self.m.log_prob_internal(X[ok]) + lj[ok]
+        return out
+
+
 _LNZ_LD_DRAWS = 1000       # conditional limb-darkening draws of profile_is for ln <f0 / c2^3> of its lnz
+_STRATUM_MIN_MASS = 1e-3   # a stratum below this share of the posterior needs no refinement
 
 
 class MarginalTransitModel:
@@ -1169,7 +1236,7 @@ class MarginalTransitModel:
 
     def profile_is(self, n=4000, rng=None, x0=None, retry=True, flat_proposal=True, last_resort=True,
                    ess_min=0.25, rescue=True, rescue_iters=30, khat_ok=0.5, max_evals=None, max_time=None,
-                   evidence=True):
+                   evidence=True, stratify=True):
         """Profile importance sampling along b (``_sampling.profile_is``) in internal coordinates.
 
         The walls of the b profile are b = 0 (the likelihood depends on b^2) or the bounds on b,
@@ -1228,6 +1295,18 @@ class MarginalTransitModel:
         (the rescue's iterations are capped to fit an evaluation budget); if the first proposal
         could not be completed, RuntimeError.
 
+        Strata (``stratify``, default): if the first profile is not usable and the bounds leave the whole support of b
+        with a finite bound on rp, the posterior is split at the grazing boundary b_conj = 1 - rp and each side is
+        integrated on its own, with no overlap (``_StratumCoords``): a profile of n / 2 draws in coordinates that suit
+        that side, then adaptive importance sampling (``_sampling.pmc_refine``) in the same coordinates if its diagnostics
+        fail. Draws combine with the two integrals as weights. ``strata``: per side (``nongrazing``, ``grazing``) its share of
+        the posterior ``mass``, ``mass_err``, ``khat``, ``ess``, ``n_grid``, ``amis_iters``, ``coord`` (flat in the
+        coefficients c: ``expand`` gives the limb-darkening weight). If it does not pass, the attempts below follow as
+        before, and its draws seed the rescue; ``stratified`` says whether it ran and was used, as for the others, and
+        ``strata_note`` why it did not pass: a side without a proposal, a side of the maximum so far that does not reach
+        it, or a mass far below the draws of the first profile. A posterior with a complete first profile that does not reach a grazing geometry tries
+        ``flat_proposal`` first (a cut-off by the cone, not by the geometry). ``stratify=False`` skips all this.
+
         Evidence: ``log_int``, ``log_int_err``: ln of the integral of exp(``log_prob_internal``) over the
         free parameters, from the raw importance weights of the returned draws, and its sd (any law or
         prior). ``lnz``, ``lnz_err`` (``evidence``, default True): the ln evidence with every constant, for
@@ -1243,7 +1322,7 @@ class MarginalTransitModel:
         self._budget = budget
         try:
             res = self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
-                                   rescue_iters, khat_ok, budget)
+                                   rescue_iters, khat_ok, budget, stratify)
             if evidence:
                 res.update(self._lnz_from_draws(res))
             return res
@@ -1291,6 +1370,31 @@ class MarginalTransitModel:
         logw = self.log_prob_internal(X) - lq
         nev.append(k1 + k2 + m)
         return dict(theta=X, logw=logw, w=np.exp(np.where(np.isfinite(logw), logw - np.max(logw[np.isfinite(logw)]), -np.inf)))
+
+    def _grazing_start(self, T, x_ref):
+        """Best point of a grid of the grazing stratum ``T``: ln lambda by two refinements at each of 12 values of v;
+        the other parameters from x_ref. Returns (U, evaluations)."""
+        prof = np.linspace(0.02, 0.98, 12)
+        centre, width = 0.5 * (math.log(1e-6) + math.log(1.0)), 0.5 * (math.log(1.0) - math.log(1e-6))
+        centres = np.full(len(prof), centre)
+        U = np.tile(np.asarray(T.to_u(x_ref))[0], (21, 1))
+        best, best_v, nev = None, -np.inf, 0
+        for it in range(3):
+            w_ = width / 8.0 ** it
+            for k, pv in enumerate(prof):
+                U[:, T.jr] = centres[k] + np.linspace(-w_, w_, 21)
+                U[:, T.jb] = pv
+                v = T.log_prob(U)
+                nev += len(U)
+                if np.isfinite(v).any():
+                    j = int(np.nanargmax(np.where(np.isfinite(v), v, np.nan)))
+                    centres[k] = U[j, T.jr]
+                    if v[j] > best_v:
+                        best, best_v = U[j].copy(), float(v[j])
+        if best is None:
+            best = np.asarray(T.to_u(x_ref))[0]
+            best[T.jr], best[T.jb] = math.log(2.0 * x_ref[T.jr] ** 2), 0.5 * (prof[0] + prof[-1])
+        return best, nev
 
     def _log_prior_volume(self):
         """ln volume of the region of the free parameters with a prior density (box, 0 <= b_conj < 1 + rp,
@@ -1384,8 +1488,37 @@ class MarginalTransitModel:
             logw = np.log(c @ K.DISK) - 3.0 * np.log(c[:, 2])
         return self._lnz_from_ld(res["log_int"], res["log_int_err"], logw, np.ones(len(logw)))
 
+    def _box_seed(self, T, xm, n, rng, nev):
+        """Weighted draws for the rescue where no profile gave any: 2 n over the prior in the unbounded coordinates of
+        ``T`` (uniform over a box is a standard logistic in its logit; elsewhere a wide normal around the best point).
+        ``theta`` is in internal coordinates, as for the other attempts. They only seed the first proposal."""
+        um = T.to_u(xm)[0]
+        um = np.where(np.isfinite(um), um, 0.0)
+        kinds = {j: kind for j, kind, _, _ in T.cols}
+        if T.logit_beta:
+            kinds[T.jb] = "box"
+        sc = self._default_scales(xm)
+        m = 2 * n
+        U = np.empty((m, len(um)))
+        lq = np.zeros(m)
+        for j in range(len(um)):
+            if kinds.get(j) in ("box", "a14"):
+                U[:, j] = rng.logistic(size=m)
+                lq += -U[:, j] - 2.0 * np.log1p(np.exp(-U[:, j]))
+            else:
+                sd = 2.0 if kinds.get(j) in ("lo", "hi") else 5.0 * sc[j]
+                U[:, j] = um[j] + sd * rng.standard_normal(m)
+                lq += -0.5 * ((U[:, j] - um[j]) / sd) ** 2 - math.log(sd) - 0.5 * math.log(2.0 * math.pi)
+        logw = T.log_prob(U) - lq
+        nev.append(m)
+        ok = np.isfinite(logw)
+        w = np.zeros(m)
+        if ok.any():
+            w[ok] = np.exp(logw[ok] - np.max(logw[ok]))
+        return dict(theta=T.to_x(U)[0], logw=logw, w=w)
+
     def _profile_is(self, n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue, rescue_iters,
-                    khat_ok, budget):
+                    khat_ok, budget, stratify):
         from ._sampling import pmc_refine, profile_is
         rng = np.random.default_rng() if rng is None else rng
         x0 = self._start_internal() if x0 is None else np.asarray(x0, float)
@@ -1400,7 +1533,7 @@ class MarginalTransitModel:
         except _BudgetExceeded:
             raise RuntimeError(f"profile_is: budget spent ({budget.used} evaluations, max_evals={budget.max_evals}, "
                                f"max_time={budget.max_time} s) before the first proposal was complete") from None
-        flags = dict(bounded_retry=None, flat_proposal=None, last_resort_pmc=None)
+        flags = dict(bounded_retry=None, flat_proposal=None, last_resort_pmc=None, stratified=None)
         nev = [res["n_eval"]]
 
         def usable(r):
@@ -1432,6 +1565,152 @@ class MarginalTransitModel:
                              stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"])
             r["n_eval"] = int(sum(nev))
             return r
+
+        def run_strata(start):
+            """Both sides of the grazing boundary; None if a side with mass does not pass."""
+            from scipy.special import logsumexp
+            nk = max(n // 2, 500)
+            x_ref = np.array(start, float)
+            lp_ref = float(self.log_prob_internal(x_ref[None])[0])
+            nev.append(1)
+
+            def refine(T, r):
+                U = r["theta"]
+                pw = np.exp(r["logw"] - np.max(r["logw"][np.isfinite(r["logw"])]))
+                pw = np.where(np.isfinite(pw), pw, 0.0)
+                pw /= pw.sum()
+                mu = pw @ U
+                sd = np.sqrt(np.clip(np.diag(np.atleast_2d(np.cov(U.T, aweights=pw))), 1e-300, None))
+                pm = pmc_refine(T.log_prob, U, r["logw"], rng, n=nk, iters=15, min_iters=3, khat_ok=khat_ok,
+                                ess_min=ess_min, extra=[(0.03, mu, np.diag((5.0 * sd) ** 2))])
+                nev.append(pm["n_eval"])
+                if not pm["converged"]:
+                    flags["strata_note"] = f"{T.kind}: adaptive importance sampling did not converge: " + str(pm["history"][-1:])
+                    return None
+                r = dict(r)
+                r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
+                         log_int=pm["log_int"], log_int_err=pm["log_int_err"], amis_iters=len(pm["history"]))
+                return r
+
+            def side_ok(r):
+                return bool(r["complete"] and r["khat"] < khat_ok and r["ess"] >= ess_min * nk)
+
+            # non-grazing side
+            T_n = _StratumCoords(self, "beta")
+            lp_n, r_n = -np.inf, None
+            sc = self._default_scales(x_ref)
+            for x_s in (x_ref, x0):                # from the maximum so far, or from the start if it fails there
+                x_n = np.array(x_s, float)
+                g_s = float(self._conj_factor(x_n)[0])
+                if x_n[jb] * g_s >= 1.0 - x_n[jr]:
+                    # at the same a/R*, not the same T14, which at this b can lie outside the bounds on a/R*
+                    X_p = self.to_physical(x_n)
+                    X_p[0, jb] = 0.9 * max(1.0 - x_n[jr], 0.01) / g_s
+                    x_n = self.to_internal(X_p)[0]
+                s_n = self._default_scales(x_n)
+                s_n[jb] = 0.1
+                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
+                                 clip_map=True)
+                nev.append(r_n["n_eval"])
+                if np.all(np.isfinite(r_n["theta_map"])):
+                    lp_n = max(lp_n, float(T_n.log_prob(r_n["theta_map"])[0] - T_n.to_x(r_n["theta_map"])[1][0]))
+                if np.isfinite(r_n["log_int"]):
+                    break
+            # grazing side
+            T_g = _StratumCoords(self, "graze")
+            u_g, k_g = self._grazing_start(T_g, x_ref)     # the duration of the maximum so far, or of the start
+            u_0, k_0 = self._grazing_start(T_g, x0)
+            nev.append(k_g + k_0)
+            if T_g.log_prob(u_0)[0] > T_g.log_prob(u_g)[0]:
+                u_g = u_0
+            s_g = sc.copy()
+            s_g[jr], s_g[jb] = 0.1, 0.1
+            r_g = profile_is(T_g.log_prob, u_g, s_g, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6, clip_map=True)
+            nev.append(r_g["n_eval"])
+            lp_g = -np.inf
+            if np.all(np.isfinite(r_g["theta_map"])):
+                lp_g = float(T_g.log_prob(r_g["theta_map"])[0] - T_g.to_x(r_g["theta_map"])[1][0])
+            if not np.isfinite(r_n["log_int"]) and np.isfinite(r_g["log_int"]):
+                # the density is continuous across the boundary: from where the grazing side's depth meets it
+                X_g = T_g.to_x(r_g["theta_map"])[0][0]
+                ln_lam = float(r_g["theta_map"][jr])
+                x_n = np.array(X_g)
+                x_n[jr] = max(math.exp(0.5 * (ln_lam - math.log(2.0))), self.lo[2] * 1.001)
+                g_s = float(self._conj_factor(x_n)[0])
+                x_n[jb] = 0.98 * (1.0 - x_n[jr]) / g_s
+                s_n = self._default_scales(x_n)
+                s_n[jb] = 0.1
+                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
+                                 clip_map=True)
+                nev.append(r_n["n_eval"])
+                if np.all(np.isfinite(r_n["theta_map"])):
+                    lp_n = max(lp_n, float(T_n.log_prob(r_n["theta_map"])[0] - T_n.to_x(r_n["theta_map"])[1][0]))
+            # both sides need a proposal: a side counts as empty only by its measured mass, never because it has no
+            # proposal or its optimiser ended low (the optimiser can fail on a side that holds most of the posterior)
+            n_ok, g_ok = np.isfinite(r_n["log_int"]), np.isfinite(r_g["log_int"])
+            if not (n_ok and g_ok):
+                flags["strata_note"] = "no proposal on " + ("the grazing side" if n_ok else "the non-grazing side" if g_ok else "either side")
+                return None
+            # the side of the maximum so far must reach it (else its optimiser ended in a local maximum)
+            ref_bc = x_ref[jb] * float(self._conj_factor(x_ref)[0])
+            lp_side = lp_n if ref_bc < 1.0 - x_ref[jr] else lp_g
+            if lp_side < lp_ref - 2.0:
+                flags["strata_note"] = f"the side of the maximum ended at {lp_side:.1f}, the maximum is {lp_ref:.1f}"
+                return None
+            sides = [("nongrazing", T_n, r_n), ("grazing", T_g, r_g)]
+            for lab, T, r in sides:
+                r.setdefault("amis_iters", 0)
+            mass = np.exp(np.array([r["log_int"] for _, _, r in sides])
+                          - logsumexp([r["log_int"] for _, _, r in sides]))
+            out = []
+            for (lab, T, r), mk in zip(sides, mass):
+                if mk >= _STRATUM_MIN_MASS and not side_ok(r):
+                    r = refine(T, r)
+                    if r is None:
+                        return None
+                out.append((lab, T, r))
+
+            def merge():
+                li = np.array([r["log_int"] for _, _, r in out])
+                total = logsumexp(li)
+                mk = np.exp(li - total)
+                th = np.vstack([T.to_x(r["theta"])[0] for _, T, r in out])
+                w = np.concatenate([r["w"] / r["w"].sum() * m_ for (_, _, r), m_ in zip(out, mk)])
+                return th, w, total, mk
+            th, w, total, mk = merge()
+            ess = float(1.0 / np.sum(w ** 2))
+            # the draws of the first profile are a coarse independent estimate of the masses
+            pw = np.asarray(res["w"], float)
+            if pw.sum() > 0 and len(pw) > 1:
+                Xf = np.atleast_2d(res["theta"])
+                ng = Xf[:, jb] * self._conj_factor(Xf) >= 1.0 - Xf[:, jr]
+                m_first = dict(grazing=float(pw[ng].sum() / pw.sum()), nongrazing=float(pw[~ng].sum() / pw.sum()))
+                for (lab, _, _), m_ in zip(out, mk):
+                    if m_first[lab] > 0.05 and m_ < 0.1 * m_first[lab]:
+                        flags["strata_note"] = f"{lab}: mass {m_:.3g}, against {m_first[lab]:.3g} from the first profile"
+                        return None
+            if ess < ess_min * n:                # the draws of the side with the mass are too few
+                j = int(np.argmax(mk))
+                r = refine(out[j][1], out[j][2])
+                if r is None:
+                    return None
+                out[j] = (out[j][0], out[j][1], r)
+                th, w, total, mk = merge()
+                ess = float(1.0 / np.sum(w ** 2))
+            err = np.array([r["log_int_err"] for _, _, r in out])
+            relevant = [r["khat"] for (_, _, r), m_ in zip(out, mk) if m_ >= _STRATUM_MIN_MASS]
+            strata = {}
+            for (lab, T, r), m_, e_ in zip(out, mk, err):
+                strata[lab] = dict(mass=float(m_), mass_err=float(m_ * (1.0 - m_) * e_), khat=float(r["khat"]),
+                                   ess=float(r["ess"]), n_grid=int(r["n_grid"]), amis_iters=int(r["amis_iters"]),
+                                   coord=T.kind)
+            with np.errstate(divide="ignore"):
+                logw = np.log(w)
+            return dict(theta=th, w=w, logw=logw, khat=float(max(relevant)), ess=ess, n_eval=0,
+                        theta_map=res["theta_map"], grid_b=res["grid_b"], grid_logdens=res["grid_logdens"], stage="strata",
+                        n_grid=int(sum(r["n_grid"] for _, _, r in out)), complete=True, n_eval_map=res["n_eval_map"],
+                        n_refine=0, grid_lpmax=res["grid_lpmax"], grid_logdet=res["grid_logdet"], log_int=float(total),
+                        log_int_err=float(math.sqrt(np.sum((mk * err) ** 2))), strata=strata)
 
         def run_flat():
             if not (flat_proposal and self.cone and not self.has_ldp):
@@ -1497,6 +1776,8 @@ class MarginalTransitModel:
             seeds = [r for r in tried if r is not None and np.sum(np.asarray(r["w"]) > 0) > 50]
             if self.gp is not None:
                 seeds.append(self._gp_seed(res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0, n, rng, nev))
+            elif not seeds and T.active:         # no attempt has draws (a flat posterior: no conditional Hessian)
+                seeds.append(self._box_seed(T, res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0, n, rng, nev))
             for r in seeds:
                 lw = np.asarray(r["logw"], float)
                 U = to_u(r["theta"])
@@ -1555,16 +1836,22 @@ class MarginalTransitModel:
                 return finish(res)
             start = res["theta_map"] if np.all(np.isfinite(res["theta_map"])) else x0
             order = ("flat", "retry") if res["complete"] else ("retry", "flat")
+            can_strat = bool(stratify and can_graze and np.isfinite(hi_rp) and self.gp is None and not self.secondary)
+            if can_strat:
+                # first, unless a closed profile short of the boundary points to a cut-off by the cone
+                order = (("flat", "strata", "retry") if res["complete"] and not graze else ("strata", "flat", "retry"))
             for step in order:
-                r = run_flat() if step == "flat" else run_retry(start)
+                r = dict(flat=run_flat, retry=lambda: run_retry(start), strata=lambda: run_strata(start))[step]()
                 if r is None:
                     continue
                 tried.append(r)
-                key = "flat_proposal" if step == "flat" else "bounded_retry"
+                key = dict(flat="flat_proposal", retry="bounded_retry", strata="stratified")[step]
                 flags[key] = False
                 if better(r, best):
                     if best is not res:
-                        flags["flat_proposal" if key == "bounded_retry" else "bounded_retry"] = False
+                        for other in ("flat_proposal", "bounded_retry", "stratified"):
+                            if other != key and flags[other] is not None:
+                                flags[other] = False
                     best = r
                     flags[key] = True
                 if usable(r):
@@ -1574,13 +1861,14 @@ class MarginalTransitModel:
             return stopped(best)
 
     def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
-            ld="q", progress=False, max_evals=None, max_time=None):
+            ld="q", progress=False, max_evals=None, max_time=None, stratify=True):
         """Posterior samples in one call.
 
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
         rescue of ``profile_is`` where the profile is not usable; no fallback to MCMC: a warning if
         the final diagnostics fail (``diagnostics["is_ok"]``); ``max_evals`` / ``max_time`` (seconds)
-        limit its cost (``profile_is``; ``diagnostics["budget_exceeded"]``); the evidence is in
+        limit its cost (``profile_is``; ``diagnostics["budget_exceeded"]``), and ``stratify=False`` skips the
+        split at the grazing boundary; the evidence is in
         ``diagnostics["lnz"]``, ``"lnz_err"``, ``"lnz_note"``, ``"log_int"``, ``"log_int_err"`` (``profile_is``);
         "emcee": vectorised emcee until convergence (N > ntau * tau, tau stable to 1 %);
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
@@ -1593,12 +1881,15 @@ class MarginalTransitModel:
         diag = dict(method=None)
         Xw = w = res = None
         if method in ("is", "auto") and "b" in self.free:
-            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time, evidence=False)
+            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time, evidence=False,
+                                  stratify=stratify)
             ok = bool(res["is_ok"])
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
                         complete=res["complete"], n_grid=res["n_grid"], is_ok=ok,
                         bounded_retry=res["bounded_retry"], flat_proposal=res["flat_proposal"],
                         last_resort_pmc=res["last_resort_pmc"], grazing_beta=res["grazing_beta"],
+                        stratified=res.get("stratified"), strata=res.get("strata"), strata_note=res.get("strata_note"),
+                        grazing_mass=(res["strata"]["grazing"]["mass"] if "grazing" in res.get("strata", {}) else None),
                         rescue=res["rescue"], rescue_iters=len(res.get("pmc") or []) if res["rescue"] else 0,
                         budget_exceeded=bool(res.get("budget_exceeded")))
             # no fallback to MCMC: the importance draws are returned in any case, with a warning if

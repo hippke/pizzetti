@@ -193,8 +193,11 @@ def test_fit_is_grazing(b_true):
     b = r.samples[:, r.labels.index("b")]
     assert np.all(np.isfinite(r.samples))
     assert np.percentile(b, 0.5) < b_true < np.percentile(b, 99.5)       # broad: b-rp degeneracy
-    # the profile cannot end at b = 1 + rp in the original coordinates; the bounded retry completes it
-    assert r.diagnostics["complete"] and r.diagnostics["bounded_retry"] is True
+    # the profile cannot end at b = 1 + rp in the original coordinates; the split at the grazing boundary completes it
+    assert r.diagnostics["complete"] and r.diagnostics["stratified"] is True
+    # and without the split, the bounded retry
+    d = m.fit(method="is", seed=0, n=4000, stratify=False).diagnostics
+    assert d["complete"] and d["bounded_retry"] is True
 
 
 def test_bounded_coords_graze():

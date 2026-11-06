@@ -44,7 +44,7 @@ jupyter lab examples/
 | 12 | [Importance sampling from scratch](12_importance_sampling_from_scratch.ipynb) | weights, effective sample size, Pareto k̂ (`psis`), the blind spot of weight diagnostics, defensive mixtures, adaptive IS (`pmc_refine`) on toy densities | ~10 s |
 | 13 | [Why b is hard](13_why_b_is_hard.ipynb) | the wall at b = 0, the skewed marginal and the curved b–a/R★ ridge; a Laplace proposal (`laplace_is`) that passes its diagnostics and misses the tail; what emcee pays | ~30 s |
 | 14 | [Profile importance sampling step by step](14_profile_importance_sampling.ipynb) | `profile_is` taken apart: the grid of conditional optima, ℓ(b), the proposal, the weights, stage 2, defensive draws, refinement; accuracy and cost against emcee | ~30 s |
-| 15 | [When the profile is not enough](15_when_the_profile_is_not_enough.ipynb) | a grazing branch, the acceptance rule (k̂ < 0.5, ESS ≥ 25%), a transit at S/N ≈ 5; bounded retry, flat proposal and adaptive rescue; reading `diagnostics` | ~1 min |
+| 15 | [When the profile is not enough](15_when_the_profile_is_not_enough.ipynb) | a grazing branch, the acceptance rule (k̂ < 0.5, ESS ≥ 25%), a transit at S/N ≈ 5; strata at the grazing boundary, bounded retry, flat proposal and adaptive rescue; reading `diagnostics` | ~1 min |
 | 16 | [Trusting the result: IS against MCMC](16_is_against_mcmc.ipynb) | the Monte Carlo noise of IS and of emcee, measured alike; slow tails and short chains; more draws as a cheap check; cost | ~2 min |
 
 ## The Grand Tour

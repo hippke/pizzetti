@@ -104,7 +104,10 @@ the prior uniform in a). `fit()` proceeds in four steps:
    mean between grid points would be off by more than 0.25 conditional sd (near the b = 0 wall
    it moves non-linearly). If k̂ is still too high, a second stage adds a multivariate t fitted
    to the weighted draws.
-4. If the diagnostics fail, it repeats the construction in unbounded coordinates (logit/log of
+4. If the diagnostics fail and the bounds allow grazing geometries, it splits the posterior at the
+   grazing boundary b = 1 − Rp/R⋆ and integrates each side on its own, in coordinates that suit that side, with
+   adaptive importance sampling per side where needed. `strata` gives each side's share of the posterior.
+5. If that does not pass either, it repeats the construction in unbounded coordinates (logit/log of
    the bounded parameters; β = b/(1 + Rp/R⋆) for grazing posteriors) and, if needed, refines the
    pooled draws of all attempts by adaptive multiple importance sampling, with a component over the
    whole prior box, until k̂ < 0.7, the ESS is at least 25% of the draws and the quantiles are

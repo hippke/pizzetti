@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `profile_is` / `fit()`: where the first profile is not usable and the bounds allow grazing geometries, the posterior is
+  split at the grazing boundary b_conj = 1 - rp and each side is integrated on its own, with no overlap: on the grazing
+  side a profile in (ln lambda, v), lambda = rp^2 (1 + gamma) about twice the depth, v the position along the ridge between
+  fixed walls. Adaptive importance sampling runs per side only if its diagnostics fail. About two times fewer evaluations
+  than the bounded retry and rescue where it applies (1.9 on 20 of the paper's light curves, 1.3 at the median of 120
+  grazing injections, where a third still falls back), the same ln Z within 0.05 nats, but it stops at an ESS of 1000 to 3000,
+  where the retry reached about 12 000, so seeds scatter more. New: the share of the
+  posterior on each side with its error (`strata`), down to masses no draw of a joint sampler would reach; `stratified`,
+  `strata_note`, `diagnostics["grazing_mass"]`. The old attempts remain the fallback; `stratify=False` skips the strata.
+  Seeded runs with a usable first profile do not change. The split follows the windows of Gilbert (2022).
+- `profile_is`: where no attempt has any draws (a nearly flat posterior at S/N of about 3 with wide bounds: no conditional
+  Hessian anywhere), the rescue now starts from draws over the prior box instead of returning nothing.
 - Bayesian evidence from profile importance sampling: `profile_is` returns `lnz`, `lnz_err` (and `fit` puts them in
   `diagnostics`), from the raw weights of the returned draws, with the Gaussian constants, the prior volume and the
   limb-darkening weight. For the quadratic law, `ld_prior="physical"`, finite `bounds` and no `log_prior`, `gp`, free
