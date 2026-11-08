@@ -57,7 +57,7 @@ jupyter lab examples/
 
 | | Notebook | What you learn | Run time |
 |---|---|---|---|
-| 18 | [Detrending and fitting together](18_fitting_with_a_gaussian_process.ipynb) | a real K2 light curve (K2-24 b) without detrending: `gp=pizzetti.GP()`, `gp_predict`, reading the GP parameters, against no detrending and a biweight filter, when to be careful | ~1 min |
+| 18 | [Detrending and fitting together](18_fitting_with_a_gaussian_process.ipynb) | a young, strongly variable star (K2-33 b, K2) without detrending: `gp=pizzetti.GP()`, `gp_predict`, reading the GP parameters, against no detrending, a biweight filter and a robust spline, when to be careful | ~2 min |
 
 ## Model comparison
 

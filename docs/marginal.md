@@ -163,7 +163,7 @@ detrended = y - trend            # for one row of samples; gp_predict(row, t=tim
 ```
 
 [Tutorial 18](https://github.com/hippke/pizzetti/blob/main/examples/18_fitting_with_a_gaussian_process.ipynb)
-goes through a real light curve.
+goes through a real light curve: K2-33 b, whose transits sit on steep, curved trends of a young star.
 
 **The model.** The noise covariance is
 

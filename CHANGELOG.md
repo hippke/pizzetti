@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tutorial 18 now fits K2-33 b, a young star whose transits sit on steep, curved trends (K2-24 b was nearly flat), and
+  compares the GP with a biweight filter and a robust Huber spline. Linked from the README.
 - Seeded runs no longer depend on whether the kernels were just compiled or came from the cache (or on which kernel was
   loaded first in a process). numba keeps a copy of each kernel in every caller, and with `fastmath=True` the copies rounded
   differently (a few 1e-14 on the limb, 1e-12 in the log likelihood, which an optimiser amplifies to a different path:
