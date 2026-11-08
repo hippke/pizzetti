@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Tutorial 21, the Grand Tour with simultaneous GP: from the raw K2 light curve of K2-33 to the planet's posterior
   without detrending, with the GP search of TLS 2.0 and `gp=pizzetti.GP()`. Tutorial 17 is now the Grand Tour with

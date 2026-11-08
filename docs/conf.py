@@ -4,8 +4,8 @@ import sys
 sys.path.insert(0, os.path.abspath("../src"))
 
 project = "pizzetti"
-author = "Author One"
-copyright = "2026, Author One"
+author = "Michael Hippke"
+copyright = "2026, Michael Hippke"
 try:
     from pizzetti import __version__ as release
 except Exception:  # pragma: no cover
