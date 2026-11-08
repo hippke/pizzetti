@@ -88,7 +88,7 @@ emcee fits the likelihood is 3.4–4.4× faster than batman's, and 2–3.5× for
 
 | | |
 |---|---|
-| [Tutorials](examples/) | twenty Python notebooks and [seven Julia notebooks](julia/examples), from a first light curve to certified, differentiable models, importance sampling, [the Grand Tour](examples/17_the_grand_tour.ipynb) from a raw TESS light curve to a planet's posterior (with [wotan](https://github.com/hippke/wotan) and [TLS](https://github.com/hippke/tls)), and [a Gaussian process fitted together with the transit](examples/18_fitting_with_a_gaussian_process.ipynb) on a young, strongly variable star, without detrending |
+| [Tutorials](examples/) | twenty-one Python notebooks and [seven Julia notebooks](julia/examples), from a first light curve to certified, differentiable models, importance sampling, two guided tours from a raw light curve to a planet's posterior, [the Grand Tour with wotan](examples/17_the_grand_tour.ipynb) (detrending with [wotan](https://github.com/hippke/wotan), the search with [TLS](https://github.com/hippke/tls)) and [the Grand Tour with simultaneous GP](examples/21_the_grand_tour_with_simultaneous_gp.ipynb) (no detrending: TLS 2.0 + GP and a fit with a Gaussian process), and [a Gaussian process fitted together with the transit](examples/18_fitting_with_a_gaussian_process.ipynb) on a young, strongly variable star, without detrending |
 | [Documentation](docs/) | method, accuracy, performance and API |
 | [Paper reproduction](examples/paper) | one command per table and figure of the paper |
 | [Proofs](docs/proofs) | self-contained proofs of the theorems, and [validation notebooks](validation) |

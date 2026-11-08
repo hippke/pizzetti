@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Tutorial 21, the Grand Tour with simultaneous GP: from the raw K2 light curve of K2-33 to the planet's posterior
+  without detrending, with the GP search of TLS 2.0 and `gp=pizzetti.GP()`. Tutorial 17 is now the Grand Tour with
+  wotan; both are linked from the README. The examples workflow installs TLS from GitHub (the GP search is not on PyPI
+  yet).
 - Tutorial 18 now fits K2-33 b, a young star whose transits sit on steep, curved trends (K2-24 b was nearly flat), and
   compares the GP with a biweight filter and a robust Huber spline. Linked from the README.
 - Seeded runs no longer depend on whether the kernels were just compiled or came from the cache (or on which kernel was

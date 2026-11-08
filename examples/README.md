@@ -1,7 +1,7 @@
 # Tutorials
 
-Eighteen notebooks, from a first light curve to certified and linear-basis models, the importance
-sampler behind `fit()`, the Grand Tour from a raw light curve to a posterior, and fitting with a Gaussian process. Each one starts
+Twenty-one notebooks, from a first light curve to certified and linear-basis models, the importance
+sampler behind `fit()`, the Grand Tour from a raw light curve to a posterior (with wotan, and with a simultaneous Gaussian process), and fitting with a Gaussian process. Each one starts
 with its level, prerequisites and run time, and ends with what you learned and where to go next. The
 first notebook you run also compiles pizzetti's numba kernels (about a minute, cached afterwards).
 
@@ -51,7 +51,8 @@ jupyter lab examples/
 
 | | Notebook | What you learn | Run time |
 |---|---|---|---|
-| 17 | [The Grand Tour](17_the_grand_tour.ipynb) | the whole chain for LHS 3844 b: download (lightkurve), detrending (wotan), the search with [TLS](https://github.com/hippke/tls), the fit with importance sampling, planet radius and stellar density | ~2 min |
+| 17 | [The Grand Tour with wotan](17_the_grand_tour.ipynb) | the whole chain for LHS 3844 b: download (lightkurve), detrending (wotan), the search with [TLS](https://github.com/hippke/tls), the fit with importance sampling, planet radius and stellar density | ~2 min |
+| 21 | [The Grand Tour with simultaneous GP](21_the_grand_tour_with_simultaneous_gp.ipynb) | the whole chain without detrending, for K2-33 b on a young, strongly variable star: download (lightkurve), bad cadences, the search with [TLS](https://github.com/hippke/tls) 2.0 + GP, the fit with `gp=pizzetti.GP()` in time order, planet radius and stellar density | ~1 min |
 
 ## Correlated noise
 
