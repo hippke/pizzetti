@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: `fit()` with `gp=` could raise `ValueError: zero-size array to reduction operation maximum` (or `LinAlgError`)
+  in the rescue when its GP seed started next to a bound, e.g. a/R* close to its upper limit. The Hessian's steps
+  crossed the bound, the direction got no curvature and an unbounded proposal width, and no draw was inside the
+  support. The steps now shrink until they stay inside, the widths are at most 50 x the default scales, and a seed
+  without finite draws returns zero weights (the rescue skips it). Seen in 40 of the TLS-detrend candidate fits.
+
 ## 0.4.0
 
 - Tutorial 21, the Grand Tour with simultaneous GP: from the raw K2 light curve of K2-33 to the planet's posterior

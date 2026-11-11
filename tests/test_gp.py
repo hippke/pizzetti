@@ -288,6 +288,28 @@ def test_rescue_seed_without_profile_draws():
     assert s["theta"].shape == (1000, 7) and np.sum(np.isfinite(s["logw"])) > 100 and nev[0] > 1000
 
 
+@pytest.mark.parametrize("f", [1.001, 1.005, 1.02])
+def test_rescue_seed_next_to_a_bound(f):
+    """a/R* just below its upper bound: the Hessian's steps cross it (-inf), which left T14 without curvature and an
+    unbounded proposal width; every draw was outside the support and _gp_seed raised (0.4.0)."""
+    t, y = data(amp=2e-5)
+    m = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=box(), free=("t0", "rp", "a", "b"),
+                                      bounds={"a": (2.0, f * A)})
+    s = m._gp_seed(m._start_internal(), 500, np.random.default_rng(1), [])
+    assert np.sum(np.isfinite(s["logw"])) > 200
+
+
+def test_rescue_seed_without_finite_draws():
+    """No draw inside the support (a start far outside the t0 box): zero weights, which the rescue skips."""
+    t, y = data(amp=2e-5)
+    m = pizzetti.MarginalTransitModel(params(), t, y, 5e-4, gp=box(), free=("t0", "rp", "a", "b"),
+                                      bounds={"t0": (-0.05, 0.05)})
+    x = m._start_internal()
+    x[0] = 2.0
+    s = m._gp_seed(x, 500, np.random.default_rng(1), [])
+    assert not np.isfinite(s["logw"]).any() and np.all(s["w"] == 0)
+
+
 def test_emcee_sampler():
     pytest.importorskip("emcee")
     t, y = data()

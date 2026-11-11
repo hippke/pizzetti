@@ -1359,14 +1359,33 @@ class MarginalTransitModel:
             G = np.array(G)
             G[:, jb] = np.abs(G[:, jb])
             return self.log_prob_internal(np.column_stack([G, np.tile(xm[ng:], (len(G), 1))]))
-        H, k1 = hessian(fg, xm[:ng], 0.5 * sc[:ng])
+
+        def curvature(h):
+            """Hessian with stencil points inside the support: near a bound (xm at a/R* close to its limit, say) a
+            step that crosses it gives -inf; shorter steps along those coordinates. Entries that stay non-finite
+            (xm on the bound) carry no curvature: 0."""
+            k = 0
+            for _ in range(6):
+                with np.errstate(invalid="ignore"):
+                    H, kh = hessian(fg, xm[:ng], h)
+                k += kh
+                bad = ~np.all(np.isfinite(H), axis=0)
+                if not bad.any():
+                    break
+                h = np.where(bad, 0.25 * h, h)
+            return np.where(np.isfinite(H), H, 0.0), k
+        H, k1 = curvature(0.5 * sc[:ng])
         with np.errstate(invalid="ignore"):
-            sd = np.sqrt(np.abs(np.diag(np.linalg.pinv(-np.nan_to_num(H)))))
-        H, k2 = hessian(fg, xm[:ng], 0.3 * np.minimum(np.where(sd > 0, sd, sc[:ng]), 5.0 * sc[:ng]))
-        H = np.nan_to_num(H)
-        d = np.sqrt(np.clip(np.abs(np.diag(H)), 1e-300, None))
+            sd = np.sqrt(np.abs(np.diag(np.linalg.pinv(-H))))
+        H, k2 = curvature(0.3 * np.minimum(np.where(sd > 0, sd, sc[:ng]), 5.0 * sc[:ng]))
+        # widths at most 50 x the default scales (half a T14 in t0 and T14, half of rp, 2.5 in b): a direction without
+        # curvature (flat, or cut off by a bound) would otherwise get an unbounded width, and no draw would be inside
+        wmax = 50.0 * sc[:ng]
+        d = np.sqrt(np.maximum(np.abs(np.diag(H)), wmax ** -2.0))
         ev, V = np.linalg.eigh(-0.5 * (H + H.T) / np.outer(d, d))
-        Lg = np.linalg.cholesky(((V / np.clip(np.abs(ev), 1e-6, None)) @ V.T) / np.outer(d, d) * 4.0)
+        C = ((V / np.clip(np.abs(ev), 1e-6, None)) @ V.T) / np.outer(d, d) * 4.0
+        f = np.minimum(1.0, wmax / np.sqrt(np.diag(C)))
+        Lg = np.linalg.cholesky(C * np.outer(f, f))
         nu = 5.0
         m = 2 * n
         Xg = _mvt_sample(rng, xm[:ng], Lg, nu, m)
@@ -1382,7 +1401,11 @@ class MarginalTransitModel:
         X = np.column_stack([Xg, Xe])
         logw = self.log_prob_internal(X) - lq
         nev.append(k1 + k2 + m)
-        return dict(theta=X, logw=logw, w=np.exp(np.where(np.isfinite(logw), logw - np.max(logw[np.isfinite(logw)]), -np.inf)))
+        ok = np.isfinite(logw)
+        w = np.zeros(m)
+        if ok.any():                             # none: the rescue skips this seed
+            w[ok] = np.exp(logw[ok] - np.max(logw[ok]))
+        return dict(theta=X, logw=logw, w=w)
 
     def _grazing_start(self, T, x_ref):
         """Best point of a grid of the grazing stratum ``T``: ln lambda by two refinements at each of 12 values of v;
