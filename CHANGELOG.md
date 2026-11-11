@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 - Fixed: `fit()` with `gp=` could raise `ValueError: zero-size array to reduction operation maximum` (or `LinAlgError`)
   in the rescue when its GP seed started next to a bound, e.g. a/R* close to its upper limit. The Hessian's steps
