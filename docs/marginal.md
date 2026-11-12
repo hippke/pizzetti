@@ -113,6 +113,14 @@ the prior uniform in a). `fit()` proceeds in four steps:
    whole prior box, until k̂ < 0.7, the ESS is at least 25% of the draws and the quantiles are
    stable. It does not fall back to MCMC; `diagnostics["is_ok"]` says whether the draws pass, and
    `fit()` warns if they do not. Tutorials 12–16 explain each step.
+6. Finally it adds draws from the final proposal until the Monte Carlo error of the posterior quantiles is at most
+   `mc_tol` (0.03 posterior sd, rms over the 2.5–97.5% quantiles of every parameter) and the output's effective sample
+   size reaches `min_ess` (2000, so a corner plot has about as many distinct points; cf. the minimum effective sample
+   size of Agarwal, Vats & Elvira 2021). The draws are randomised quasi-Monte Carlo (`qmc=True`): scrambled Sobol points
+   mapped through the proposal's inverse CDFs, which cover the proposal more evenly than random draws and make the
+   quantiles about 5 times less noisy for the same number of draws. Each batch is split into 8 independently scrambled
+   replicates; their spread is the Monte Carlo error, `diagnostics["mc_err"]` (the ESS does not show the gain of
+   quasi-random draws). `fit(qmc=False, mc_tol=None, min_ess=None, n=4000)` is the iid sampler of version 0.4.1.
 
 The raw weights also give the Bayesian evidence, without nested sampling: `profile_is()` returns `lnz` and
 `lnz_err`, and `fit()` puts them in `diagnostics`. This needs finite `bounds` on every free parameter, since `per`

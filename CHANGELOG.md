@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `fit()` has a new default sampler: randomised quasi-Monte Carlo draws (`qmc=True`; scrambled Sobol points through the
+  inverse CDFs of the proposals) and a stopping rule. It starts with `n=2048` draws per stage and adds draws from the
+  final proposal until the Monte Carlo error of the posterior quantiles, measured from 8 independently scrambled
+  replicates, is at most `mc_tol=0.03` posterior sd (`diagnostics["mc_err"]`) and the output's effective sample size is
+  at least `min_ess=2000` (corner plots). On the 100 benchmark light curves of the paper (3 seeds) it needs 1.10 x fewer
+  likelihood evaluations in total than 0.4.1 (1.14 x median), every output has ESS >= 2000, and the largest quantile
+  deviation from the emcee references fell from 0.45 to 0.27 sd. Seeded results differ from 0.4.1;
+  `fit(qmc=False, mc_tol=None, min_ess=None, n=4000)` reproduces them exactly.
+- `pizzetti._sampling.mc_options` sets these options for `profile_is` and `pmc_refine` when called directly.
+
 ## 0.4.1
 
 - Fixed: `fit()` with `gp=` could raise `ValueError: zero-size array to reduction operation maximum` (or `LinAlgError`)

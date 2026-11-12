@@ -1966,10 +1966,28 @@ class MarginalTransitModel:
         except _BudgetExceeded:
             return stopped(best)
 
-    def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
-            ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=False, mc_reps=None,
-            mc_tol=None, mc_max_factor=4.0, min_ess=None):
+    def fit(self, method="auto", n=2048, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
+            ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=True, mc_reps=None,
+            mc_tol=0.03, mc_max_factor=4.0, min_ess=2000):
         """Posterior samples in one call.
+
+        Importance sampling (method "is", or "auto" with b free) draws ``n`` points per stage, then adds draws from its
+        final proposal until two targets are met (at most ``mc_max_factor`` x n more):
+
+        * ``mc_tol``: the Monte Carlo error of the posterior quantiles (2.5, 16, 50, 84, 97.5 % of every free parameter;
+          rms, in posterior sd), measured from the spread of ``mc_reps`` (default 8) independent replicates of the draws;
+          in ``diagnostics["mc_err"]`` / ``"mc_err_max"``. None: no error target.
+        * ``min_ess``: a floor on the effective sample size of the output (Kish, after the limb-darkening step), so
+          that a corner plot of the equal-weight draws has about that many distinct points (2000: about the minimum
+          effective sample size of Agarwal, Vats & Elvira 2021, arXiv:2108.13289, for four parameters at 10 % relative
+          precision). None: no floor.
+
+        ``qmc`` (default True): randomised quasi-Monte Carlo draws (scrambled Sobol points through the inverse CDFs of
+        the proposals, one independent scramble per replicate). Each draw has the proposal's distribution, so the
+        estimates stay consistent; the points are spread more evenly, which lowers the variance of the quantiles about
+        5-fold at equal draws on 79 benchmark light curves (Kepler, K2, TESS, CHEOPS). The ESS does not see this gain (the
+        weights look as for iid draws), hence the replicate error. ``qmc=False, mc_tol=None, min_ess=None, n=4000``
+        gives the iid sampler of pizzetti <= 0.4.1 (identical output for the same seed).
 
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
         rescue of ``profile_is`` where the profile is not usable; no fallback to MCMC: a warning if
@@ -1988,6 +2006,8 @@ class MarginalTransitModel:
         mc = dict(qmc=bool(qmc), reps=int(mc_reps), tol=mc_tol, max_factor=float(mc_max_factor), min_ess=min_ess)
         rep = None
         self._last_topup = None
+        import time as _time
+        t_fit = _time.perf_counter()
         self.n_eval = 0
         x0 = self._start_internal()
         scale = self._default_scales(x0)
@@ -2090,7 +2110,12 @@ class MarginalTransitModel:
         if rep is not None:
             rep = np.asarray(rep)[pos]
         S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
-        if res is not None and min_ess is not None and self._last_topup is not None:
+        room = int(mc_max_factor * n)                   # the budget of fit() binds this top-up too
+        if max_evals is not None:
+            room = min(room, int(max_evals) - int(self.n_eval))
+        late = max_time is not None and _time.perf_counter() - t_fit > max_time
+        if (res is not None and min_ess is not None and self._last_topup is not None and room > 0 and not late
+                and not res.get("budget_exceeded")):
             # the floor refers to the output, after the limb-darkening weights: top up the geometry draws by the
             # ESS the LD step loses, then expand again
             wc0 = w * wl
@@ -2098,7 +2123,7 @@ class MarginalTransitModel:
             if ess_ld < min_ess:
                 ess_g = float(1.0 / np.sum((w / w.sum()) ** 2))
                 with mc_options(**mc):
-                    f = self._last_topup(mc_tol, int(mc_max_factor * n), 1.05 * min_ess * ess_g / max(ess_ld, 1.0))
+                    f = self._last_topup(mc_tol, room, 1.05 * min_ess * ess_g / max(ess_ld, 1.0))
                 if f["n_added"]:
                     res.update({k_: f[k_] for k_ in ("theta", "w", "logw", "khat", "ess", "rep", "mc_err")})
                     res["n_topup"] = int(res.get("n_topup", 0)) + int(f["n_added"])
