@@ -1334,8 +1334,11 @@ class MarginalTransitModel:
         budget = _Budget(max_evals, max_time) if (max_evals is not None or max_time is not None) else None
         self._budget = budget
         try:
-            res = self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
-                                   rescue_iters, khat_ok, budget, stratify)
+            from ._sampling import mc_options
+            with mc_options(defer=True):
+                res = self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
+                                       rescue_iters, khat_ok, budget, stratify)
+            res.pop("topup_to", None)
             if evidence:
                 res.update(self._lnz_from_draws(res))
             return res
@@ -1555,10 +1558,35 @@ class MarginalTransitModel:
 
     def _profile_is(self, n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue, rescue_iters,
                     khat_ok, budget, stratify):
-        from ._sampling import pmc_refine, profile_is
+        from ._sampling import _MC, _cat_labels, mc_error, pmc_refine, profile_is
         rng = np.random.default_rng() if rng is None else rng
         x0 = self._start_internal() if x0 is None else np.asarray(x0, float)
         x0 = self._valid_start(x0, rng)
+        _TOP = ("theta", "w", "logw", "khat", "ess", "rep", "mc_err", "log_int", "log_int_err")
+
+        def in_x(tu, T):
+            """A top-up of draws in T's coordinates that returns internal coordinates."""
+            if tu is None:
+                return None
+
+            def f(tol, max_add):
+                o = dict(tu(tol, max_add))
+                o["theta"] = T.to_x(o["theta"])[0]
+                return o
+            return f
+
+        def topped(r, tol, max_add):
+            """r with draws added from its final proposal until the replicate MC error is <= tol (if it can)."""
+            if tol is None or r.get("topup_to") is None:
+                return r
+            f = r["topup_to"](tol, max_add)
+            if not f["n_added"]:
+                return r
+            nev.append(f["n_added"])
+            r = dict(r)
+            r.update({k: f[k] for k in _TOP})
+            r["n_topup"] = r.get("n_topup", 0) + f["n_added"]
+            return r
         jb = self.free.index("b")
         lo_b, hi_b = self.lo[4], self.hi[4]
         walls = dict(lo_wall=max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0),
@@ -1583,6 +1611,8 @@ class MarginalTransitModel:
         tried = [res]
 
         def finish(r):
+            if usable(r):
+                r = topped(r, _MC["tol"], int(_MC["max_factor"] * n))
             r.update(flags)
             r["grazing_beta"] = graze
             r["rescue"] = None
@@ -1590,6 +1620,8 @@ class MarginalTransitModel:
             r["is_ok"] = usable(r)
             if not r["is_ok"] and rescue:
                 r = run_rescue(r)
+                if r.get("rescue") and r.get("is_ok"):
+                    r = topped(r, _MC["tol"], int(_MC["max_factor"] * n))
                 r["n_eval"] = int(sum(nev))
                 return r
             if not usable(r) and last_resort and np.isfinite(r["khat"]) and np.sum(r["w"] > 0) > 50:
@@ -1598,7 +1630,8 @@ class MarginalTransitModel:
                 r["last_resort_pmc"] = bool(pm["khat"] < r["khat"])
                 if r["last_resort_pmc"]:
                     r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
-                             stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"])
+                             stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"],
+                             rep=pm.get("rep"), mc_err=pm.get("mc_err"), topup_to=pm.get("topup_to"))
             r["n_eval"] = int(sum(nev))
             return r
 
@@ -1625,7 +1658,8 @@ class MarginalTransitModel:
                     return None
                 r = dict(r)
                 r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
-                         log_int=pm["log_int"], log_int_err=pm["log_int_err"], amis_iters=len(pm["history"]))
+                         log_int=pm["log_int"], log_int_err=pm["log_int_err"], amis_iters=len(pm["history"]),
+                         rep=pm.get("rep"), mc_err=pm.get("mc_err"), topup_to=pm.get("topup_to"))
                 return r
 
             def side_ok(r):
@@ -1742,7 +1776,37 @@ class MarginalTransitModel:
                                    coord=T.kind)
             with np.errstate(divide="ignore"):
                 logw = np.log(w)
+            def labels_of():
+                return _cat_labels(*[r.get("rep") if r.get("rep") is not None and len(r["rep"]) == len(r["theta"]) else None
+                                     for _, _, r in out])
+            rep_ = labels_of()
+
+            def strata_topup(tol, max_add):
+                """Top up each side with mass, then merge again. A side's error enters the combined posterior times its
+                mass, err^2 ~ sum (m_k e_k)^2, so each side gets tol / |m| (|m| = sqrt(sum m_k^2); about tol for one
+                dominant side), at most max_add / 2 draws each."""
+                li0 = np.array([r["log_int"] for _, _, r in out])
+                m0 = np.exp(li0 - logsumexp(li0))
+                added = 0
+                for i, (lab, T, r) in enumerate(out):
+                    if m0[i] >= _STRATUM_MIN_MASS and r.get("topup_to") is not None:
+                        f = r["topup_to"](tol / float(np.sqrt(np.sum(m0 ** 2))), max_add // len(out))
+                        if f["n_added"]:
+                            r = dict(r)
+                            r.update({k: f[k] for k in _TOP})
+                            out[i] = (lab, T, r)
+                            added += f["n_added"]
+                th2, w2, total2, mk2 = merge()
+                rep2 = labels_of()
+                with np.errstate(divide="ignore"):
+                    lw2 = np.log(w2)
+                err2 = np.array([r["log_int_err"] for _, _, r in out])
+                rel2 = [r["khat"] for (_, _, r), m_ in zip(out, mk2) if m_ >= _STRATUM_MIN_MASS]
+                return dict(theta=th2, w=w2, logw=lw2, khat=float(max(rel2)), ess=float(1.0 / np.sum(w2 ** 2)), rep=rep2,
+                            mc_err=mc_error(th2, w2, rep2), log_int=float(total2),
+                            log_int_err=float(math.sqrt(np.sum((mk2 * err2) ** 2))), n_added=added)
             return dict(theta=th, w=w, logw=logw, khat=float(max(relevant)), ess=ess, n_eval=0,
+                        rep=rep_, mc_err=mc_error(th, w, rep_), topup_to=strata_topup,
                         theta_map=res["theta_map"], grid_b=res["grid_b"], grid_logdens=res["grid_logdens"], stage="strata",
                         n_grid=int(sum(r["n_grid"] for _, _, r in out)), complete=True, n_eval_map=res["n_eval_map"],
                         n_refine=0, grid_lpmax=res["grid_lpmax"], grid_logdet=res["grid_logdet"], log_int=float(total),
@@ -1793,7 +1857,9 @@ class MarginalTransitModel:
                 pm = pmc_refine(T.log_prob, r["theta"], r["logw"], rng, n=n)
                 nev.append(pm["n_eval"])
                 r.update(theta=pm["theta"], w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"],
-                         stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"])
+                         stage="pmc", pmc=pm["history"], log_int=pm["log_int"], log_int_err=pm["log_int_err"],
+                         rep=pm.get("rep"), mc_err=pm.get("mc_err"), topup_to=pm.get("topup_to"))
+            r["topup_to"] = in_x(r.get("topup_to"), T)        # its proposal is in the retry's coordinates
             r["theta"] = T.to_x(r["theta"])[0]
             r["theta_map"] = T.to_x(np.atleast_2d(r["theta_map"]))[0][0]
             return r
@@ -1852,6 +1918,8 @@ class MarginalTransitModel:
             if not np.isfinite(pm["khat"]):
                 return out
             X = T.to_x(pm["theta"])[0] if T.active else pm["theta"]
+            out.update(rep=pm.get("rep"), mc_err=pm.get("mc_err"), topup_to=in_x(pm.get("topup_to"), T) if T.active
+                       else pm.get("topup_to"))
             out.update(theta=X, w=pm["w"], logw=pm["logw"], khat=pm["khat"], ess=pm["ess"], stage="amis",
                        pmc=pm["history"], rescue=True, is_ok=bool(pm["converged"]),
                        log_int=pm["log_int"], log_int_err=pm["log_int_err"],
@@ -1897,7 +1965,8 @@ class MarginalTransitModel:
             return stopped(best)
 
     def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
-            ld="q", progress=False, max_evals=None, max_time=None, stratify=True):
+            ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=False, mc_reps=None,
+            mc_tol=None, mc_max_factor=4.0):
         """Posterior samples in one call.
 
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
@@ -1910,15 +1979,24 @@ class MarginalTransitModel:
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
         from ._sampling import hessian, reset_walkers, stuck_walkers
+        from ._sampling import mc_error, mc_options
         rng = np.random.default_rng(seed)
+        if mc_reps is None:
+            mc_reps = 8 if (qmc or mc_tol is not None) else 0
+        mc = dict(qmc=bool(qmc), reps=int(mc_reps), tol=mc_tol, max_factor=float(mc_max_factor))
+        rep = None
         self.n_eval = 0
         x0 = self._start_internal()
         scale = self._default_scales(x0)
         diag = dict(method=None)
         Xw = w = res = None
         if method in ("is", "auto") and "b" in self.free:
-            res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time, evidence=False,
-                                  stratify=stratify)
+            with mc_options(**mc):
+                res = self.profile_is(n=n, rng=rng, x0=x0, max_evals=max_evals, max_time=max_time, evidence=False,
+                                      stratify=stratify)
+            rep = res.get("rep")
+            if rep is not None and len(rep) != len(res["theta"]):
+                rep = None
             ok = bool(res["is_ok"])
             diag.update(method="profile-IS", khat=res["khat"], ess=res["ess"],
                         complete=res["complete"], n_grid=res["n_grid"], is_ok=ok,
@@ -2006,6 +2084,8 @@ class MarginalTransitModel:
         # degenerate) are dropped first.
         pos = w > 0
         Xw, w = Xw[pos], w[pos]
+        if rep is not None:
+            rep = np.asarray(rep)[pos]
         S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
         diag["ld_reweight_ess"] = float(1.0 / np.sum(wl ** 2))
         # geometry weight of draws without a valid coefficient draw (dropped; see _chol_rows)
@@ -2020,6 +2100,11 @@ class MarginalTransitModel:
         wc = w * wl
         wc /= wc.sum()
         diag["ess_total"] = float(1.0 / np.sum(wc ** 2))
+        if mc["reps"] >= 2:
+            # replicate Monte Carlo error of fit()'s output (free parameters, after the limb-darkening step)
+            diag["mc_err"], diag["mc_err_max"] = mc_error(Xw, wc, rep)
+            diag.update(mc_qmc=mc["qmc"], mc_reps=mc["reps"], mc_tol=mc_tol,
+                        n_topup=int(res.get("n_topup", 0)) if res is not None else 0)
         if not self.physical and "rp" in self.free:
             diag["collapsed_fraction"] = self._collapsed_fraction(Xw, wc)
             if diag["collapsed_fraction"] > 0.5:

@@ -25,7 +25,9 @@ profile_is (the recommended method) builds the proposal along one parameter
 (the impact parameter) from conditional optima, so that skewed posteriors and
 the b = 0 wall are covered by construction.
 """
+import contextlib
 import os
+import warnings
 
 import numpy as np
 from scipy.optimize import minimize
@@ -204,11 +206,121 @@ def _chol_floored(C):
     return np.linalg.cholesky((V * np.clip(ev, 1e-12, None)) @ V.T) * d[:, None]
 
 
-def _mvt_sample(rng, mu, L, nu, n):
+# Monte Carlo options of the importance samplers (experimental; ``mc_options``):
+#   qmc   randomised quasi-Monte Carlo proposal draws: scrambled Sobol points through the inverse CDFs instead of
+#         iid draws (each draw has the same distribution, so every estimator stays consistent; the draws are
+#         spread more evenly, which lowers the variance of smooth averages and quantiles)
+#   reps  R >= 2: every batch of draws is split into R replicates (independent scrambles under qmc, round-robin
+#         labels for iid draws); the spread of the R replicate estimates is the Monte Carlo error (``mc_error``),
+#         which the ESS does not show for qmc draws
+#   tol   target Monte Carlo error (rms over coordinates x 2.5/16/50/84/97.5 % quantiles, in posterior sd):
+#         ``profile_is`` adds draws from its final proposal until it is reached, at most ``max_factor`` x n
+#   defer skip that top-up inside profile_is (the caller tops up through the returned ``topup_to``)
+_MC = dict(qmc=False, reps=0, tol=None, max_factor=4.0, defer=False)
+_QS = np.array([0.025, 0.16, 0.5, 0.84, 0.975])
+
+
+@contextlib.contextmanager
+def mc_options(**kw):
+    """Set ``_MC`` options for the samplers called inside the block (restored afterwards)."""
+    bad = set(kw) - set(_MC)
+    if bad:
+        raise ValueError(f"unknown Monte Carlo options {sorted(bad)}")
+    old = dict(_MC)
+    _MC.update(kw)
+    try:
+        yield
+    finally:
+        _MC.clear()
+        _MC.update(old)
+
+
+def _rep_labels(m):
+    R = int(_MC["reps"])
+    return (np.arange(m) % R) if R >= 2 else None
+
+
+def _sobol(rng, m, k):
+    """(m, k) uniforms from scrambled Sobol sequences, one independent scramble per replicate (rows grouped by
+    replicate; a prefix of each sequence), and the replicate labels (None without replicates)."""
+    from scipy.stats import qmc
+    R = max(int(_MC["reps"]), 1)
+    sizes = [m // R + (r < m % R) for r in range(R)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")          # sizes that are not powers of 2: balance warning
+        U = np.vstack([qmc.Sobol(d=k, scramble=True, seed=rng).random(s_) for s_ in sizes if s_ > 0]) if m > 0 \
+            else np.empty((0, k))
+    lab = np.repeat(np.arange(R), sizes) if R >= 2 else None
+    return np.clip(U, 1e-15, 1.0 - 1e-15), lab
+
+
+def _cat_labels(*labs):
+    return None if any(l is None for l in labs) else np.concatenate(labs)
+
+
+def _counts(rng, n, p):
+    """Draws per mixture component: multinomial, or systematic (within 1 of n p) for qmc draws."""
+    p = np.asarray(p, float)
+    p = p / p.sum()
+    if not _MC["qmc"]:
+        return rng.multinomial(n, p)
+    edges = np.floor(np.concatenate([[0.0], np.cumsum(p)]) * n + rng.random())
+    edges[-1] = edges[0] + n
+    return np.diff(edges).astype(np.int64)
+
+
+def _mvt_draw(rng, mu, L, nu, n):
+    """n multivariate-t draws and their replicate labels (iid, or qmc under ``mc_options``)."""
     d = mu.size
-    z = rng.standard_normal((n, d))
-    g = rng.chisquare(nu, n) / nu
-    return mu + (z @ L.T) / np.sqrt(g)[:, None]
+    if _MC["qmc"]:
+        from scipy.special import gammaincinv, ndtri
+        U, lab = _sobol(rng, n, d + 1)
+        z = ndtri(U[:, :d])
+        g = 2.0 * gammaincinv(0.5 * nu, U[:, d]) / nu
+    else:
+        z = rng.standard_normal((n, d))
+        g = rng.chisquare(nu, n) / nu
+        lab = _rep_labels(n)
+    return mu + (z @ L.T) / np.sqrt(g)[:, None], lab
+
+
+def _mvt_sample(rng, mu, L, nu, n):
+    return _mvt_draw(rng, mu, L, nu, n)[0]
+
+
+def _wquant(Y, w, qs=_QS):
+    """Weighted quantiles (columns of Y x qs); w >= 0."""
+    Y = np.atleast_2d(Y)
+    out = np.empty((Y.shape[1], len(qs)))
+    for j in range(Y.shape[1]):
+        o = np.argsort(Y[:, j])
+        cw = np.cumsum(w[o])
+        out[j] = np.interp(qs, (cw - 0.5 * w[o]) / cw[-1], Y[o, j])
+    return out
+
+
+def mc_error(X, w, lab, qs=_QS):
+    """Monte Carlo error of the weighted quantiles from the spread of the replicate estimates: (rms, max) over
+    coordinates x quantiles of sd(replicate quantiles) / sqrt(R), in units of the posterior sd. (inf, inf) if a
+    replicate has no weight; (nan, nan) without labels."""
+    if lab is None:
+        return np.nan, np.nan
+    X, w, lab = np.atleast_2d(X), np.asarray(w, float), np.asarray(lab)
+    ok = np.isfinite(w) & (w > 0) & np.all(np.isfinite(X), axis=1)
+    X, w, lab = X[ok], w[ok], lab[ok]
+    R = int(lab.max()) + 1 if len(lab) else 0
+    if R < 2:
+        return np.nan, np.nan
+    w = w / w.sum()
+    sd = np.sqrt(np.clip(np.diag(np.atleast_2d(np.cov(X.T, aweights=w))), 1e-300, None))
+    Q = []
+    for r in range(R):
+        s_ = lab == r
+        if s_.sum() < 2 or w[s_].sum() <= 0:
+            return np.inf, np.inf
+        Q.append(_wquant(X[s_], w[s_] / w[s_].sum(), qs))
+    se = np.std(np.array(Q), axis=0, ddof=1) / np.sqrt(R) / sd[:, None]
+    return float(np.sqrt(np.mean(se ** 2))), float(np.max(se))
 
 
 
@@ -269,6 +381,7 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
     w = np.where(np.isfinite(w), w, 0.0)
     w /= w.sum()
     Xs, lps, props, counts = None, None, [], []
+    labs = None
     nev, hist = 0, []
     extra = [(float(p), np.asarray(m, float), np.linalg.cholesky(np.asarray(c, float))) for p, m, c in extra]
     f_extra = sum(p for p, _, _ in extra)
@@ -311,8 +424,11 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
                  for p, m, c in zip(pi, mu, cov)]
         comps.append((defensive * (1 - f_extra), m0, _chol_floored(C0 * 4.0)))
         comps += extra
-        k = rng.multinomial(n, [c[0] for c in comps])
-        Xn = np.vstack([_mvt_sample(rng, m, L, nu, c) for (p, m, L), c in zip(comps, k) if c > 0])
+        k = _counts(rng, n, [c[0] for c in comps])
+        drawn = [_mvt_draw(rng, m, L, nu, c) for (p, m, L), c in zip(comps, k) if c > 0]
+        Xn = np.vstack([x_ for x_, _ in drawn])
+        labn = _cat_labels(*[l_ for _, l_ in drawn])
+        labs = labn if it == 0 else _cat_labels(labs, labn)
         lpn = np.concatenate([logp_batch(Xn[i:i + batch]) for i in range(0, len(Xn), batch)])
         nev += len(Xn)
         props.append(comps)
@@ -339,8 +455,42 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
                 converged = True
                 break
     log_int, log_int_err = log_mean_weight(lps - lqa)
+
+    def topup_to(tol, max_add):
+        """Draws from the last proposal, added as one more proposal of the deterministic mixture, until the
+        replicate Monte Carlo error (rms, ``mc_error``) is <= tol, at most max_add; returns the changed fields."""
+        nonlocal Xs, lps, labs, lqa, nev
+        added = 0
+        for _ in range(8):
+            lw_, _k = psis(lps - lqa)
+            err, _ = mc_error(Xs, np.exp(lw_), labs)
+            if np.isnan(err) or err <= tol or added >= max_add:
+                break
+            ratio = (err / tol) if np.isfinite(err) else 2.0
+            f = ratio ** (1.5 if _MC["qmc"] else 2.0)
+            m_add = int(min(max(np.ceil((f - 1.0) * len(Xs)), len(Xs) // 4, 64), max_add - added))
+            if m_add <= 0:
+                break
+            last = props[-1]
+            k_ = _counts(rng, m_add, [c[0] for c in last])
+            drawn = [_mvt_draw(rng, m, L, nu, c) for (p, m, L), c in zip(last, k_) if c > 0]
+            Xn = np.vstack([x_ for x_, _ in drawn])
+            lpn = np.concatenate([logp_batch(Xn[i:i + batch]) for i in range(0, len(Xn), batch)])
+            nev += len(Xn)
+            added += len(Xn)
+            props.append(last)
+            counts.append(len(Xn))
+            lqa = lq_all(Xn)
+            Xs, lps = np.vstack([Xs, Xn]), np.concatenate([lps, lpn])
+            labs = _cat_labels(labs, *[l_ for _, l_ in drawn])
+        lw_, k_ = psis(lps - lqa)
+        w_ = np.exp(lw_)
+        li, lie = log_mean_weight(lps - lqa)
+        return dict(theta=Xs, w=w_, logw=lw_, khat=float(k_), ess=float(1.0 / np.sum(w_ ** 2)), rep=labs,
+                    mc_err=mc_error(Xs, w_, labs), log_int=li, log_int_err=lie, n_added=added)
     return dict(theta=Xs, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)), n_eval=int(nev),
-                history=hist, converged=converged, log_int=log_int, log_int_err=log_int_err)
+                history=hist, converged=converged, log_int=log_int, log_int_err=log_int_err, rep=labs,
+                mc_err=mc_error(Xs, w, labs), topup_to=topup_to if labs is not None else None)
 
 def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
                adapt=2, khat_target=0.5, batch=2000):
@@ -667,9 +817,15 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             out[ok] = np.log(np.interp(bv[ok], bs, pb) / Z)
             return out
 
-        def q_b_sample(m):
-            j = rng.choice(len(seg), size=m, p=seg / Z)
-            u = rng.random(m)
+        def q_b_sample(m, uq=None):
+            if uq is None:
+                j = rng.choice(len(seg), size=m, p=seg / Z)
+                u = rng.random(m)
+            else:                                # one uniform: the inverse CDF over all segments
+                c = np.cumsum(seg) / Z
+                j = np.minimum(np.searchsorted(c, uq, side="right"), len(seg) - 1)
+                pj = seg[j] / Z
+                u = np.clip((uq - (c[j] - pj)) / np.maximum(pj, 1e-300), 0.0, 1.0)
             y0, y1, x0_, x1 = pb[j], pb[j + 1], bs[j], bs[j + 1]
             # inverse CDF of a linear density on [x0, x1]
             dy = y1 - y0
@@ -688,15 +844,26 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         dr = len(rest)
 
         def q_prof_sample(m):
-            bsamp = q_b_sample(m)
+            """m draws of the profile proposal and their replicate labels."""
+            if _MC["qmc"]:
+                U, lab = _sobol(rng, m, dr + 2)
+                bsamp = q_b_sample(m, U[:, 0])
+            else:
+                bsamp = q_b_sample(m)
+                lab = _rep_labels(m)
             mu, cov = interp_params(bsamp)
             Ls = np.linalg.cholesky(cov * inflate ** 2)
-            z = rng.standard_normal((m, dr))
-            g = rng.chisquare(nu, m) / nu
+            if _MC["qmc"]:
+                from scipy.special import gammaincinv, ndtri
+                z = ndtri(U[:, 1:dr + 1])
+                g = 2.0 * gammaincinv(0.5 * nu, U[:, dr + 1]) / nu
+            else:
+                z = rng.standard_normal((m, dr))
+                g = rng.chisquare(nu, m) / nu
             X = np.empty((m, d))
             X[:, rest] = mu + np.einsum("nij,nj->ni", Ls, z) / np.sqrt(g)[:, None]
             X[:, prof] = bsamp
-            return X
+            return X, lab
 
         def q_prof_logpdf(X):
             bv = X[:, prof]
@@ -717,20 +884,21 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             f = logp_batch if logp_target is None else logp_target
             return np.concatenate([f(X[i:i + batch]) for i in range(0, len(X), batch)])
 
-        X = q_prof_sample(n)
+        X, lab = q_prof_sample(n)
         lp = evaluate(X)
         nev += n
         lq = q_prof_logpdf(X)
         lw, khat = psis(lp - lq)
-        return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat)
+        return (bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat, lab)
 
     def stages(out):
         """Stage 1 (draws from the profile proposal) and, if k-hat >= khat_ok, stage 2."""
         nonlocal nev
-        bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat = out
+        bs, lb, end_lo_ok, end_hi_ok, q_prof_sample, q_prof_logpdf, evaluate, X, lp, lq, lw, khat, lab = out
         w = np.exp(lw)
         stage = 1
         _q_final = q_prof_logpdf                 # the density the final draws were drawn from
+        comps = [(1.0, q_prof_sample)]           # the final proposal as a mixture (weight, sampler), for top-ups
         if mix_stage and not (khat < khat_ok):
             # stage 2: defensive mixture 0.5 profile proposal + 0.5 multivariate t fitted to the
             # stage-1 weighted samples (covers near-Gaussian posteriors where the
@@ -739,7 +907,9 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             C1 = (w[:, None] * (X - m1)).T @ (X - m1)
             L1 = _chol_floored(C1 * inflate ** 2)
             n1 = n // 2
-            X2 = np.vstack([q_prof_sample(n - n1), _mvt_sample(rng, m1, L1, nu, n1)])
+            (Xa_, la_), (Xb_, lb_) = q_prof_sample(n - n1), _mvt_draw(rng, m1, L1, nu, n1)
+            X2 = np.vstack([Xa_, Xb_])
+            lab = _cat_labels(lab, la_, lb_)
             lp2 = evaluate(X2)
             nev += n
             # multiple-importance (balance heuristic) over all 2n samples:
@@ -756,6 +926,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
 
             def _q_final(Y):
                 return np.logaddexp(np.log(0.75) + q_prof_logpdf(Y), np.log(0.25) + _mvt_logpdf(Y, m1, L1, nu))
+            comps = [(0.75, q_prof_sample), (0.25, lambda k_, m1=m1, L1=L1: _mvt_draw(rng, m1, L1, nu, k_))]
         if defensive:
             # defensive draws from a broad t around the weighted draws (2 x their sd, beyond the
             # inflation), all draws weighted against the deterministic mixture: a proposal that stops
@@ -765,7 +936,8 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             md_mu = w @ X / w.sum()
             Cd = ((w[:, None] * (X - md_mu)).T @ (X - md_mu)) / w.sum()
             Ld = _chol_floored(Cd * (2.0 * inflate) ** 2)
-            Xd = _mvt_sample(rng, md_mu, Ld, nu, md)
+            Xd, ld_ = _mvt_draw(rng, md_mu, Ld, nu, md)
+            lab = _cat_labels(lab, ld_)
             lpd = evaluate(Xd)
             nev += md
             na = len(X)
@@ -776,7 +948,52 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             lw, khat = psis(lpa - lqa)
             w = np.exp(lw)
             X, lp, lq = Xa, lpa, lqa
+            a_ = na / (na + md)
+            q_old = _q_final
+
+            def _q_final(Y, q_old=q_old, a_=a_, md_mu=md_mu, Ld=Ld):
+                return np.logaddexp(np.log(a_) + q_old(Y), np.log(1.0 - a_) + _mvt_logpdf(Y, md_mu, Ld, nu))
+            comps = [(a_ * p_, f_) for p_, f_ in comps] + [(1.0 - a_, lambda k_, md_mu=md_mu, Ld=Ld: _mvt_draw(rng, md_mu, Ld, nu, k_))]
+        state.update(X=X, lp=lp, lq=lq, lab=lab, comps=comps, q_final=_q_final, evaluate=evaluate)
         return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lp - lq
+
+    state = {}                                   # the latest stages(): draws, labels and final proposal
+
+    def topup_to(tol, max_add):
+        """Draws from the final proposal (the mixture of everything drawn so far, so the weights keep their form)
+        until the replicate Monte Carlo error (rms, ``mc_error``) is <= tol, at most max_add; returns the number added."""
+        nonlocal nev
+        added = 0
+        for _ in range(8):
+            X_, lp_, lq_, lab_ = state["X"], state["lp"], state["lq"], state["lab"]
+            lw_, k_ = psis(lp_ - lq_)
+            err, _ = mc_error(X_, np.exp(lw_), lab_)
+            state["mc_err"] = err
+            if not np.isfinite(err) and np.isnan(err):
+                break
+            if err <= tol or added >= max_add:
+                break
+            ratio = (err / tol) if np.isfinite(err) else 2.0
+            f = ratio ** (1.5 if _MC["qmc"] else 2.0)          # error ~ N^-1/2 iid, faster for qmc
+            m_add = int(min(max(np.ceil((f - 1.0) * len(X_)), len(X_) // 4, 64), max_add - added))
+            if m_add <= 0:
+                break
+            cnt = _counts(rng, m_add, [p_ for p_, _ in state["comps"]])
+            got = [f_(c_) for (p_, f_), c_ in zip(state["comps"], cnt) if c_ > 0]
+            Xn = np.vstack([x_ for x_, _ in got])
+            lpn = state["evaluate"](Xn)
+            nev += len(Xn)
+            added += len(Xn)
+            state.update(X=np.vstack([X_, Xn]), lp=np.concatenate([lp_, lpn]), lq=np.concatenate([lq_, state["q_final"](Xn)]),
+                         lab=_cat_labels(lab_, *[l_ for _, l_ in got]))
+        return added
+
+    def snapshot():
+        lw_, k_ = psis(state["lp"] - state["lq"])
+        w_ = np.exp(lw_)
+        li, lie = log_mean_weight(state["lp"] - state["lq"])
+        return dict(theta=state["X"], w=w_, logw=lw_, khat=float(k_), ess=float(1.0 / np.sum(w_ ** 2)), rep=state["lab"],
+                    mc_err=mc_error(state["X"], w_, state["lab"]), log_int=li, log_int_err=lie)
 
     can_refine = refine_tol is not None and len(grid) > 1
     n_ref = refine() if (can_refine and not lazy_refine) else 0
@@ -789,8 +1006,23 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         n_ref = refine()
         if n_ref:
             X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(build())
+    n_top = 0
+    if _MC["tol"] is not None and _MC["reps"] >= 2 and not _MC["defer"] and state.get("lab") is not None:
+        n_top = topup_to(float(_MC["tol"]), int(_MC["max_factor"] * n))
+        if n_top:
+            sn = snapshot()
+            X, w, lw, khat, lraw = sn["theta"], sn["w"], sn["logw"], sn["khat"], state["lp"] - state["lq"]
+
+    def topup_fields(tol, max_add):
+        """For a caller that defers the top-up: run it, then the fields of the result that change."""
+        k_ = topup_to(tol, max_add)
+        out_ = snapshot()
+        out_["n_added"] = k_
+        return out_
     log_int, log_int_err = log_mean_weight(lraw)
     return dict(theta=X, w=w, logw=lw, khat=float(khat), ess=float(1.0 / np.sum(w ** 2)),
+                rep=state.get("lab"), mc_err=mc_error(X, w, state.get("lab")), n_topup=int(n_top),
+                topup_to=topup_fields if state.get("lab") is not None else None,
                 n_eval=int(nev), theta_map=theta_map, grid_b=bs, grid_logdens=lb, stage=stage,
                 n_grid=len(bs), complete=bool(end_lo_ok and end_hi_ok), n_eval_map=int(nev_map),
                 n_refine=int(n_ref), log_int=log_int, log_int_err=log_int_err,
