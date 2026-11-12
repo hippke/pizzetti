@@ -15,7 +15,7 @@ from .terms import occult_terms, quadratic_from_terms  # noqa: E402
 from ._gp import GP  # noqa: E402
 from .marginal import FitResult, MarginalTransitModel  # noqa: E402
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 __all__ = ["TransitModel", "TransitParams", "MarginalTransitModel", "FitResult", "GP", "occult",
            "occult_terms", "quadratic_from_terms",
            "series_cut", "SERIES_TOL", "__version__"]

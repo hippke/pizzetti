@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
 - `fit()` has a new default sampler: randomised quasi-Monte Carlo draws (`qmc=True`; scrambled Sobol points through the
   inverse CDFs of the proposals) and a stopping rule. It starts with `n=2048` draws per stage and adds draws from the
