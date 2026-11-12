@@ -1338,7 +1338,7 @@ class MarginalTransitModel:
             with mc_options(defer=True):
                 res = self._profile_is(n, rng, x0, retry, flat_proposal, last_resort, ess_min, rescue,
                                        rescue_iters, khat_ok, budget, stratify)
-            res.pop("topup_to", None)
+            self._last_topup = res.pop("topup_to", None)      # fit(): the ESS floor after the LD step
             if evidence:
                 res.update(self._lnz_from_draws(res))
             return res
@@ -1569,17 +1569,17 @@ class MarginalTransitModel:
             if tu is None:
                 return None
 
-            def f(tol, max_add):
-                o = dict(tu(tol, max_add))
+            def f(tol, max_add, min_ess=None):
+                o = dict(tu(tol, max_add, min_ess))
                 o["theta"] = T.to_x(o["theta"])[0]
                 return o
             return f
 
         def topped(r, tol, max_add):
             """r with draws added from its final proposal until the replicate MC error is <= tol (if it can)."""
-            if tol is None or r.get("topup_to") is None:
+            if (tol is None and _MC["min_ess"] is None) or r.get("topup_to") is None:
                 return r
-            f = r["topup_to"](tol, max_add)
+            f = r["topup_to"](tol, max_add, _MC["min_ess"])
             if not f["n_added"]:
                 return r
             nev.append(f["n_added"])
@@ -1781,16 +1781,18 @@ class MarginalTransitModel:
                                      for _, _, r in out])
             rep_ = labels_of()
 
-            def strata_topup(tol, max_add):
+            def strata_topup(tol, max_add, min_ess=None):
                 """Top up each side with mass, then merge again. A side's error enters the combined posterior times its
                 mass, err^2 ~ sum (m_k e_k)^2, so each side gets tol / |m| (|m| = sqrt(sum m_k^2); about tol for one
-                dominant side), at most max_add / 2 draws each."""
+                dominant side), at most max_add / 2 draws each. ESS floor: min_ess x mass per side (then the combined
+                ESS 1 / sum(m_k^2 / ESS_k) >= min_ess)."""
                 li0 = np.array([r["log_int"] for _, _, r in out])
                 m0 = np.exp(li0 - logsumexp(li0))
                 added = 0
                 for i, (lab, T, r) in enumerate(out):
                     if m0[i] >= _STRATUM_MIN_MASS and r.get("topup_to") is not None:
-                        f = r["topup_to"](tol / float(np.sqrt(np.sum(m0 ** 2))), max_add // len(out))
+                        f = r["topup_to"](None if tol is None else tol / float(np.sqrt(np.sum(m0 ** 2))), max_add // len(out),
+                                          None if min_ess is None else min_ess * float(m0[i]))
                         if f["n_added"]:
                             r = dict(r)
                             r.update({k: f[k] for k in _TOP})
@@ -1966,7 +1968,7 @@ class MarginalTransitModel:
 
     def fit(self, method="auto", n=4000, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
             ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=False, mc_reps=None,
-            mc_tol=None, mc_max_factor=4.0):
+            mc_tol=None, mc_max_factor=4.0, min_ess=None):
         """Posterior samples in one call.
 
         method="is": profile importance sampling along b (needs "b" in free), with the adaptive
@@ -1982,9 +1984,10 @@ class MarginalTransitModel:
         from ._sampling import mc_error, mc_options
         rng = np.random.default_rng(seed)
         if mc_reps is None:
-            mc_reps = 8 if (qmc or mc_tol is not None) else 0
-        mc = dict(qmc=bool(qmc), reps=int(mc_reps), tol=mc_tol, max_factor=float(mc_max_factor))
+            mc_reps = 8 if (qmc or mc_tol is not None or min_ess is not None) else 0
+        mc = dict(qmc=bool(qmc), reps=int(mc_reps), tol=mc_tol, max_factor=float(mc_max_factor), min_ess=min_ess)
         rep = None
+        self._last_topup = None
         self.n_eval = 0
         x0 = self._start_internal()
         scale = self._default_scales(x0)
@@ -2087,6 +2090,26 @@ class MarginalTransitModel:
         if rep is not None:
             rep = np.asarray(rep)[pos]
         S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
+        if res is not None and min_ess is not None and self._last_topup is not None:
+            # the floor refers to the output, after the limb-darkening weights: top up the geometry draws by the
+            # ESS the LD step loses, then expand again
+            wc0 = w * wl
+            ess_ld = float(1.0 / np.sum((wc0 / wc0.sum()) ** 2))
+            if ess_ld < min_ess:
+                ess_g = float(1.0 / np.sum((w / w.sum()) ** 2))
+                with mc_options(**mc):
+                    f = self._last_topup(mc_tol, int(mc_max_factor * n), 1.05 * min_ess * ess_g / max(ess_ld, 1.0))
+                if f["n_added"]:
+                    res.update({k_: f[k_] for k_ in ("theta", "w", "logw", "khat", "ess", "rep", "mc_err")})
+                    res["n_topup"] = int(res.get("n_topup", 0)) + int(f["n_added"])
+                    Xw, w = self.to_physical(res["theta"]), res["w"]
+                    rep = res.get("rep")
+                    pos = w > 0
+                    Xw, w = Xw[pos], w[pos]
+                    rep = None if rep is None or len(rep) != len(pos) else np.asarray(rep)[pos]
+                    S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
+                    diag.update(n_eval=int(self.n_eval), khat=float(res["khat"]), ess=float(res["ess"]))
+        self._last_topup = None
         diag["ld_reweight_ess"] = float(1.0 / np.sum(wl ** 2))
         # geometry weight of draws without a valid coefficient draw (dropped; see _chol_rows)
         diag["ld_dropped_weight"] = float(np.sum(w[wl == 0]) / np.sum(w))

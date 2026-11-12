@@ -215,8 +215,22 @@ def _chol_floored(C):
 #         which the ESS does not show for qmc draws
 #   tol   target Monte Carlo error (rms over coordinates x 2.5/16/50/84/97.5 % quantiles, in posterior sd):
 #         ``profile_is`` adds draws from its final proposal until it is reached, at most ``max_factor`` x n
+#   min_ess  a floor on the Kish ESS of the draws (e.g. for a corner plot: about as many distinct equal-weight draws),
+#         reached by the same top-up
 #   defer skip that top-up inside profile_is (the caller tops up through the returned ``topup_to``)
-_MC = dict(qmc=False, reps=0, tol=None, max_factor=4.0, defer=False)
+_MC = dict(qmc=False, reps=0, tol=None, max_factor=4.0, defer=False, min_ess=None)
+
+
+def _topup_size(n_have, err, tol, ess, min_ess):
+    """Draws to add for the error target and the ESS floor (0: both met). The error falls as N^-1/2 for iid draws
+    and faster for qmc (exponent 1.5 assumed); the ESS grows ~ N for draws from the same proposal."""
+    m = 0.0
+    if tol is not None and not np.isnan(err) and err > tol:
+        ratio = (err / tol) if np.isfinite(err) else 2.0
+        m = max(m, (ratio ** (1.5 if _MC["qmc"] else 2.0) - 1.0) * n_have, n_have / 4)
+    if min_ess is not None and ess < min_ess:
+        m = max(m, 1.05 * (min_ess / max(ess, 1.0) - 1.0) * n_have)
+    return 0 if m <= 0 else int(max(np.ceil(m), 64))
 _QS = np.array([0.025, 0.16, 0.5, 0.84, 0.975])
 
 
@@ -456,19 +470,17 @@ def pmc_refine(logp_batch, X, logw, rng, n=4000, iters=6, K=6, nu=5.0, inflate=1
                 break
     log_int, log_int_err = log_mean_weight(lps - lqa)
 
-    def topup_to(tol, max_add):
+    def topup_to(tol, max_add, min_ess=None):
         """Draws from the last proposal, added as one more proposal of the deterministic mixture, until the
-        replicate Monte Carlo error (rms, ``mc_error``) is <= tol, at most max_add; returns the changed fields."""
+        replicate Monte Carlo error (rms, ``mc_error``) is <= tol and the ESS >= min_ess (None: no target),
+        at most max_add; returns the changed fields."""
         nonlocal Xs, lps, labs, lqa, nev
         added = 0
         for _ in range(8):
             lw_, _k = psis(lps - lqa)
-            err, _ = mc_error(Xs, np.exp(lw_), labs)
-            if np.isnan(err) or err <= tol or added >= max_add:
-                break
-            ratio = (err / tol) if np.isfinite(err) else 2.0
-            f = ratio ** (1.5 if _MC["qmc"] else 2.0)
-            m_add = int(min(max(np.ceil((f - 1.0) * len(Xs)), len(Xs) // 4, 64), max_add - added))
+            w_ = np.exp(lw_)
+            err, _ = mc_error(Xs, w_, labs)
+            m_add = min(_topup_size(len(Xs), err, tol, 1.0 / np.sum((w_ / w_.sum()) ** 2), min_ess), max_add - added)
             if m_add <= 0:
                 break
             last = props[-1]
@@ -959,23 +971,19 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
 
     state = {}                                   # the latest stages(): draws, labels and final proposal
 
-    def topup_to(tol, max_add):
+    def topup_to(tol, max_add, min_ess=None):
         """Draws from the final proposal (the mixture of everything drawn so far, so the weights keep their form)
-        until the replicate Monte Carlo error (rms, ``mc_error``) is <= tol, at most max_add; returns the number added."""
+        until the replicate Monte Carlo error (rms, ``mc_error``) is <= tol and the ESS >= min_ess (None: no
+        target), at most max_add; returns the number added."""
         nonlocal nev
         added = 0
         for _ in range(8):
             X_, lp_, lq_, lab_ = state["X"], state["lp"], state["lq"], state["lab"]
             lw_, k_ = psis(lp_ - lq_)
-            err, _ = mc_error(X_, np.exp(lw_), lab_)
+            w_ = np.exp(lw_)
+            err, _ = mc_error(X_, w_, lab_)
             state["mc_err"] = err
-            if not np.isfinite(err) and np.isnan(err):
-                break
-            if err <= tol or added >= max_add:
-                break
-            ratio = (err / tol) if np.isfinite(err) else 2.0
-            f = ratio ** (1.5 if _MC["qmc"] else 2.0)          # error ~ N^-1/2 iid, faster for qmc
-            m_add = int(min(max(np.ceil((f - 1.0) * len(X_)), len(X_) // 4, 64), max_add - added))
+            m_add = min(_topup_size(len(X_), err, tol, 1.0 / np.sum((w_ / w_.sum()) ** 2), min_ess), max_add - added)
             if m_add <= 0:
                 break
             cnt = _counts(rng, m_add, [p_ for p_, _ in state["comps"]])
@@ -1007,15 +1015,16 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         if n_ref:
             X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(build())
     n_top = 0
-    if _MC["tol"] is not None and _MC["reps"] >= 2 and not _MC["defer"] and state.get("lab") is not None:
-        n_top = topup_to(float(_MC["tol"]), int(_MC["max_factor"] * n))
+    if ((_MC["tol"] is not None or _MC["min_ess"] is not None) and _MC["reps"] >= 2 and not _MC["defer"]
+            and state.get("lab") is not None):
+        n_top = topup_to(_MC["tol"], int(_MC["max_factor"] * n), _MC["min_ess"])
         if n_top:
             sn = snapshot()
             X, w, lw, khat, lraw = sn["theta"], sn["w"], sn["logw"], sn["khat"], state["lp"] - state["lq"]
 
-    def topup_fields(tol, max_add):
+    def topup_fields(tol, max_add, min_ess=None):
         """For a caller that defers the top-up: run it, then the fields of the result that change."""
-        k_ = topup_to(tol, max_add)
+        k_ = topup_to(tol, max_add, min_ess)
         out_ = snapshot()
         out_["n_added"] = k_
         return out_
