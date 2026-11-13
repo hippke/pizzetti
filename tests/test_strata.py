@@ -125,7 +125,7 @@ def test_fit_reports_the_grazing_mass_and_budget_stops():
     m, _ = build("b100lo")
     d = m.fit(seed=1, n=4000).diagnostics
     assert d["stratified"] and d["is_ok"] and 0.85 < d["grazing_mass"] < 1.0
-    r = m.profile_is(n=4000, rng=np.random.default_rng(1), max_evals=18000)
+    r = m.profile_is(n=4000, rng=np.random.default_rng(1), max_evals=10000)      # the whole call needs ~15 000
     assert r["budget_exceeded"] and not r["is_ok"]
 
 

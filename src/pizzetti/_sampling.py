@@ -550,7 +550,7 @@ def laplace_is(logp_batch, theta0, scale, n=4000, nu=5.0, inflate=1.2, rng=None,
 # ----------------------------------------------------------------------------
 def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, rng=None,
                drop=12.0, step_sd=1.0, lo_wall=0.0, hi_wall=None, max_grid=60, batch=2000,
-               nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=False, h_sd=0.2,
+               nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
                mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
                lazy_refine=True, khat_refine=0.7, logp_target=None, carry_cov=None, max_carry=3,
                defensive=0.1, clip_map=False):
@@ -642,8 +642,11 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             opts["hess_inv0"] = cov_prev / np.outer(sc, sc)
         x_start = np.zeros(len(rest))
         nf_extra = 0
-        if robust_cond:                      # derivative-free pre-step (off by default: no fit needed it in the benchmark)
-            rp_ = minimize(nlp, x_start, method="Powell", options=dict(xtol=1e-3, ftol=1e-8))
+        if robust_cond:                      # derivative-free pre-step (rough/awkward conditionals)
+            # loose (xtol 1e-2, ftol 1e-3; was 1e-3, 1e-8): BFGS refines. Its long coordinate searches are what find an
+            # improper posterior's mass at rp -> 0 (flat ld_prior without a transit, test_marginal_laws), which BFGS
+            # alone misses while the draws pass their diagnostics; at these tolerances it costs 3 % of the saving.
+            rp_ = minimize(nlp, x_start, method="Powell", options=dict(xtol=1e-2, ftol=1e-3))
             x_start, nf_extra = rp_.x, rp_.nfev
         try:
             r = minimize(nlp, x_start, method="BFGS", options=opts)
