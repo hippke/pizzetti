@@ -133,9 +133,23 @@ def _transitions(steps, amp, tau):
 @njit(cache=True)
 def whiten(idx, steps, var, amp, tau, Y):
     """Replace the columns of Y (n x m, ascending times) by L^-1 Y, with L L^T = K + diag(var). Returns sum ln diag(L)."""
+    return _whiten_T(idx, _transitions(steps, amp, tau), var, amp, Y)
+
+
+@njit(cache=True)
+def _transitions_into(steps, amp, tau, T):
+    """_transitions into the caller's array T (len(steps) x 7)."""
+    s2 = amp * amp
+    lam = 1.0 / (tau * 1.4142135623730951)
+    for u in range(steps.shape[0]):
+        T[u, 0], T[u, 1], T[u, 2], T[u, 3], T[u, 4], T[u, 5], T[u, 6] = _step(lam * steps[u], s2)
+
+
+@njit(cache=True)
+def _whiten_T(idx, T, var, amp, Y):
+    """whiten() with the transition table T of its steps (_transitions)."""
     n, mc = Y.shape
     s2 = amp * amp
-    T = _transitions(steps, amp, tau)
     m0 = np.zeros(mc)
     m1 = np.zeros(mc)
     p00, p01, p11 = s2, 0.0, s2
@@ -253,6 +267,29 @@ def _whitened(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, 
     return Bw, yw, ld
 
 
+def workspace(tt, ksup, n, nsteps):
+    """Arrays for the workspace kernels (loglike_batch_ws, theta_moments_batch_ws): the design workspace of
+    _marginal.workspace, the n x 4 columns to whiten, the whitened design and flux, the scaled variances and the
+    transition table. Reused by every evaluation, so that a large light curve does not fault fresh pages in each time."""
+    return (K.workspace(tt, ksup), np.empty((n, 4)), np.empty((n, 3)), np.empty(n), np.empty(n), np.empty((nsteps, 7)))
+
+
+@njit(cache=True)
+def _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, Gt, gws):
+    """_whitened in the workspace gws (workspace()): identical values."""
+    dws, Y, Bw, yw, var, Tt = gws
+    n = y.shape[0]
+    B = K.design_theta_ws(tt, ksup, wts, P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt, dws)
+    for i in range(n):
+        Y[i, 0], Y[i, 1], Y[i, 2], Y[i, 3] = y[i], B[i, 0], B[i, 1], B[i, 2]
+        var[i] = var0[i] * s2
+    _transitions_into(steps, amp, tau, Tt)
+    ld = _whiten_T(idx, Tt, var, amp, Y)
+    for i in range(n):
+        yw[i], Bw[i, 0], Bw[i, 1], Bw[i, 2] = Y[i, 0], Y[i, 1], Y[i, 2], Y[i, 3]
+    return Bw, yw, ld
+
+
 @njit(cache=True)
 def _inside(P, i, ok_i, lo, hi):
     """The checks of _marginal._loglike_row on canonical row i."""
@@ -284,6 +321,31 @@ def loglike_batch(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol,
     keep = logP_out.shape[0] == n
     for i in range(n):
         v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True)
+def _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws):
+    """_row in the workspace gws: identical values."""
+    if not _inside(P, i, ok[i], lo, hi):
+        return -np.inf, 0.0
+    Bw, yw, ld = _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half,
+                              Gt, gws)
+    v, lP = K.marg_theta_parts(Bw, yw, K.GL_X, K.GL_W)
+    return v + lP - ld + lj[i], lP
+
+
+@njit(cache=True)
+def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, gws):
+    """loglike_batch reusing the workspace gws (workspace()) for every row: identical values."""
+    n = P.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in range(n):
+        v, lP = _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -349,6 +411,20 @@ def theta_moments_batch(P, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, G
     S = np.full((n, 3, 3), np.nan)
     for i in range(n):
         _moments_row(P, E, T, S, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    return T, S
+
+
+@njit(cache=True)
+def theta_moments_batch_ws(P, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws):
+    """theta_moments_batch reusing the workspace gws: identical values."""
+    n = P.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    for i in range(n):
+        Bw, yw, ld = _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol,
+                                  A_half, Gt, gws)
+        G, r = K.normal_eqs(Bw, yw)
+        _moments(G, r, T, S, i)
     return T, S
 
 

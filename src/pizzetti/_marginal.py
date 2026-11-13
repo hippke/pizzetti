@@ -845,20 +845,79 @@ def design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, 
 
 @njit(cache=True)
 def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws):
-    """design_theta() in the arrays of the workspace ws = (z, T, A, bcnt, zb, idx, lex, ldx, edx, dev)
-    (workspace() makes one): the same arithmetic without allocating, and the theta columns summed over the
-    sub-exposures as they are made (no n_points x k x 3 array). Returns A (n x 3), a view into ws that the next
-    call overwrites."""
-    z, T, A, bcnt, zb, idx, lex, ldx, edx, dev = ws
+    """design_theta() in the arrays of the workspace ws (workspace() makes one): the same values without allocating.
+    Data points whose sub-exposures are all off the star are not computed: their row is that of an unocculted point
+    (wts / ksup x ksup ones, then zeros; exactly what the full calculation gives them). A point is skipped only if z at
+    its mid-time, minus the largest change the orbit allows within half its exposure (the largest orbital speed,
+    2 pi a / per sqrt((1 + e) / (1 - e)), x half), stays above 1 + rp + 1e-9 (a + 1), with a (1 - e) bounding a
+    mid-time behind the star. The other points go through the same orbit, occultation and exposure-average code as
+    before, on compact arrays. Circular orbits and eccentric ones without sub-exposures give identical values; with
+    sub-exposures, the eccentric orbit's Kepler solver is warm-started from a different neighbour after a skipped
+    stretch, which can change the last bit of the eccentric anomaly.
+    Returns A (n x 3), a view into ws that the next call overwrites."""
+    z, Tf, A, bcnt, zb, idx, lex, ldx, edx, dev, tc, tmid, half, zm, keep = ws
     ab = abs(b)
     inc = math.acos(min(ab / a, 1.0))
-    if ecc < 1.0e-5:
-        _orbit._rsky_circular(tt, t0, per, a, math.sin(inc), 0.25, 1, z)
-    else:
-        _orbit._rsky_eccentric(tt, t0, per, a, inc, ecc, w, 1, z)
     k = abs(rp)
-    _occult_terms_into(z, k, terms_cut(k, tol, Gt), A_half, T, bcnt, zb, idx, lex, ldx, edx, dev)
-    _theta_average(T, ksup, wts, A)
+    z_c = terms_cut(k, tol, Gt)
+    nt = tt.shape[0]
+    n = A.shape[0]
+    circ = ecc < 1.0e-5
+    si = math.sin(inc)
+    if circ:
+        _orbit._rsky_circular(tmid, t0, per, a, si, 0.25, 1, zm)
+    else:
+        _orbit._rsky_eccentric(tmid, t0, per, a, inc, ecc, w, 1, zm)
+    # the sky separation changes no faster than the orbital speed, at most 2 pi a / per sqrt((1 + e) / (1 - e)) (at
+    # periastron); a mid-time behind the star (zm = BIGD) is bounded by the separation where the planet crosses the
+    # sky plane, r >= a (1 - e)
+    speed = 2.0 * math.pi * a / per * math.sqrt((1.0 + ecc) / (1.0 - ecc))
+    rmin = a * (1.0 - ecc)
+    lim = 1.0 + k + 1e-9 * (a + 1.0)
+    m = 0
+    for i in range(n):
+        if min(zm[i], rmin) - speed * half[i] < lim:
+            keep[m] = i
+            m += 1
+    mt = m * ksup
+    zk = z[:mt]
+    if ksup == 1:
+        for j in range(m):
+            zk[j] = zm[keep[j]]
+    else:
+        tk = tc[:mt]
+        for j in range(m):
+            i0 = keep[j] * ksup
+            for s in range(ksup):
+                tk[j * ksup + s] = tt[i0 + s]
+        if circ:
+            _orbit._rsky_circular(tk, t0, per, a, si, 0.25, 1, zk)
+        else:
+            _orbit._rsky_eccentric(tk, t0, per, a, inc, ecc, w, 1, zk)
+    T = Tf[:3 * mt].reshape((3, mt))
+    _occult_terms_into(zk, k, z_c, A_half, T, bcnt, zb, idx, lex, ldx, edx, dev)
+    inv = 1.0 / ksup
+    j = 0
+    for i in range(n):
+        f = wts[i] * inv
+        if j < m and keep[j] == i:
+            s0 = 0.0
+            s1 = 0.0
+            s2 = 0.0
+            for s in range(ksup):
+                r = j * ksup + s
+                lx, ld, ed = T[0, r], T[1, r], T[2, r]
+                s0 += 1.0 - (12.0 * lx - 12.0 * ld - 6.0 * ed)
+                s1 += 6.0 * lx - 6.0 * ld - 4.0 * ed
+                s2 += 5.0 * lx - 6.0 * ld - 2.0 * ed
+            A[i, 0] = s0 * f
+            A[i, 1] = s1 * f
+            A[i, 2] = s2 * f
+            j += 1
+        else:
+            A[i, 0] = float(ksup) * f
+            A[i, 1] = 0.0
+            A[i, 2] = 0.0
     return A
 
 
@@ -884,12 +943,20 @@ def _theta_average(T, ksup, wts, A):
         A[i, 2] = s2 * f
 
 
-def workspace(nt, ksup):
-    """Arrays for design_theta_ws / loglike_batch_ws for nt model points (nt // ksup data points). About 80 bytes
-    per model point; the limb scratch (zb .. dev) is touched only up to the number of limb points."""
+def workspace(tt, ksup):
+    """Arrays for design_theta_ws / loglike_batch_ws for the model times tt (len(tt) // ksup data points of ksup
+    sub-exposures each), with the mid-time and half-span of each data point. About 110 bytes per model point; the
+    lists are touched only up to the number of computed / limb points."""
+    tt = np.ascontiguousarray(tt, dtype=float)
+    nt = len(tt)
+    n = nt // ksup
+    S = tt[:n * ksup].reshape(n, ksup)
+    lo, hi = S.min(axis=1), S.max(axis=1)
     nb = (nt + 63) // 64
-    return (np.empty(nt), np.empty((3, nt)), np.empty((nt // ksup, 3)), np.empty(nb, dtype=np.int64),
-            np.empty(nt), np.empty(nt, dtype=np.int64), np.empty(nt), np.empty(nt), np.empty(nt), np.empty(nt))
+    return (np.empty(nt), np.empty(3 * nt), np.empty((n, 3)), np.empty(nb, dtype=np.int64),
+            np.empty(nt), np.empty(nt, dtype=np.int64), np.empty(nt), np.empty(nt), np.empty(nt), np.empty(nt),
+            np.empty(nt), np.ascontiguousarray(0.5 * (lo + hi)), np.ascontiguousarray(0.5 * (hi - lo)), np.empty(n),
+            np.empty(n, dtype=np.int64))
 
 
 @njit(cache=True, inline="always")

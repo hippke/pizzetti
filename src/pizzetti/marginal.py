@@ -949,8 +949,11 @@ class MarginalTransitModel:
             if self.gp_fx is not None:
                 kern = _gp.fixed_batch_par if nthr > 1 else _gp.fixed_batch
                 arg = (P, lj, ok, self.lo, self.hi, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+            elif nthr == 1:                     # one workspace for every evaluation (see _workspace)
+                kern = _gp.loglike_batch_ws
+                arg = (P, lj, E, ok, self.lo, self.hi) + arg + (self._gp_workspace(),)
             else:
-                kern = _gp.loglike_batch_par if nthr > 1 else _gp.loglike_batch
+                kern = _gp.loglike_batch_par
                 arg = (P, lj, E, ok, self.lo, self.hi) + arg
             out = self._gp_threads(kern, arg, nthr)
         elif self.fast:
@@ -1197,8 +1200,11 @@ class MarginalTransitModel:
             if self.gp_fx is not None:
                 kern = _gp.fixed_moments_batch_par if nthr > 1 else _gp.fixed_moments_batch
                 arg = (Pc, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+            elif nthr == 1:
+                kern = _gp.theta_moments_batch_ws
+                arg = (Pc, E) + arg + (self._gp_workspace(),)
             else:
-                kern = _gp.theta_moments_batch_par if nthr > 1 else _gp.theta_moments_batch
+                kern = _gp.theta_moments_batch_par
                 arg = (Pc, E) + arg
             T, S = self._gp_threads(kern, arg, nthr)
             c = _draw_c_theta(T, S, rng)
@@ -1274,15 +1280,28 @@ class MarginalTransitModel:
 
     # -- Layer 2: one call ------------------------------------------------------
     def _workspace(self):
-        """The arrays K.loglike_batch_ws reuses for every evaluation (made at the first call; not pickled)."""
-        ws = self.__dict__.get("_ws")
-        if ws is None:
-            ws = self._ws = K.workspace(len(self.tt), self.k)
-        return ws
+        """The arrays K.loglike_batch_ws reuses for every evaluation (made at the first call; not pickled). Made again
+        if the model times or the sub-exposures were replaced since (the workspace holds the mid-time and half-span of
+        each data point, and the kernels do not check sizes)."""
+        key = (self.tt, self.k)
+        c = self.__dict__.get("_ws")
+        if c is None or c[0][0] is not key[0] or c[0][1] != key[1]:
+            c = self._ws = (key, K.workspace(self.tt, self.k))
+        return c[1]
+
+    def _gp_workspace(self):
+        """The arrays _gp.loglike_batch_ws / theta_moments_batch_ws reuse (made at the first call; not pickled; made
+        again if the times, the flux or the GP's step table were replaced since)."""
+        key = (self.tt, self.k, self.y, self.gp_steps)
+        c = self.__dict__.get("_gws")
+        if c is None or any(a is not b for a, b in zip(c[0][:1] + c[0][2:], key[:1] + key[2:])) or c[0][1] != key[1]:
+            c = self._gws = (key, _gp.workspace(self.tt, self.k, len(self.y), len(self.gp_steps)))
+        return c[1]
 
     def __getstate__(self):
         d = self.__dict__.copy()
         d.pop("_ws", None)
+        d.pop("_gws", None)
         return d
 
     def _nthreads(self):

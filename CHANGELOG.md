@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- The likelihood of `MarginalTransitModel` (single thread, quadratic law without `ld_prior`) no longer computes data
+  points whose sub-exposures are all off the star: z at the mid-time of each point, minus the largest change the
+  orbit allows within half its exposure (the orbital speed at periastron), decides it (strictly; a skipped point gets
+  exactly the row the full calculation gives it). On the 100 benchmark light curves 1.15x faster per evaluation
+  (median; circular 1.13x, eccentric 1.72x, up to 2.14x on Kepler-39 b; Kepler-78 b 1.27x, its fit 62 -> 50 s;
+  WASP-47 e short cadence 0.92x). Circular orbits, and eccentric ones without sub-exposures, give bit-identical results.
+  Eccentric orbits with sub-exposures can differ in the last bits (the Kepler solver is warm-started from a different
+  neighbour after a skipped stretch; up to 4e-10 in ln L at e = 0.7), enough to change the path of a seeded fit:
+  6 of the 18 eccentric benchmark light curves, with the same accuracy.
+- The likelihood with a free Gaussian process (`gp=GP()`, single thread) reuses one workspace per model for the design,
+  the whitening, the variances and the transition table, with the same skip in the design: per evaluation Kepler-39 b
+  3.7x, Kepler-78 b 2.2x, Kepler-45 b 1.5x, HAT-P-2 b 1.4x, Kepler-21 b 1.3x; unsupersampled circular light curves
+  ~1.0x (the whitening dominates). A workspace is made again when the model's times, flux or GP step table are
+  replaced.
+
 ## 0.6.1
 
 - The single-thread likelihood of `MarginalTransitModel` (the default, `threads=1`, quadratic law without `ld_prior`)
