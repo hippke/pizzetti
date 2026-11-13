@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1
 
 - The single-thread likelihood of `MarginalTransitModel` (the default, `threads=1`, quadratic law without `ld_prior`)
   reuses one workspace per model instead of allocating its arrays for every evaluation, and sums the theta columns over
