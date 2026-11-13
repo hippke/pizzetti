@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.3
 
 - The conditional fits of the profile grid use BFGS alone under the physical limb-darkening prior; the loose Powell
   pre-step stays for the improper flat prior, where it finds the mass at rp -> 0. On the paper's benchmark 1.04x

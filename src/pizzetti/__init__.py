@@ -16,7 +16,7 @@ from ._gp import GP  # noqa: E402
 from .marginal import FitResult, MarginalTransitModel  # noqa: E402
 from .supersample import choose_supersample, exposure_chi2  # noqa: E402
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 __all__ = ["TransitModel", "TransitParams", "MarginalTransitModel", "FitResult", "GP", "occult",
            "occult_terms", "quadratic_from_terms", "choose_supersample", "exposure_chi2",
            "series_cut", "SERIES_TOL", "__version__"]
