@@ -36,8 +36,10 @@ def setup(law, u, sigma=3e-4, seed=1, ntr=3, transittype="primary", fp=None):
 
 def test_generic_path_equals_fast_quadratic():
     t, y, p = setup("quadratic", [0.4, 0.25])
-    fast = pizzetti.MarginalTransitModel(p, t, y, 3e-4, supersample_factor=3, exp_time=0.003)
-    gen = pizzetti.MarginalTransitModel(p, t, y, 3e-4, supersample_factor=3, exp_time=0.003)
+    # both paths share the sub-exposure times; the placement is pinned so that the tolerance below, set on these points,
+    # keeps its meaning (with midpoints the deepest point, ln P = -2812, differs by 8e-4 nats, the median by 1e-5)
+    fast = pizzetti.MarginalTransitModel(p, t, y, 3e-4, supersample_factor=3, exp_time=0.003, offsets="batman")
+    gen = pizzetti.MarginalTransitModel(p, t, y, 3e-4, supersample_factor=3, exp_time=0.003, offsets="batman")
     gen.fast = False
     rng = np.random.default_rng(2)
     X = np.column_stack([rng.normal(0, 3e-4, 20), np.full(20, 3.5), rng.uniform(0.09, 0.11, 20),

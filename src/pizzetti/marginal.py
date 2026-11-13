@@ -467,7 +467,10 @@ class MarginalTransitModel:
         region x f, applied by importance reweighting (fine for priors broader than
         the likelihood).
     :param supersample_factor, exp_time: as in ``TransitModel``
-    :param offsets: sub-exposure placement, "batman" (default) or "midpoint"
+    :param offsets: sub-exposure placement: "midpoint" (default; the midpoints of k equal sub-intervals, error of the
+        exposure average ~ 1/k^2) or "batman" (k points from edge to edge, as batman and ``TransitModel``; error ~ 1/k:
+        a hot Jupiter in 30-min exposures at k = 15 is off by 147 ppm against 3.8 ppm with midpoints, enough to move b by
+        several sigma). Up to version 0.5.0 the default was "batman".
     :param reparam: "auto" samples the total duration T14 instead of a/R*
         internally (circular orbits; prior kept uniform in a); "none" disables it
     :param transittype: "primary" or "secondary"
@@ -492,7 +495,7 @@ class MarginalTransitModel:
 
     def __init__(self, params, t, y, yerr, free=("t0", "per", "rp", "a", "b"), bounds=None,
                  log_prior=None, ld_prior="physical", supersample_factor=1, exp_time=0.0,
-                 offsets="batman", reparam="auto", series_tol=1e-9, transittype="primary", threads=1, gp=None):
+                 offsets="midpoint", reparam="auto", series_tol=1e-9, transittype="primary", threads=1, gp=None):
         if transittype not in ("primary", "secondary"):
             raise ValueError('transittype must be "primary" or "secondary"')
         self.secondary = transittype == "secondary"

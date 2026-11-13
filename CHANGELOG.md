@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `MarginalTransitModel` places sub-exposures at the midpoints of equal sub-intervals by default (`offsets="midpoint"`,
+  was `"batman"`). At the same `supersample_factor` the exposure average is far more accurate (error ~ 1/k^2 instead of
+  1/k; 3.8 against 147 ppm for a hot Jupiter in 30-min exposures at k = 15), and on 41 long-cadence benchmark light
+  curves batman's edge-to-edge grid moved b by more than 1 sigma on 11 of them. This changes the results only with
+  `supersample_factor > 1`; `offsets="batman"` restores the old placement. `TransitModel` keeps batman's grid as its
+  default (drop-in compatibility with batman).
 - `fit()`'s ESS floor is now `min_ess=4000` (was 2000): at 2000 a corner plot has about 2000 distinct points and looks
   visibly noisy (tutorial 11, WASP-18 b). With the two speed-ups below, a fit still needs fewer likelihood evaluations
   than with 0.5.0: 94 benchmark light curves x 2 seeds, 1.24x fewer summed (1.16x median); ESS median 4100.
