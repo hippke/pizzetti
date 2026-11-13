@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
 - The likelihood of `MarginalTransitModel` (single thread, quadratic law without `ld_prior`) no longer computes data
   points whose sub-exposures are all off the star: z at the mid-time of each point, minus the largest change the
