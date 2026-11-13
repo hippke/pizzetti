@@ -2133,11 +2133,11 @@ class MarginalTransitModel:
             if res.get("budget_exceeded"):
                 warnings.warn(f"importance sampling stopped at its budget (max_evals={max_evals}, max_time="
                               f"{max_time} s) with k-hat {res['khat']:.2f}, ESS {res['ess']:.0f}: the draws are "
-                              "the best attempt so far, not a converged posterior", stacklevel=2)
+                              "the best attempt so far, not a converged posterior", stacklevel=3)
             elif not ok:
                 warnings.warn(f"importance sampling diagnostics failed (k-hat {res['khat']:.2f}, ESS "
                               f"{res['ess']:.0f}); check the posterior, e.g. with method='emcee'",
-                              stacklevel=2)
+                              stacklevel=3)
             x0 = res["theta_map"]
         elif method == "is":
             raise ValueError('method="is" needs "b" in free')
@@ -2259,7 +2259,7 @@ class MarginalTransitModel:
                               "area vanishes (rp -> 0 or b -> 1 + rp), up to the bounds, and coefficients ~ 1 / rp^2 can "
                               "still give the observed dip. This prior is improper there (at fixed b, marginal likelihood "
                               f"~ rp^-{2 * (self.law.K - 1)}), so this is no measurement of rp or the limb darkening; "
-                              'use ld_prior="physical"', stacklevel=2)
+                              'use ld_prior="physical"', stacklevel=3)
         # the exposure average at the posterior median (no draws: the rng stream is unchanged); without an exposure
         # time, exposures as long as the cadence are assumed
         exp_chk, assumed = self.exp_time, False
@@ -2275,18 +2275,19 @@ class MarginalTransitModel:
                     diag["supersample_exp_assumed"] = exp_chk
                 if diag["supersample_chi2"] > 0.1:
                     shift = math.sqrt(diag["supersample_chi2"])
+                    shift = f"{shift:.0f}" if shift >= 10 else f"{shift:.1f}"
                     if assumed:
                         warnings.warn(f"no exp_time given: if each point is an exposure as long as the cadence "
                                       f"({exp_chk * 1440:.1f} min), the model without exposure average is off by chi^2 = "
                                       f"{diag['supersample_chi2']:.3g} at the posterior median, which can move the posterior "
-                                      f"by up to ~{shift:.2g} sigma; pass exp_time={exp_chk:.6g} with supersample_factor="
+                                      f"by up to ~{shift} sigma; pass exp_time={exp_chk:.6g} with supersample_factor="
                                       f'{k_need} (or "auto"); if the exposures are shorter, pass their exp_time (tutorial 22)',
-                                      stacklevel=2)
+                                      stacklevel=3)
                     else:
                         warnings.warn(f"supersample_factor={self.k}: the model's exposure average is off by chi^2 = "
                                       f"{diag['supersample_chi2']:.3g} at the posterior median, which can move the posterior "
-                                      f"by up to ~{shift:.2g} sigma; use more sub-exposures (supersample_factor={k_need} "
-                                      "reaches chi^2 <= 0.01 there)", stacklevel=2)
+                                      f"by up to ~{shift} sigma; use more sub-exposures (supersample_factor={k_need} "
+                                      "reaches chi^2 <= 0.01 there)", stacklevel=3)
         j = systematic_resample(wc, len(wc), rng)
         orbit = dict(per=self.fixed[1], rp=self.fixed[2], a=self.fixed[3], b=self.fixed[4], ecc=self.fixed[5],
                      a_bounds=(self.lo[3], self.hi[3]), secondary=self.secondary, free=tuple(self.free))
