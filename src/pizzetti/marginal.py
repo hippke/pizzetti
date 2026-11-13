@@ -2007,7 +2007,7 @@ class MarginalTransitModel:
 
     def fit(self, method="auto", n=2048, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
             ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=True, mc_reps=None,
-            mc_tol=0.03, mc_max_factor=4.0, min_ess=2000):
+            mc_tol=0.03, mc_max_factor=4.0, min_ess=4000):
         """Posterior samples in one call.
 
         Importance sampling (method "is", or "auto" with b free) draws ``n`` points per stage, then adds draws from its
@@ -2017,9 +2017,9 @@ class MarginalTransitModel:
           rms, in posterior sd), measured from the spread of ``mc_reps`` (default 8) independent replicates of the draws;
           in ``diagnostics["mc_err"]`` / ``"mc_err_max"``. None: no error target.
         * ``min_ess``: a floor on the effective sample size of the output (Kish, after the limb-darkening step), so
-          that a corner plot of the equal-weight draws has about that many distinct points (2000: about the minimum
+          that a corner plot of the equal-weight draws has about that many distinct points (4000: twice the minimum
           effective sample size of Agarwal, Vats & Elvira 2021, arXiv:2108.13289, for four parameters at 10 % relative
-          precision). None: no floor.
+          precision; 2000 gave visibly noisy corner plots). None: no floor.
 
         ``qmc`` (default True): randomised quasi-Monte Carlo draws (scrambled Sobol points through the inverse CDFs of
         the proposals, one independent scramble per replicate). Each draw has the proposal's distribution, so the

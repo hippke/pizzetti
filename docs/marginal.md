@@ -115,7 +115,7 @@ the prior uniform in a). `fit()` proceeds in four steps:
    `fit()` warns if they do not. Tutorials 12–16 explain each step.
 6. Finally it adds draws from the final proposal until the Monte Carlo error of the posterior quantiles is at most
    `mc_tol` (0.03 posterior sd, rms over the 2.5–97.5% quantiles of every parameter) and the output's effective sample
-   size reaches `min_ess` (2000, so a corner plot has about as many distinct points; cf. the minimum effective sample
+   size reaches `min_ess` (4000, so a corner plot has about as many distinct points; twice the minimum effective sample
    size of Agarwal, Vats & Elvira 2021). The draws are randomised quasi-Monte Carlo (`qmc=True`): scrambled Sobol points
    mapped through the proposal's inverse CDFs, which cover the proposal more evenly than random draws and make the
    quantiles about 5 times less noisy for the same number of draws. Each batch is split into 8 independently scrambled

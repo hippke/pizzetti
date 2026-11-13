@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- `fit()`'s ESS floor is now `min_ess=4000` (was 2000): at 2000 a corner plot has about 2000 distinct points and looks
+  visibly noisy (tutorial 11, WASP-18 b). With the two speed-ups below, a fit still needs fewer likelihood evaluations
+  than with 0.5.0: 94 benchmark light curves x 2 seeds, 1.24x fewer summed (1.16x median); ESS median 4100.
+- The conditional fits of the profile grid use BFGS with a finite-difference step and tolerance of 1e-3 conditional sd
+  (scipy's default step, 1.5e-8, is below the numerical noise of log p, so BFGS searched on near the optimum) and a loose
+  Powell pre-step (xtol 1e-2, ftol 1e-3; was 1e-3, 1e-8). At the 2000 floor this needs 1.63x fewer evaluations summed
+  on the benchmark, at the same accuracy.
+- The limb-darkening step of `fit()` reuses the normal equations the likelihood computed at each draw instead of a
+  second pass over the light curve (output identical; 1.23x faster summed on 12 benchmark light curves).
+
 ## 0.5.0
 
 - `fit()` has a new default sampler: randomised quasi-Monte Carlo draws (`qmc=True`; scrambled Sobol points through the
