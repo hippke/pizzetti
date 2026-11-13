@@ -1,6 +1,6 @@
 # Tutorials
 
-Twenty-one notebooks, from a first light curve to certified and linear-basis models, the importance
+Twenty-two notebooks, from a first light curve to certified and linear-basis models, the importance
 sampler behind `fit()`, the Grand Tour from a raw light curve to a posterior (with wotan, and with a simultaneous Gaussian process), and fitting with a Gaussian process. Each one starts
 with its level, prerequisites and run time, and ends with what you learned and where to go next. The
 first notebook you run also compiles pizzetti's numba kernels (about a minute, cached afterwards).
@@ -26,6 +26,7 @@ jupyter lab examples/
 | 04 | [Observing realities](04_observing_realities.ipynb) | long exposures, eccentric orbits and timing helpers, secondary eclipses, grazing and inverse transits, `calc_err` | ~20 s |
 | 05 | [Choosing a limb-darkening law](05_choosing_a_limb_darkening_law.ipynb) | the same light curve fitted with every law, comparing geometry, intensity profiles and residuals | ~1–2 min |
 | 06 | [MarginalTransitModel](06_marginal_transit_model.ipynb) | limb darkening and baseline integrated out; `fit()`, `FitResult`, `EnsembleSampler`, priors, free α, secondary eclipses; against `TransitModel` + emcee and batman | ~2 min |
+| 22 | [Long exposures in a fit](22_long_exposures_in_a_fit.ipynb) | a real Kepler long-cadence light curve (TrES-2 b) fitted with and without supersampling: the smeared dip, a precise posterior in the wrong place, `supersample_factor` and `exp_time` in `MarginalTransitModel`, midpoint sub-exposures, how many with a χ² check | ~1 min |
 
 ## Under the hood
 
@@ -81,7 +82,7 @@ Paths through the tutorials: **batman users** 02 → 04 → 06; **fitting** 01 �
 |---|---|
 | `TransitParams`, `TransitModel.light_curve` | 01, 02, 03, 04 |
 | all limb-darkening laws (uniform … power-2, logarithmic) | 01, 05, 06 |
-| supersampling / exposure time | 04 |
+| supersampling / exposure time | 04, 22 |
 | eccentric orbits, `get_t_periastron`, `get_t_secondary`, `get_t_conjunction`, `get_true_anomaly` | 04 |
 | secondary eclipses (`transittype="secondary"`) | 04, 06 |
 | grazing and inverse transits | 04, 09 |
