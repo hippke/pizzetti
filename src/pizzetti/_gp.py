@@ -279,7 +279,7 @@ def _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_hal
     """_whitened in the workspace gws (workspace()): identical values."""
     dws, Y, Bw, yw, var, Tt = gws
     n = y.shape[0]
-    B = K.design_theta_ws(tt, ksup, wts, P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt, dws)
+    B, _ = K.design_theta_ws(tt, ksup, wts, P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt, dws, True)
     for i in range(n):
         Y[i, 0], Y[i, 1], Y[i, 2], Y[i, 3] = y[i], B[i, 0], B[i, 1], B[i, 2]
         var[i] = var0[i] * s2

@@ -334,10 +334,8 @@ def test_fit_is_with_b_bounds():
     assert r.samples[:, r.labels.index("b")].max() < 0.9
 
 
-def test_fit_is_bounded_retry():
-    """Unresolved ingress (30-min cadence, 1-h transit) with a/R* pressed against its upper bound:
-    the profile in the original coordinates fails (MAP on the bound), the retry in unbounded
-    coordinates succeeds and agrees with emcee."""
+def _bounded_retry_model():
+    """Unresolved ingress (30-min cadence, 1-h transit) with a/R* pressed against its upper bound."""
     rng = np.random.default_rng(4)
     t = np.concatenate([e * 2.6 + np.arange(-0.07, 0.07, 1765.5 / 86400) for e in range(20)])
     p = pizzetti.TransitParams()
@@ -348,15 +346,23 @@ def test_fit_is_bounded_retry():
                               offsets="midpoint").light_curve(p)
     y = y + 2e-4 * rng.standard_normal(t.size)
     bounds = {"t0": (-0.02, 0.02), "rp": (0.03, 0.15), "a": (3.0, 20.0), "b": (0.0, 0.9)}
-    m = pizzetti.MarginalTransitModel(p, t, y, 2e-4, free=("t0", "rp", "a", "b"), bounds=bounds,
-                                      supersample_factor=15, exp_time=1765.5 / 86400, offsets="midpoint")
+    return pizzetti.MarginalTransitModel(p, t, y, 2e-4, free=("t0", "rp", "a", "b"), bounds=bounds,
+                                         supersample_factor=15, exp_time=1765.5 / 86400, offsets="midpoint")
+
+
+def test_fit_is_bounded_retry():
+    """The profile in the original coordinates fails (MAP on the bound of a/R*), the retry in unbounded coordinates
+    succeeds and agrees with emcee (the stored reference of tests/_bounded_retry_ref.py)."""
+    import json
+    from _bounded_retry_ref import PATH
+    ref = json.load(open(PATH))
+    m = _bounded_retry_model()
     r = m.fit(method="auto", seed=0, n=4000)
     assert r.diagnostics["method"] == "profile-IS" and r.diagnostics["bounded_retry"] is True
-    e = m.fit(method="emcee", seed=1, n=4000)
     for q in ("rp", "a", "b"):
-        x, y_ = r.samples[:, r.labels.index(q)], e.samples[:, e.labels.index(q)]
-        assert abs(np.median(x) - np.median(y_)) < 0.2 * np.std(y_)
-        assert abs(np.std(x) / np.std(y_) - 1) < 0.2
+        x = r.samples[:, r.labels.index(q)]
+        assert abs(np.median(x) - ref[q]["median"]) < 0.2 * ref[q]["std"]
+        assert abs(np.std(x) / ref[q]["std"] - 1) < 0.2
 
 
 def test_pmc_refine_curved_target():
@@ -504,7 +510,8 @@ def test_threads_identical(monkeypatch):
         assert np.array_equal(b, c) and np.array_equal(lb, lc)
         ok = np.isfinite(a)
         assert np.array_equal(ok, np.isfinite(b))
-        assert np.allclose(a[ok], b[ok], rtol=1e-12, atol=1e-9) and np.allclose(la, lb, rtol=1e-12, atol=1e-9)
+        # the serial path (workspace kernel) adds the skipped points from precomputed sums: ln L within 1e-7
+        assert np.allclose(a[ok], b[ok], rtol=1e-12, atol=1e-7) and np.allclose(la, lb, rtol=1e-12, atol=1e-7)
     r2, r3 = m2.fit(method="is", seed=0, n=2000), m3.fit(method="is", seed=0, n=2000)
     assert np.array_equal(r2.samples, r3.samples)
     for bad in (0, -1, 1.5, "many"):
@@ -578,7 +585,7 @@ def test_fit_budget():
     """max_evals / max_time stop profile importance sampling (a hard posterior: the S/N ~5 toy needs
     the retry and the rescue, ~7e4 evaluations) with the best attempt so far, flagged; a budget that
     does not bind changes nothing; a budget too small for the first proposal raises."""
-    m = _shallow_toy()
+    m, r0, _ = _shallow_fit()
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always")
         r = m.fit(seed=0, n=4000, max_evals=20_000)
@@ -587,7 +594,6 @@ def test_fit_budget():
     assert any("budget" in str(x.message) for x in wl)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        r0 = m.fit(seed=0, n=4000)
         r1 = m.fit(seed=0, n=4000, max_evals=10 ** 8, max_time=1e6)
     assert not r1.diagnostics["budget_exceeded"] and r1.diagnostics["n_eval"] == r0.diagnostics["n_eval"]
     assert np.array_equal(r1.samples, r0.samples)
@@ -688,14 +694,25 @@ def test_ld_draws_theta_shallow():
     assert np.all((c[:, 0] >= 0) & (c[:, 1] >= c[:, 0]) & (c[:, 2] >= c[:, 1]))
 
 
+_SHALLOW_FIT = {}
+
+
+def _shallow_fit():
+    """(model, fit(seed=0, n=4000), its warnings) of _shallow_toy, made once for the two tests that use it."""
+    if not _SHALLOW_FIT:
+        m = _shallow_toy()
+        with warnings.catch_warnings(record=True) as wl:
+            warnings.simplefilter("always")
+            r = m.fit(method="auto", seed=0, n=4000)
+        _SHALLOW_FIT.update(m=m, r=r, wl=list(wl))
+    return _SHALLOW_FIT["m"], _SHALLOW_FIT["r"], _SHALLOW_FIT["wl"]
+
+
 def test_fit_barely_detected_transit():
     """S/N ~5: the posterior spreads over most of the prior (rp up to its bound, a/R* over its box);
     importance sampling converges without a warning (it did not in 30 AMIS iterations while the
     likelihood was inaccurate at small rp)."""
-    m = _shallow_toy()
-    with warnings.catch_warnings(record=True) as wl:
-        warnings.simplefilter("always")
-        r = m.fit(method="auto", seed=0, n=4000)
+    m, r, wl = _shallow_fit()
     assert r.diagnostics["is_ok"]
     assert not any("diagnostics failed" in str(x.message) for x in wl)
     rp = r.samples[:, r.labels.index("rp")]

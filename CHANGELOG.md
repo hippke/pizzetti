@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- The conditional fits of the profile grid use BFGS alone under the physical limb-darkening prior; the loose Powell
+  pre-step stays for the improper flat prior, where it finds the mass at rp -> 0. On the paper's benchmark 1.04x
+  fewer evaluations per fit (median) and the Fig. 6 total 4.4 % lower, at the same accuracy. (A finite-difference
+  step of 1e-3 for the MAP's BFGS, tested alongside, was not adopted: one light curve needed 3.6x the evaluations.)
+- Skipped data points cost almost nothing per evaluation: on a circular orbit a phase test against the transit window
+  finds the candidates before any orbit is computed (exact), and the skipped rows enter the normal equations and chi2
+  from sums precomputed per model (ln L within 1e-7). Unsupersampled light curves 1.06x faster per evaluation (median;
+  up to 1.16x on Kepler-93 b short cadence), supersampled ones unchanged; the paper's Fig. 6 total 3.0 % lower.
+- A first profile whose grid reaches the grazing boundary and does not close (it can never pass, and refinement keeps
+  the grid's ends) now makes only 512 draws, with no second stage or refinement, before `fit()` goes on to the strata
+  (`profile_is(stop_incomplete=...)`); the draws serve the strata's mass cross-check and the fallbacks. On the paper's
+  benchmark this concerns 36 of the 93 fits with such a grid (none of which passed): the Fig. 6 total 4.8 % lower
+  (Kepler-78 b 26.5 -> 20.7 s) at the same accuracy; fits with a closed grid are unchanged.
+- The exposure average of the likelihood sums the three occultation terms over the sub-exposures and forms the theta
+  columns once per data point (they are linear in the terms), instead of per sub-exposure. Per evaluation 1.03x
+  faster on supersampled light curves (median; Kepler-78 b and Kepler-21 b 1.17x); the Fig. 6 total of the paper's
+  benchmark 2.96 -> 2.82 min. Identical without sub-exposures; with them the same up to rounding (ln L within 1e-8).
+- The grazing stratum's start search (`_grazing_start`) scans once, from the maximum so far, with 11 instead of 21
+  points per line (396 instead of 1512 evaluations). On the 24 stratified benchmark light curves (3 seeds) a fit
+  needs 1.04x fewer evaluations, at the same accuracy against the references and with the same sampler paths. Seeded
+  results of stratified fits change.
+- Tests: the mpmath reference values are cached in `testdata/mpref_cache.json` (keyed by the arguments and the
+  reference code's hash), the bounded-retry test compares with a stored emcee reference
+  (`testdata/bounded_retry_ref.json`, made by `tests/_bounded_retry_ref.py`), and `pytest-xdist` is in the test
+  extras: the suite takes 161 s serially instead of 378 s, 45 s with `pytest -m "not perf" -n 8`.
+
 ## 0.6.2
 
 - The likelihood of `MarginalTransitModel` (single thread, quadratic law without `ld_prior`) no longer computes data

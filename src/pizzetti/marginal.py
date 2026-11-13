@@ -1279,14 +1279,22 @@ class MarginalTransitModel:
         return self.to_internal(p0[:, :self.ndim])
 
     # -- Layer 2: one call ------------------------------------------------------
+    @property
+    def _robust_cond(self):
+        """profile_is' Powell pre-step of the conditional fits: only for the improper flat limb-darkening prior, whose
+        long coordinate searches find the mass at rp -> 0. Under the physical prior BFGS alone (until 0.6.2 always
+        with the pre-step): on the benchmark 1.04x fewer evaluations per fit, the Fig. 6 total 4.4 % lower, the same
+        accuracy."""
+        return not self.physical
+
     def _workspace(self):
         """The arrays K.loglike_batch_ws reuses for every evaluation (made at the first call; not pickled). Made again
         if the model times or the sub-exposures were replaced since (the workspace holds the mid-time and half-span of
         each data point, and the kernels do not check sizes)."""
-        key = (self.tt, self.k)
+        key = (self.tt, self.k, self.wts, self.yw)
         c = self.__dict__.get("_ws")
-        if c is None or c[0][0] is not key[0] or c[0][1] != key[1]:
-            c = self._ws = (key, K.workspace(self.tt, self.k))
+        if c is None or any(x is not y for x, y in zip(c[0][:1] + c[0][2:], key[:1] + key[2:])) or c[0][1] != key[1]:
+            c = self._ws = (key, K.workspace(self.tt, self.k, self.wts, self.yw))
         return c[1]
 
     def _gp_workspace(self):
@@ -1508,17 +1516,19 @@ class MarginalTransitModel:
         return dict(theta=X, logw=logw, w=w)
 
     def _grazing_start(self, T, x_ref):
-        """Best point of a grid of the grazing stratum ``T``: ln lambda by two refinements at each of 12 values of v;
-        the other parameters from x_ref. Returns (U, evaluations)."""
+        """Best point of a grid of the grazing stratum ``T``: ln lambda on 11 points, refined twice (each pass spans 2.5
+        steps of the previous one), at each of 12 values of v; the other parameters from x_ref. Returns (U, evaluations).
+        (Until 0.6.2: 21 points, and a second scan from the start of the fit; on the 24 stratified benchmark light curves
+        this one scan needs 1.04x fewer evaluations per fit at the same accuracy and paths.)"""
         prof = np.linspace(0.02, 0.98, 12)
         centre, width = 0.5 * (math.log(1e-6) + math.log(1.0)), 0.5 * (math.log(1.0) - math.log(1e-6))
         centres = np.full(len(prof), centre)
-        U = np.tile(np.asarray(T.to_u(x_ref))[0], (21, 1))
+        U = np.tile(np.asarray(T.to_u(x_ref))[0], (11, 1))
         best, best_v, nev = None, -np.inf, 0
         for it in range(3):
-            w_ = width / 8.0 ** it
+            w_ = width / 4.0 ** it
             for k, pv in enumerate(prof):
-                U[:, T.jr] = centres[k] + np.linspace(-w_, w_, 21)
+                U[:, T.jr] = centres[k] + np.linspace(-w_, w_, 11)
                 U[:, T.jb] = pv
                 v = T.log_prob(U)
                 nev += len(U)
@@ -1688,9 +1698,23 @@ class MarginalTransitModel:
         lo_b, hi_b = self.lo[4], self.hi[4]
         walls = dict(lo_wall=max(0.0, lo_b) + (1e-9 if lo_b >= 0 else 0.0),
                      hi_wall=hi_b - 1e-9 if np.isfinite(hi_b) else None)
+        # a first profile whose grid reaches the grazing boundary and does not close cannot pass, and goes on to the
+        # strata: it makes only 512 draws (profile_is stop_incomplete; on the benchmark 36 of 93 such fits, 0 of which
+        # passed, and the Fig. 6 total 4.8 % lower)
+        stop = None
+        if stratify and "rp" in self.free and self.gp is None and not self.secondary and np.isfinite(self.hi[2]):
+            jr_s = self.free.index("rp")
+
+            def grazing_grid(bs, tmap):
+                """The grid reaches the grazing boundary (``graze`` below) where the strata are possible."""
+                if not np.all(np.isfinite(tmap)):
+                    return False
+                g = float(self._conj_factor(tmap)[0])
+                return bool(lo_b <= 0.0 and hi_b * g >= 1.0 + self.hi[2] and np.max(bs) * g + tmap[jr_s] > 1.0)
+            stop = dict(n=512, when=grazing_grid)
         try:
-            res = profile_is(self.log_prob_internal, x0, self._default_scales(x0), prof=jb, n=n, rng=rng,
-                             **walls)
+            res = profile_is(self.log_prob_internal, x0, self._default_scales(x0), prof=jb, robust_cond=self._robust_cond, n=n, rng=rng,
+                             stop_incomplete=stop, **walls)
         except _BudgetExceeded:
             raise RuntimeError(f"profile_is: budget spent ({budget.used} evaluations, max_evals={budget.max_evals}, "
                                f"max_time={budget.max_time} s) before the first proposal was complete") from None
@@ -1776,7 +1800,7 @@ class MarginalTransitModel:
                     x_n = self.to_internal(X_p)[0]
                 s_n = self._default_scales(x_n)
                 s_n[jb] = 0.1
-                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
+                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, robust_cond=self._robust_cond, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
                                  clip_map=True)
                 nev.append(r_n["n_eval"])
                 if np.all(np.isfinite(r_n["theta_map"])):
@@ -1785,14 +1809,11 @@ class MarginalTransitModel:
                     break
             # grazing side
             T_g = _StratumCoords(self, "graze")
-            u_g, k_g = self._grazing_start(T_g, x_ref)     # the duration of the maximum so far, or of the start
-            u_0, k_0 = self._grazing_start(T_g, x0)
-            nev.append(k_g + k_0)
-            if T_g.log_prob(u_0)[0] > T_g.log_prob(u_g)[0]:
-                u_g = u_0
+            u_g, k_g = self._grazing_start(T_g, x_ref)     # the duration of the maximum so far
+            nev.append(k_g)
             s_g = sc.copy()
             s_g[jr], s_g[jb] = 0.1, 0.1
-            r_g = profile_is(T_g.log_prob, u_g, s_g, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6, clip_map=True)
+            r_g = profile_is(T_g.log_prob, u_g, s_g, prof=jb, robust_cond=self._robust_cond, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6, clip_map=True)
             nev.append(r_g["n_eval"])
             lp_g = -np.inf
             if np.all(np.isfinite(r_g["theta_map"])):
@@ -1807,7 +1828,7 @@ class MarginalTransitModel:
                 x_n[jb] = 0.98 * (1.0 - x_n[jr]) / g_s
                 s_n = self._default_scales(x_n)
                 s_n[jb] = 0.1
-                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
+                r_n = profile_is(T_n.log_prob, T_n.to_u(x_n)[0], s_n, prof=jb, robust_cond=self._robust_cond, n=nk, rng=rng, lo_wall=1e-6, hi_wall=1.0 - 1e-6,
                                  clip_map=True)
                 nev.append(r_n["n_eval"])
                 if np.all(np.isfinite(r_n["theta_map"])):
@@ -1918,7 +1939,7 @@ class MarginalTransitModel:
             def lp_flat(X):
                 lp, lP = self.log_prob_internal(X, parts=True)
                 return lp - lP
-            r = profile_is(lp_flat, x0, self._default_scales(x0), prof=jb, n=n, rng=rng,
+            r = profile_is(lp_flat, x0, self._default_scales(x0), prof=jb, robust_cond=self._robust_cond, n=n, rng=rng,
                            logp_target=self.log_prob_internal, **walls)
             nev.append(r["n_eval"])
             return r
@@ -1948,7 +1969,7 @@ class MarginalTransitModel:
                 dx = abs(T.to_x(up[None])[0][0, j] - X0[0, j]) / eps
                 su[j] = min(sx[j] / dx, 2.0) if dx > 0 else sx[j]
             wl = dict(lo_wall=1e-9, hi_wall=1.0 - 1e-9) if graze else walls
-            r = profile_is(T.log_prob, u0, su, prof=jb, n=n, rng=rng, **wl)
+            r = profile_is(T.log_prob, u0, su, prof=jb, robust_cond=self._robust_cond, n=n, rng=rng, **wl)
             nev.append(r["n_eval"])
             if np.isfinite(r["khat"]) and np.sum(r["w"] > 0) > 50:
                 # the Laplace steps are unreliable here (posterior against a bound: flat and skewed

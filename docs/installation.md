@@ -23,9 +23,14 @@ disk. Later imports start immediately.
 ## Running the tests
 
 ```bash
-pytest -m "not perf"     # correctness: comparison with batman and with a 40-digit reference
-pytest -m perf -s        # timings against batman (printed)
+pytest -m "not perf"          # correctness: comparison with batman and with a 40-digit reference
+pytest -m "not perf" -n 8     # the same on 8 cores (pytest-xdist; run once without -n after a change to the kernels,
+                              # so that numba fills its cache before the workers start)
+pytest -m perf -s             # timings against batman (printed)
 ```
+
+The 40-digit reference values are cached in `testdata/mpref_cache.json` and recomputed when `tests/reference.py`
+changes (or when the file is deleted).
 
 ## Building the documentation
 

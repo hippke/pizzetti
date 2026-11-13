@@ -36,32 +36,45 @@ def both(m, X):
     lp_o, ne_o = np.zeros(len(X)), np.full((len(X), 9), np.nan)
     lp_n, ne_n = np.zeros(len(X)), np.full((len(X), 9), np.nan)
     old = K.loglike_batch(*a, False, np.zeros(2), np.eye(2), lp_o, ne_o)
-    new = K.loglike_batch_ws(*a, lp_n, ne_n, K.workspace(m.tt, m.k))
+    new = K.loglike_batch_ws(*a, lp_n, ne_n, K.workspace(m.tt, m.k, m.wts, m.yw))
     return (old, lp_o, ne_o), (new, lp_n, ne_n)
 
 
 @pytest.mark.parametrize("kw", [dict(), dict(ecc=0.3), dict(series_tol=0.0), dict(k=1)],
                          ids=["circular", "eccentric", "no-series", "no-supersampling"])
 def test_workspace_kernel_is_identical(kw):
+    """Equal up to rounding: the exposure average sums the terms before forming the theta columns, the skipped points'
+    rows enter the normal equations and chi2 from precomputed sums, and the eccentric Kepler solver is warm-started
+    differently after a skip."""
     m = model(**kw)
     old, new = both(m, rows(m))
     assert np.isfinite(old[0]).sum() > 50
     for a, b in zip(old, new):
+        same(a, b, m.k)
+
+
+def same(a, b, k=None, exact=False):
+    """Equal up to rounding (and finite in the same places); ``exact``: bit for bit."""
+    if exact:
         np.testing.assert_array_equal(a, b)
+    else:
+        np.testing.assert_array_equal(np.isfinite(a), np.isfinite(b))
+        f = np.isfinite(a)
+        np.testing.assert_allclose(b[f], a[f], rtol=1e-10, atol=1e-6)
 
 
 def test_model_uses_the_workspace_and_stays_identical():
     m = model()
     X = rows(m)
     old = both(m, X)[0][0]
-    np.testing.assert_array_equal(m.log_prob_internal(X), old)
+    same(m.log_prob_internal(X), old, m.k)
     ws = m._workspace()
     assert m._workspace() is ws                          # made once
     m.tt = m.tt.copy()                                   # replaced times: a new workspace (the old one has their mid-times)
     assert m._workspace() is not ws
-    np.testing.assert_array_equal(m.log_prob_internal(X), old)
+    same(m.log_prob_internal(X), old, m.k)
     assert "_ws" not in pickle.loads(pickle.dumps(m)).__dict__
-    np.testing.assert_array_equal(copy.copy(m).log_prob_internal(X), old)
+    same(copy.copy(m).log_prob_internal(X), old, m.k)
 
 
 _FAULTS = """
@@ -117,12 +130,12 @@ def test_gp_workspace_kernels_are_identical(k):
     old = _gp.loglike_batch(P, lj, E, ok, m.lo, m.hi, *base, lp_o)
     new = _gp.loglike_batch_ws(P, lj, E, ok, m.lo, m.hi, *base, lp_n, m._gp_workspace())
     assert np.isfinite(old).sum() > 50
-    np.testing.assert_array_equal(old, new)
-    np.testing.assert_array_equal(lp_o, lp_n)
-    np.testing.assert_array_equal(m.log_prob_internal(X), old)
+    same(old, new, k)
+    same(lp_o, lp_n, k)
+    same(m.log_prob_internal(X), old, k)
     Pc = np.ascontiguousarray(P)
     for a, b in zip(_gp.theta_moments_batch(Pc, E, *base), _gp.theta_moments_batch_ws(Pc, E, *base, m._gp_workspace())):
-        np.testing.assert_array_equal(a, b)
+        same(a, b, k)
     assert "_gws" not in pickle.loads(pickle.dumps(m)).__dict__
 
 
@@ -146,8 +159,8 @@ def test_skip_on_eccentric_orbits(ecc):
     skipped stretch, which may change the last bits (identical without sub-exposures, and in practice up to e ~ 0.3)."""
     m = model(ecc=ecc, k=9)
     old, new = both(m, rows(m))
-    np.testing.assert_allclose(new[0], old[0], rtol=1e-12, atol=1e-8)
+    same(new[0], old[0])
     np.testing.assert_array_equal(np.isfinite(new[0]), np.isfinite(old[0]))
     m1 = model(ecc=ecc, k=1)
     for a, b in zip(*both(m1, rows(m1))):
-        np.testing.assert_array_equal(a, b)
+        same(a, b)

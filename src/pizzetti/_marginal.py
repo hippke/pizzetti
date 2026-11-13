@@ -566,7 +566,7 @@ def marg_theta_parts(B, y, gx, gw):
 
 
 @njit(cache=True)
-def theta_parts_normal(G, r, B, y, yy, shift, gx, gw):
+def theta_parts_normal(G, r, B, y, yy, shift, gx, gw, ext=np.zeros(0)):
     """marg_theta_parts from the normal equations. With rows in B, chi2 comes from the explicit residual.
     Without rows (the sums were built elsewhere): chi2 = yy - 2 th r + th G th, where r and yy belong to the data
     minus shift x the first column of the design, so that the solution for f0 is the shift + the first solved value."""
@@ -601,13 +601,18 @@ def theta_parts_normal(G, r, B, y, yy, shift, gx, gw):
     x1 = (z1 - L[2, 1] * x2) / L[1, 1]
     x0 = (z0 - L[1, 0] * x1 - L[2, 0] * x2) / L[0, 0]
     th = np.array([x0 / s[0], x1 / s[1], x2 / s[2]])
-    if B.shape[0] > 0:
+    if B.shape[0] > 0 or ext.shape[0] == 4:
         chi2 = 0.0
         if not th[0] > 0.0:
             return -np.inf, 0.0
         for t in range(B.shape[0]):
             d = y[t] - B[t, 0] * th[0] - B[t, 1] * th[1] - B[t, 2] * th[2]
             chi2 += d * d
+        if ext.shape[0] == 4:
+            # rows a0 (1, 0, 0) not in B, from their sums: sum (yw - th0 a0)^2 = sum d^2 - 2 e sum d a0 + e^2 sum a0^2,
+            # d = yw - s0 a0, e = th0 - s0 (ext = (sum d^2, sum d a0, sum a0^2, s0))
+            e_ = th[0] - ext[3]
+            chi2 += ext[0] - 2.0 * e_ * ext[1] + e_ * e_ * ext[2]
     else:
         chi2 = yy
         for i in range(3):
@@ -844,18 +849,24 @@ def design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, 
 
 
 @njit(cache=True)
-def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws):
+def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws, fill=True):
     """design_theta() in the arrays of the workspace ws (workspace() makes one): the same values without allocating.
     Data points whose sub-exposures are all off the star are not computed: their row is that of an unocculted point
     (wts / ksup x ksup ones, then zeros; exactly what the full calculation gives them). A point is skipped only if z at
     its mid-time, minus the largest change the orbit allows within half its exposure (the largest orbital speed,
     2 pi a / per sqrt((1 + e) / (1 - e)), x half), stays above 1 + rp + 1e-9 (a + 1), with a (1 - e) bounding a
-    mid-time behind the star. The other points go through the same orbit, occultation and exposure-average code as
-    before, on compact arrays. Circular orbits and eccentric ones without sub-exposures give identical values; with
-    sub-exposures, the eccentric orbit's Kepler solver is warm-started from a different neighbour after a skipped
-    stretch, which can change the last bit of the eccentric anomaly.
-    Returns A (n x 3), a view into ws that the next call overwrites."""
-    z, Tf, A, bcnt, zb, idx, lex, ldx, edx, dev, tc, tmid, half, zm, keep = ws
+    mid-time behind the star. The other points go through the same orbit and occultation code, on compact arrays, and
+    their exposure average sums the three terms over the sub-exposures before forming the theta columns (which are
+    linear in them). Without sub-exposures the values are those of design_theta(); with them, the same up to rounding
+    (the sums are formed in a different order, and the eccentric orbit's Kepler solver is warm-started from a different
+    neighbour after a skipped stretch).
+    On a circular orbit the candidates are found by their phase first: a point whose mid-time lies further from a
+    conjunction than the window where z can fall below that limit, plus its half-span, is off the star in every
+    sub-exposure and needs no orbit at all.
+    Returns (A, m): with ``fill``, A (n x 3) for every data point; without, only the m computed rows, in A[:m], of the
+    points ws[14][:m] (the others are the unocculted row; loglike_batch_ws adds them from precomputed sums). Views into
+    ws that the next call overwrites."""
+    z, Tf, A, bcnt, zb, idx, lex, ldx, edx, dev, tc, tmid, half, zm, keep, cand, tmc, zmc = ws[:18]
     ab = abs(b)
     inc = math.acos(min(ab / a, 1.0))
     k = abs(rp)
@@ -864,10 +875,6 @@ def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, w
     n = A.shape[0]
     circ = ecc < 1.0e-5
     si = math.sin(inc)
-    if circ:
-        _orbit._rsky_circular(tmid, t0, per, a, si, 0.25, 1, zm)
-    else:
-        _orbit._rsky_eccentric(tmid, t0, per, a, inc, ecc, w, 1, zm)
     # the sky separation changes no faster than the orbital speed, at most 2 pi a / per sqrt((1 + e) / (1 - e)) (at
     # periastron); a mid-time behind the star (zm = BIGD) is bounded by the separation where the planet crosses the
     # sky plane, r >= a (1 - e)
@@ -875,10 +882,38 @@ def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, w
     rmin = a * (1.0 - ecc)
     lim = 1.0 + k + 1e-9 * (a + 1.0)
     m = 0
-    for i in range(n):
-        if min(zm[i], rmin) - speed * half[i] < lim:
-            keep[m] = i
-            m += 1
+    if circ:
+        # z < lim only where cos^2(2 pi dt / per) > (1 - (lim / a)^2) / sin^2 i (dt from a conjunction, near side)
+        r_ = lim / a
+        c2 = (1.0 - r_ * r_) / (si * si) if si > 0.0 else 2.0
+        if c2 <= 0.0:
+            win = 0.25 * per
+        elif c2 >= 1.0:
+            win = -1.0                                     # z >= b >= lim everywhere: no point touches the star
+        else:
+            win = math.acos(math.sqrt(c2)) / (2.0 * math.pi) * per
+        mtol = 1e-9 * per
+        inv_per = 1.0 / per
+        mc = 0
+        for i in range(n):
+            u = (tmid[i] - t0) * inv_per
+            if abs(u - math.floor(u + 0.5)) * per <= win + half[i] + mtol:
+                cand[mc] = i
+                tmc[mc] = tmid[i]
+                mc += 1
+        _orbit._rsky_circular(tmc[:mc], t0, per, a, si, 0.25, 1, zmc[:mc])
+        for j in range(mc):
+            i = cand[j]
+            zm[i] = zmc[j]
+            if min(zmc[j], rmin) - speed * half[i] < lim:
+                keep[m] = i
+                m += 1
+    else:
+        _orbit._rsky_eccentric(tmid, t0, per, a, inc, ecc, w, 1, zm)
+        for i in range(n):
+            if min(zm[i], rmin) - speed * half[i] < lim:
+                keep[m] = i
+                m += 1
     mt = m * ksup
     zk = z[:mt]
     if ksup == 1:
@@ -897,66 +932,76 @@ def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, w
     T = Tf[:3 * mt].reshape((3, mt))
     _occult_terms_into(zk, k, z_c, A_half, T, bcnt, zb, idx, lex, ldx, edx, dev)
     inv = 1.0 / ksup
+    if not fill:
+        for j in range(m):
+            i = keep[j]
+            f = wts[i] * inv
+            sl = 0.0
+            sd = 0.0
+            se = 0.0
+            r0 = j * ksup
+            for s in range(ksup):
+                sl += T[0, r0 + s]
+                sd += T[1, r0 + s]
+                se += T[2, r0 + s]
+            A[j, 0] = (float(ksup) - (12.0 * sl - 12.0 * sd - 6.0 * se)) * f
+            A[j, 1] = (6.0 * sl - 6.0 * sd - 4.0 * se) * f
+            A[j, 2] = (5.0 * sl - 6.0 * sd - 2.0 * se) * f
+        return A, m
+    inv = 1.0 / ksup
     j = 0
     for i in range(n):
         f = wts[i] * inv
         if j < m and keep[j] == i:
-            s0 = 0.0
-            s1 = 0.0
-            s2 = 0.0
+            # the theta columns are linear in (lex, ldx, edx): sum the terms over the sub-exposures, then transform
+            # once per data point (theta_cols per sample before 0.6.3; the same values up to rounding, identical for
+            # ksup = 1)
+            sl = 0.0
+            sd = 0.0
+            se = 0.0
+            r0 = j * ksup
             for s in range(ksup):
-                r = j * ksup + s
-                lx, ld, ed = T[0, r], T[1, r], T[2, r]
-                s0 += 1.0 - (12.0 * lx - 12.0 * ld - 6.0 * ed)
-                s1 += 6.0 * lx - 6.0 * ld - 4.0 * ed
-                s2 += 5.0 * lx - 6.0 * ld - 2.0 * ed
-            A[i, 0] = s0 * f
-            A[i, 1] = s1 * f
-            A[i, 2] = s2 * f
+                sl += T[0, r0 + s]
+                sd += T[1, r0 + s]
+                se += T[2, r0 + s]
+            A[i, 0] = (float(ksup) - (12.0 * sl - 12.0 * sd - 6.0 * se)) * f
+            A[i, 1] = (6.0 * sl - 6.0 * sd - 4.0 * se) * f
+            A[i, 2] = (5.0 * sl - 6.0 * sd - 2.0 * se) * f
             j += 1
         else:
             A[i, 0] = float(ksup) * f
             A[i, 1] = 0.0
             A[i, 2] = 0.0
-    return A
+    return A, m
 
 
-@njit(cache=True)
-def _theta_average(T, ksup, wts, A):
-    """A[i] = wts[i] / ksup x the sum over the ksup sub-exposures of theta_cols(T): theta_cols() and the exposure
-    average of design_theta() in one pass, in the same order of operations (identical values)."""
-    n = A.shape[0]
-    inv = 1.0 / ksup
-    for i in range(n):
-        s0 = 0.0
-        s1 = 0.0
-        s2 = 0.0
-        for s in range(ksup):
-            r = i * ksup + s
-            lx, ld, ed = T[0, r], T[1, r], T[2, r]
-            s0 += 1.0 - (12.0 * lx - 12.0 * ld - 6.0 * ed)
-            s1 += 6.0 * lx - 6.0 * ld - 4.0 * ed
-            s2 += 5.0 * lx - 6.0 * ld - 2.0 * ed
-        f = wts[i] * inv
-        A[i, 0] = s0 * f
-        A[i, 1] = s1 * f
-        A[i, 2] = s2 * f
-
-
-def workspace(tt, ksup):
+def workspace(tt, ksup, wts=None, yw=None):
     """Arrays for design_theta_ws / loglike_batch_ws for the model times tt (len(tt) // ksup data points of ksup
     sub-exposures each), with the mid-time and half-span of each data point. About 110 bytes per model point; the
-    lists are touched only up to the number of computed / limb points."""
+    lists are touched only up to the number of computed / limb points. With the weights and weighted data (wts, yw;
+    loglike_batch_ws), also the sums over all points of the unocculted row a0 = ksup (wts / ksup) that loglike_batch_ws
+    adds for the points the design skips: (sum a0^2, sum a0 yw, sum d^2, sum d a0, s0), d = yw - s0 a0, s0 = the
+    weighted mean of yw / a0 (d is at the noise level, so chi2 from these sums does not cancel)."""
     tt = np.ascontiguousarray(tt, dtype=float)
     nt = len(tt)
     n = nt // ksup
     S = tt[:n * ksup].reshape(n, ksup)
     lo, hi = S.min(axis=1), S.max(axis=1)
     nb = (nt + 63) // 64
+    if wts is None:
+        a0, dl, tot = np.zeros(n), np.zeros(n), np.zeros(5)
+    else:
+        wts = np.asarray(wts, dtype=float)
+        yw = np.asarray(yw, dtype=float)
+        a0 = float(ksup) * (wts * (1.0 / ksup))
+        s0 = float(np.sum(a0 * yw) / np.sum(a0 * a0))
+        dl = yw - s0 * a0
+        tot = np.array([np.sum(a0 * a0), np.sum(a0 * yw), np.sum(dl * dl), np.sum(dl * a0), s0])
     return (np.empty(nt), np.empty(3 * nt), np.empty((n, 3)), np.empty(nb, dtype=np.int64),
             np.empty(nt), np.empty(nt, dtype=np.int64), np.empty(nt), np.empty(nt), np.empty(nt), np.empty(nt),
             np.empty(nt), np.ascontiguousarray(0.5 * (lo + hi)), np.ascontiguousarray(0.5 * (hi - lo)), np.empty(n),
-            np.empty(n, dtype=np.int64))
+            np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int64), np.empty(n), np.empty(n),
+            np.ascontiguousarray(a0), np.ascontiguousarray(dl), np.empty(n), tot)
 
 
 @njit(cache=True, inline="always")
@@ -1069,11 +1114,30 @@ def _loglike_row_ws(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, ne_out
     if not (ok and 0.0 <= ecc < 1.0 and 0.0 <= b and b_conj(b, ecc, w, 1) < 1.0 + rp and per > 0.0
             and rp > 0.0 and a > 1.0):
         return -np.inf, 0.0
-    B = design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws)
-    G, r = normal_eqs(B, yw)
+    B, m = design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws, False)
+    keep, a0, dl, yk, tot = ws[14], ws[18], ws[19], ws[20], ws[21]
+    # the m computed rows, plus the unocculted rows of the skipped points from the sums over all points minus the
+    # computed points' share of them
+    s_aa = 0.0
+    s_ay = 0.0
+    s_dd = 0.0
+    s_da = 0.0
+    for j in range(m):
+        q = keep[j]
+        yk[j] = yw[q]
+        c = a0[q]
+        s_aa += c * c
+        s_ay += c * yw[q]
+        s_dd += dl[q] * dl[q]
+        s_da += dl[q] * c
+    Bk = B[:m]
+    G, r = normal_eqs(Bk, yk[:m])
+    G[0, 0] += tot[0] - s_aa
+    r[0] += tot[1] - s_ay
     if ne_out.shape[0] > i:
         _store_ne(ne_out, i, G, r)
-    v, lP = theta_parts_normal(G, r, B, yw, 0.0, 0.0, GL_X, GL_W)
+    ext = np.array([tot[2] - s_dd, tot[3] - s_da, tot[0] - s_aa, tot[4]])
+    v, lP = theta_parts_normal(G, r, Bk, yk[:m], 0.0, 0.0, GL_X, GL_W, ext)
     return v + lP + lj[i], lP
 
 

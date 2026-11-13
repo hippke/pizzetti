@@ -553,7 +553,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
                nelder_mead=False, b_temper=1.0, b_uniform=0.0, robust_cond=True, h_sd=0.2,
                mix_stage=True, khat_ok=0.5, h_ref="prev", refine_tol=0.25, max_refine=10,
                lazy_refine=True, khat_refine=0.7, logp_target=None, carry_cov=None, max_carry=3,
-               defensive=0.1, clip_map=False):
+               defensive=0.1, clip_map=False, stop_incomplete=None):
     """Importance sampling with a proposal built along one parameter (index ``prof``):
 
     * profile: for b on an adaptive grid around the MAP (step ``step_sd`` x the
@@ -589,6 +589,10 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
     such steps fail, the step is halved and the grid can end early (incomplete profile). In 36
     grazing injections that fell back to emcee it made 14 usable instead of 10, but 4 of the 10 failed
     instead: not adopted.
+    ``stop_incomplete``: dict(n, when): if the first grid does not close (``complete`` False: such a result never passes
+    its caller's check, and refinement keeps the ends) and ``when(grid_b, theta_map)`` is True, only n draws are made,
+    with no second stage or refinement, and the result is returned with ``stopped_incomplete`` (fit(): a first profile
+    that reaches the grazing boundary goes on to the strata; the n draws serve its mass cross-check and fallbacks).
     ``clip_map``: a maximum beyond a wall (at a wall that bounds the support, within rounding) is moved onto the wall, where
     the conditional fits have a finite target.
     ``h_ref``: finite-difference steps of the conditional Hessians: "prev" (default) the
@@ -903,6 +907,17 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
             f = logp_batch if logp_target is None else logp_target
             return np.concatenate([f(X[i:i + batch]) for i in range(0, len(X), batch)])
 
+        if stop_incomplete is not None and not stop_state["done"]:
+            stop_state["done"] = True             # the first build only (a refined grid keeps its ends)
+            if not (end_lo_ok and end_hi_ok) and stop_incomplete["when"](bs, theta_map):
+                m_ = int(stop_incomplete["n"])
+                X1, lab1 = q_prof_sample(m_)
+                lp1 = evaluate(X1)
+                nev += m_
+                lq1 = q_prof_logpdf(X1)
+                lw1, k1 = psis(lp1 - lq1)
+                stop_state["draws"] = (X1, lp1, lq1, lw1, k1, lab1, bs, lb, end_lo_ok, end_hi_ok)
+                return None
         X, lab = q_prof_sample(n)
         lp = evaluate(X)
         nev += n
@@ -977,6 +992,7 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
         return X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lp - lq
 
     state = {}                                   # the latest stages(): draws, labels and final proposal
+    stop_state = dict(done=False, draws=None)
 
     def topup_to(tol, max_add, min_ess=None):
         """Draws from the final proposal (the mixture of everything drawn so far, so the weights keep their form)
@@ -1012,7 +1028,18 @@ def profile_is(logp_batch, theta0, scale, prof=4, n=4000, nu=5.0, inflate=1.2, r
 
     can_refine = refine_tol is not None and len(grid) > 1
     n_ref = refine() if (can_refine and not lazy_refine) else 0
-    X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(build())
+    first = build()
+    if first is None:                            # stop_incomplete: the few draws of an incomplete profile, flagged
+        X1, lp1, lq1, lw1, k1, lab1, bs, lb, lo_ok, hi_ok = stop_state["draws"]
+        w1 = np.exp(lw1)
+        li, lie = log_mean_weight(lp1 - lq1)
+        return dict(theta=X1, w=w1, logw=lw1, khat=float(k1), ess=float(1.0 / np.sum(w1 ** 2)), rep=lab1,
+                    mc_err=mc_error(X1, w1, lab1), n_topup=0, topup_to=None, n_eval=int(nev), theta_map=theta_map,
+                    grid_b=bs, grid_logdens=lb, stage=1, n_grid=len(bs), complete=bool(lo_ok and hi_ok),
+                    n_eval_map=int(nev_map), n_refine=0, log_int=li, log_int_err=lie,
+                    grid_lpmax=np.array([grid[b][1] for b in bs]), grid_logdet=np.array([grid[b][3] for b in bs]),
+                    stopped_incomplete=True)
+    X, w, lw, khat, stage, bs, lb, end_lo_ok, end_hi_ok, lraw = stages(first)
     if can_refine and lazy_refine and not (khat < khat_refine):
         # last resort before giving up: refine the grid and sample again (the draws so far are
         # discarded). Most poor stage-1 proposals come from non-Gaussian conditionals, which
