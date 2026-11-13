@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - New `pizzetti.choose_supersample(params, t, exp_time, sigma)`: the smallest number of sub-exposures whose model error,
   summed over the data (`pizzetti.exposure_chi2`, chi^2 against a finely supersampled model), is at most 0.01, which
@@ -24,6 +24,7 @@
   (scipy's default step, 1.5e-8, is below the numerical noise of log p, so BFGS searched on near the optimum) and a loose
   Powell pre-step (xtol 1e-2, ftol 1e-3; was 1e-3, 1e-8). At the 2000 floor this needs 1.63x fewer evaluations summed
   on the benchmark, at the same accuracy.
+- Warnings from `fit()` point at the caller's line instead of pizzetti's internals.
 - The limb-darkening step of `fit()` reuses the normal equations the likelihood computed at each draw instead of a
   second pass over the light curve (output identical; 1.23x faster summed on 12 benchmark light curves).
 
