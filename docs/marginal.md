@@ -141,6 +141,16 @@ and bounds on `a` wide enough not to cut its posterior. The prior is flat in e, 
 Orbits with periastron a(1 − e) ≤ 1 + rp are excluded. Prior-drawn light curves give calibrated ranks for all parameters up to an S/N of about 1000. Above that,
 the intervals of `b_conj` and `rp` are too narrow, and a free fit of `ecc` and `w` with dynesty is the check ([tutorial 20](https://github.com/hippke/pizzetti/blob/main/examples/20_eccentricity_from_a_stellar_density.ipynb)).
 
+**Long exposures.** Supersampling is off by default (`supersample_factor=1`). For exposures longer than a few minutes,
+`supersample_factor="auto"` with `exp_time` (days) picks the smallest k whose model error, summed over the data, is
+chi² = Σ (f_k − f_exact)² / σ² ≤ 0.01 at the starting `params` (`pizzetti.choose_supersample`; the f_exact uses many more
+sub-exposures). A model error of chi² moves a posterior by at most about √chi² standard deviations, so 0.01 keeps it
+within 0.1 σ. The scan takes about 10 ms. After the fit, `fit()` evaluates chi² again at the posterior median,
+`diagnostics["supersample_chi2"]`, and warns above 0.1. Without supersampling and without `exp_time`, it assumes each
+point is an exposure as long as the median cadence (`diagnostics["supersample_exp_assumed"]`), so a fit of 30-minute
+data without supersampling prints the k it needs. Phase-folded data sorted by phase hide the cadence from this check
+([tutorial 22](https://github.com/hippke/pizzetti/blob/main/examples/22_supersampling_a_fit_with_long_exposures.ipynb)).
+
 To run emcee directly, use `model.EnsembleSampler(nwalkers)`. This is an
 `emcee.EnsembleSampler` that samples only the geometry, and its `get_chain` returns the limb
 darkening and baseline as extra columns.

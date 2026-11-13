@@ -17,6 +17,10 @@
 
 .. autofunction:: pizzetti.quadratic_from_terms
 
+.. autofunction:: pizzetti.choose_supersample
+
+.. autofunction:: pizzetti.exposure_chi2
+
 .. autoclass:: pizzetti.MarginalTransitModel
    :members: fit, log_prob, expand, EnsembleSampler, gp_predict
 

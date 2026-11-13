@@ -42,6 +42,7 @@ detrending first (``_gp``; quadratic law, primary transit).
 
 emcee and scipy are only needed for sampling (``pip install pizzetti[fit]``).
 """
+import copy
 import math
 import warnings
 
@@ -466,7 +467,14 @@ class MarginalTransitModel:
         Gaussian, included exactly. A callable f(u1, u2, ...) -> log prior: physical
         region x f, applied by importance reweighting (fine for priors broader than
         the likelihood).
-    :param supersample_factor, exp_time: as in ``TransitModel``
+    :param supersample_factor, exp_time: as in ``TransitModel`` (exp_time in days); ``supersample_factor="auto"``
+        picks the smallest number of sub-exposures whose model error, summed over the data, is chi^2 <= 0.01 at
+        ``params`` (``pizzetti.choose_supersample``; the table is in ``supersample_table``). With ``exp_time`` > 0,
+        ``fit()`` checks the error again at the posterior median (``diagnostics["supersample_chi2"]``) and warns if it
+        could move the posterior by more than ~0.3 sigma. Without supersampling and without ``exp_time``, ``fit()``
+        assumes exposures as long as the cadence (the typical spacing of the time stamps, as for Kepler and TESS) and
+        warns in the same way if they would need an exposure average (``diagnostics["supersample_exp_assumed"]``;
+        tutorial 22).
     :param offsets: sub-exposure placement: "midpoint" (default; the midpoints of k equal sub-intervals, error of the
         exposure average ~ 1/k^2) or "batman" (k points from edge to edge, as batman and ``TransitModel``; error ~ 1/k:
         a hot Jupiter in 30-min exposures at k = 15 is off by 147 ppm against 3.8 ppm with midpoints, enough to move b by
@@ -540,9 +548,21 @@ class MarginalTransitModel:
             self.gp_var0 = np.ascontiguousarray(yerr ** 2)
             self.wts = np.ones(self.t.shape)
         self.yw = self.y * self.wts
+        self.exp_time, self.offsets, self._params0 = float(exp_time), offsets, copy.copy(params)
+        self._transittype = transittype
+        self.supersample_table = None
+        if isinstance(supersample_factor, str):
+            if supersample_factor != "auto":
+                raise ValueError('supersample_factor must be an integer or "auto"')
+            if not exp_time > 0:
+                raise ValueError('supersample_factor="auto" needs exp_time > 0 (the exposure, in days)')
+            from .supersample import choose_supersample
+            supersample_factor, self.supersample_table = choose_supersample(
+                params, self.t, exp_time, yerr, offsets=offsets, transittype=transittype, return_table=True)
         self.k = int(supersample_factor) if supersample_factor > 1 else 1
         if self.k > 1 and not exp_time > 0:
             raise ValueError("supersample_factor > 1 needs exp_time > 0")
+
         off = _exposure_offsets(exp_time, self.k, offsets)
         self.max_off = float(np.max(np.abs(off)))
         self.tt = np.ascontiguousarray((self.t[:, None] + off[None, :]).ravel())
@@ -2008,6 +2028,33 @@ class MarginalTransitModel:
         except _BudgetExceeded:
             return stopped(best)
 
+    def _supersample_check(self, Xw, wc, exp_time):
+        """(chi^2 of the exposure average with self.k sub-exposures, the k that reaches 0.01) at the weighted median
+        of the physical draws Xw (pizzetti.supersample); None if it cannot be evaluated."""
+        from .supersample import choose_supersample, exposure_chi2
+        try:
+            med = np.empty(Xw.shape[1])
+            for j in range(Xw.shape[1]):
+                o = np.argsort(Xw[:, j])
+                c = np.cumsum(wc[o])
+                med[j] = Xw[o, j][min(np.searchsorted(c, 0.5 * c[-1]), len(o) - 1)]
+            P = self._canonical_physical(med[None, :])[0]
+            p = copy.copy(self._params0)
+            if self.secondary:
+                p.t_secondary = P[0]
+            else:
+                p.t0 = P[0]
+            p.per, p.rp, p.a = P[1], P[2], P[3]
+            p.inc = math.degrees(math.acos(min(abs(P[4]) / P[3], 1.0)))
+            p.ecc, p.w = P[5], math.degrees(P[6])
+            sig = np.sqrt(self.gp_var0) if self.gp is not None else 1.0 / self.wts
+            chi2 = exposure_chi2(p, self.t, exp_time, sig, self.k, offsets=self.offsets, transittype=self._transittype)
+            k_need = self.k if chi2 <= 0.01 else choose_supersample(p, self.t, exp_time, sig, offsets=self.offsets,
+                                                                     transittype=self._transittype)
+            return float(chi2), int(k_need)
+        except Exception:                    # a diagnostic only: never let it break a fit
+            return None
+
     def fit(self, method="auto", n=2048, nwalkers=32, max_steps=100_000, ntau=50, seed=None,
             ld="q", progress=False, max_evals=None, max_time=None, stratify=True, qmc=True, mc_reps=None,
             mc_tol=0.03, mc_max_factor=4.0, min_ess=4000):
@@ -2213,6 +2260,33 @@ class MarginalTransitModel:
                               "still give the observed dip. This prior is improper there (at fixed b, marginal likelihood "
                               f"~ rp^-{2 * (self.law.K - 1)}), so this is no measurement of rp or the limb darkening; "
                               'use ld_prior="physical"', stacklevel=2)
+        # the exposure average at the posterior median (no draws: the rng stream is unchanged); without an exposure
+        # time, exposures as long as the cadence are assumed
+        exp_chk, assumed = self.exp_time, False
+        if not exp_chk > 0 and self.k == 1:
+            steps = np.diff(self.t)              # in the given order: phase-folded, time-ordered data keep their cadence
+            steps = steps[steps > 0]
+            exp_chk, assumed = (float(np.median(steps)) if len(steps) else 0.0), True
+        if exp_chk > 0:
+            chk = self._supersample_check(Xw, wc, exp_chk)
+            if chk is not None:
+                diag["supersample_chi2"], k_need = chk
+                if assumed:
+                    diag["supersample_exp_assumed"] = exp_chk
+                if diag["supersample_chi2"] > 0.1:
+                    shift = math.sqrt(diag["supersample_chi2"])
+                    if assumed:
+                        warnings.warn(f"no exp_time given: if each point is an exposure as long as the cadence "
+                                      f"({exp_chk * 1440:.1f} min), the model without exposure average is off by chi^2 = "
+                                      f"{diag['supersample_chi2']:.3g} at the posterior median, which can move the posterior "
+                                      f"by up to ~{shift:.2g} sigma; pass exp_time={exp_chk:.6g} with supersample_factor="
+                                      f'{k_need} (or "auto"); if the exposures are shorter, pass their exp_time (tutorial 22)',
+                                      stacklevel=2)
+                    else:
+                        warnings.warn(f"supersample_factor={self.k}: the model's exposure average is off by chi^2 = "
+                                      f"{diag['supersample_chi2']:.3g} at the posterior median, which can move the posterior "
+                                      f"by up to ~{shift:.2g} sigma; use more sub-exposures (supersample_factor={k_need} "
+                                      "reaches chi^2 <= 0.01 there)", stacklevel=2)
         j = systematic_resample(wc, len(wc), rng)
         orbit = dict(per=self.fixed[1], rp=self.fixed[2], a=self.fixed[3], b=self.fixed[4], ecc=self.fixed[5],
                      a_bounds=(self.lo[3], self.hi[3]), secondary=self.secondary, free=tuple(self.free))

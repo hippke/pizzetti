@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- New `pizzetti.choose_supersample(params, t, exp_time, sigma)`: the smallest number of sub-exposures whose model error,
+  summed over the data (`pizzetti.exposure_chi2`, chi^2 against a finely supersampled model), is at most 0.01, which
+  bounds the shift of a posterior at about 0.1 sigma. `MarginalTransitModel(..., supersample_factor="auto",
+  exp_time=...)` uses it. After a fit, `fit()` checks the exposure average at the posterior median
+  (`diagnostics["supersample_chi2"]`) and warns if it could move the posterior by more than ~0.3 sigma; without
+  supersampling and without `exp_time` it assumes exposures as long as the cadence (`diagnostics["supersample_exp_assumed"]`).
+  On 43 benchmark light curves the default rule of one sub-exposure per 2 minutes left chi^2 >= 0.01 on 15 (Kepler-78 b
+  0.56); the measured shifts were well below the bound (0.10 sd for Kepler-78 b, 0.12 for TrES-2 b at k = 15).
+  New tutorial 22 (TrES-2 b with and without supersampling).
 - `MarginalTransitModel` places sub-exposures at the midpoints of equal sub-intervals by default (`offsets="midpoint"`,
   was `"batman"`). At the same `supersample_factor` the exposure average is far more accurate (error ~ 1/k^2 instead of
   1/k; 3.8 against 147 ppm for a hot Jupiter in 30-min exposures at k = 15), and on 41 long-cadence benchmark light
