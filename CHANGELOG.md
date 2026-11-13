@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The single-thread likelihood of `MarginalTransitModel` (the default, `threads=1`, quadratic law without `ld_prior`)
+  reuses one workspace per model instead of allocating its arrays for every evaluation, and sums the theta columns over
+  the sub-exposures as it makes them. Glibc returned the ~56 bytes per model point that each evaluation freed to the
+  operating system and faulted them in again at the next one; on the 100 benchmark light curves this hit the two
+  largest-memory cases: Kepler-78 b (278 505 model points) 5.5x and Kepler-10 b short cadence 3.8x faster per
+  evaluation, the others within 5 % (median 1.01x). Results are bit-identical (tests/test_workspace.py; 11 benchmark
+  fits over all sampler paths compared draw by draw).
+
 ## 0.6.0
 
 - New `pizzetti.choose_supersample(params, t, exp_time, sigma)`: the smallest number of sub-exposures whose model error,

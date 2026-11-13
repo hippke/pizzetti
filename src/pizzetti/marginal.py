@@ -963,7 +963,11 @@ class MarginalTransitModel:
             keep_ne = self._ne_cache is not None and not self.has_ldp and len(Xi) >= _NE_MIN_ROWS
             ne = np.full((len(Xi), 9), np.nan) if keep_ne else _NO_NE
             nthr = self._nthreads()
-            if nthr == 1:
+            if nthr == 1 and not self.has_ldp:
+                # one workspace for every evaluation: allocating the per-row arrays afresh made glibc return them
+                # to the OS after each row and fault them in again (Kepler-78 b: 4x the cost of the arithmetic)
+                out = K.loglike_batch_ws(*args[:13], args[16], ne, self._workspace())
+            elif nthr == 1:
                 out = K.loglike_batch(*args, ne)
             else:
                 old = numba.get_num_threads()
@@ -1269,6 +1273,18 @@ class MarginalTransitModel:
         return self.to_internal(p0[:, :self.ndim])
 
     # -- Layer 2: one call ------------------------------------------------------
+    def _workspace(self):
+        """The arrays K.loglike_batch_ws reuses for every evaluation (made at the first call; not pickled)."""
+        ws = self.__dict__.get("_ws")
+        if ws is None:
+            ws = self._ws = K.workspace(len(self.tt), self.k)
+        return ws
+
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        d.pop("_ws", None)
+        return d
+
     def _nthreads(self):
         """Threads used for fitting: 1, or self.threads capped at numba's thread count."""
         if self.threads == 1 or not self.fast:

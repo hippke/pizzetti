@@ -238,6 +238,57 @@ def _occult_terms(z, k, z_c, A_half):
 
 
 @njit(cache=True)
+def _occult_terms_into(z, k, z_c, A_half, T, bcnt, zb, idx, lex, ldx, edx, dev):
+    """_occult_terms writing into caller-owned arrays (T: 3 x n, bcnt: blocks, zb, idx, lex, ldx, edx, dev: >= n):
+    the same arithmetic without allocating, so that a likelihood evaluation reuses its memory (large light curves
+    otherwise fault ~15 MB of fresh pages in per evaluation; see MarginalTransitModel._workspace)."""
+    n = z.shape[0]
+    if k <= 0.0:
+        T[:, :] = 0.0
+        return
+    one_k = 1.0 + k
+    nb = (n + BLK - 1) // BLK
+    if z_c >= 0.0:
+        a = _series.coeffs(A_half, k, k * k)
+        m = _series_terms(z, a, k, z_c, one_k, T, bcnt)
+    else:
+        T[:, :] = 0.0
+        bcnt[:nb] = 1
+        m = 0
+        for i in range(n):
+            zi = abs(z[i])
+            m += 1 if (zi > z_c) & (zi < one_k) else 0
+    if m == 0:
+        return
+    j = 0
+    for b in range(nb):
+        if bcnt[b] == 0:
+            continue
+        for i in range(b * BLK, min(b * BLK + BLK, n)):
+            zi = abs(z[i])
+            if (zi > z_c) & (zi < one_k):
+                if k >= 1.0 and zi <= k - 1.0:          # fully occulted: F = 0 for any u
+                    T[0, i] = 1.0
+                    T[1, i] = 2.0 / 3.0
+                    T[2, i] = 0.5
+                    continue
+                if abs(zi - k) < Z_K_MIN:
+                    zi = k + max(k * 2.220446049250313e-16, Z_K_MIN)
+                zb[j] = zi
+                idx[j] = i
+                j += 1
+    m = j
+    if m > 0:
+        exact_batch_terms(zb, m, k, lex, ldx, edx, dev)
+        for j in range(m):
+            if not dev[j] <= 0.0:
+                lex[j], ldx[j], edx[j] = exact_point_terms(zb[j], k)
+            T[0, idx[j]] = lex[j]
+            T[1, idx[j]] = ldx[j]
+            T[2, idx[j]] = edx[j]
+
+
+@njit(cache=True)
 def _occult_terms_cut(z, k, tol, A_half, Gt):
     return _occult_terms(z, k, terms_cut(k, tol, Gt), A_half)
 

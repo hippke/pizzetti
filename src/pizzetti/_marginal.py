@@ -22,7 +22,7 @@ from ._cachecheck import FASTMATH
 from . import _orbit
 from ._powbasis import alpha_column, columns_kernel
 from ._physnl import log_prob_physical_line
-from .terms import _occult_terms, _occult_terms_cut, terms_cut
+from .terms import _occult_terms, _occult_terms_cut, _occult_terms_into, terms_cut
 
 # 12-point Gauss-Legendre with the endpoint-smoothing map u = t^2 (3 - 2t)
 _t, _w = np.polynomial.legendre.leggauss(12)
@@ -843,6 +843,55 @@ def design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, 
     return A
 
 
+@njit(cache=True)
+def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws):
+    """design_theta() in the arrays of the workspace ws = (z, T, A, bcnt, zb, idx, lex, ldx, edx, dev)
+    (workspace() makes one): the same arithmetic without allocating, and the theta columns summed over the
+    sub-exposures as they are made (no n_points x k x 3 array). Returns A (n x 3), a view into ws that the next
+    call overwrites."""
+    z, T, A, bcnt, zb, idx, lex, ldx, edx, dev = ws
+    ab = abs(b)
+    inc = math.acos(min(ab / a, 1.0))
+    if ecc < 1.0e-5:
+        _orbit._rsky_circular(tt, t0, per, a, math.sin(inc), 0.25, 1, z)
+    else:
+        _orbit._rsky_eccentric(tt, t0, per, a, inc, ecc, w, 1, z)
+    k = abs(rp)
+    _occult_terms_into(z, k, terms_cut(k, tol, Gt), A_half, T, bcnt, zb, idx, lex, ldx, edx, dev)
+    _theta_average(T, ksup, wts, A)
+    return A
+
+
+@njit(cache=True)
+def _theta_average(T, ksup, wts, A):
+    """A[i] = wts[i] / ksup x the sum over the ksup sub-exposures of theta_cols(T): theta_cols() and the exposure
+    average of design_theta() in one pass, in the same order of operations (identical values)."""
+    n = A.shape[0]
+    inv = 1.0 / ksup
+    for i in range(n):
+        s0 = 0.0
+        s1 = 0.0
+        s2 = 0.0
+        for s in range(ksup):
+            r = i * ksup + s
+            lx, ld, ed = T[0, r], T[1, r], T[2, r]
+            s0 += 1.0 - (12.0 * lx - 12.0 * ld - 6.0 * ed)
+            s1 += 6.0 * lx - 6.0 * ld - 4.0 * ed
+            s2 += 5.0 * lx - 6.0 * ld - 2.0 * ed
+        f = wts[i] * inv
+        A[i, 0] = s0 * f
+        A[i, 1] = s1 * f
+        A[i, 2] = s2 * f
+
+
+def workspace(nt, ksup):
+    """Arrays for design_theta_ws / loglike_batch_ws for nt model points (nt // ksup data points). About 80 bytes
+    per model point; the limb scratch (zb .. dev) is touched only up to the number of limb points."""
+    nb = (nt + 63) // 64
+    return (np.empty(nt), np.empty((3, nt)), np.empty((nt // ksup, 3)), np.empty(nb, dtype=np.int64),
+            np.empty(nt), np.empty(nt, dtype=np.int64), np.empty(nt), np.empty(nt), np.empty(nt), np.empty(nt))
+
+
 @njit(cache=True, inline="always")
 def a_logjac_from_T14(T14, per, rp, b):
     """a/R* of a circular orbit with total duration T14 and log|da/dT14|; (nan, 0) if invalid."""
@@ -935,6 +984,42 @@ def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt
     keep = logP_out.shape[0] == n
     for i in range(n):
         v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb, ne_out)
+        out[i] = v
+        if keep:
+            logP_out[i] = lP
+    return out
+
+
+@njit(cache=True)
+def _loglike_row_ws(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, ne_out, ws):
+    """_loglike_row (no limb-darkening prior) with the design in the workspace ws: identical values."""
+    ok = True
+    for k in range(7):
+        v = P[i, k]
+        if not (v == v and lo[k] < v < hi[k]):
+            ok = False
+    t0, per, rp, a, b, ecc, w = P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5], P[i, 6]
+    if not (ok and 0.0 <= ecc < 1.0 and 0.0 <= b and b_conj(b, ecc, w, 1) < 1.0 + rp and per > 0.0
+            and rp > 0.0 and a > 1.0):
+        return -np.inf, 0.0
+    B = design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, ws)
+    G, r = normal_eqs(B, yw)
+    if ne_out.shape[0] > i:
+        _store_ne(ne_out, i, G, r)
+    v, lP = theta_parts_normal(G, r, B, yw, 0.0, 0.0, GL_X, GL_W)
+    return v + lP + lj[i], lP
+
+
+@njit(cache=True)
+def loglike_batch_ws(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, logP_out, ne_out, ws):
+    """loglike_batch (no limb-darkening prior) reusing the workspace ws for every row: no per-row allocation of
+    the ~56 bytes per model point that loglike_batch frees and re-allocates, nor its n x k x 3 column array. Identical values."""
+    P, lj = to_canonical(X, idx, fixed, t14)
+    n = X.shape[0]
+    out = np.empty(n)
+    keep = logP_out.shape[0] == n
+    for i in range(n):
+        v, lP = _loglike_row_ws(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, ne_out, ws)
         out[i] = v
         if keep:
             logP_out[i] = lP
