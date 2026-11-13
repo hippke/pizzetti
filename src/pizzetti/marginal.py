@@ -426,6 +426,8 @@ class _StratumCoords:
 _LNZ_LD_DRAWS = 1000       # conditional limb-darkening draws of profile_is for ln <f0 / c2^3> of its lnz
 _STRATUM_MIN_MASS = 1e-3   # a stratum below this share of the posterior needs no refinement
 _COLLAPSED_RP = 1e-3      # with ld_prior="flat", fit warns if most of the posterior has an effective rp below this (or 2 x the bound)
+_NE_MIN_ROWS = 16         # fit(): log_prob_internal keeps the normal equations of calls with at least this many rows
+_NO_NE = np.zeros((0, 9))  # ne_out of the likelihood kernels: none kept
 
 
 class MarginalTransitModel:
@@ -485,6 +487,8 @@ class MarginalTransitModel:
         over threads (not the points of one evaluation). With all three GP parameters fixed on a circular orbit with a fixed
         period, each geometry only filters the points around the transits.
     """
+
+    _ne_cache = None    # fit(): list of (internal rows, their theta normal equations) from log_prob_internal
 
     def __init__(self, params, t, y, yerr, free=("t0", "per", "rp", "a", "b"), bounds=None,
                  log_prior=None, ld_prior="physical", supersample_factor=1, exp_time=0.0,
@@ -930,21 +934,28 @@ class MarginalTransitModel:
             args = (self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi, self.tt, self.k,
                     self.wts, self.yw, self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb,
                     logP if (parts and not self.has_ldp) else np.zeros(0))
+            # inside fit(): keep each row's normal equations for the limb-darkening step (_expand_fast)
+            # (batches only: the draws that reach it come in batches; single rows of the optimisers would only add
+            # bookkeeping)
+            keep_ne = self._ne_cache is not None and not self.has_ldp and len(Xi) >= _NE_MIN_ROWS
+            ne = np.full((len(Xi), 9), np.nan) if keep_ne else _NO_NE
             nthr = self._nthreads()
             if nthr == 1:
-                out = K.loglike_batch(*args)
+                out = K.loglike_batch(*args, ne)
             else:
                 old = numba.get_num_threads()
                 numba.set_num_threads(nthr)
                 try:
                     if len(Xi) >= PAR_MIN_ROWS:
-                        out = K.loglike_batch_par(*args)           # rows over threads
+                        out = K.loglike_batch_par(*args, ne)           # rows over threads
                     elif len(self.tt) >= PAR_MIN_POINTS:
-                        out = K.loglike_batch_dp(*args, PAR_CHUNK)   # data points over threads
+                        out = K.loglike_batch_dp(*args, PAR_CHUNK, ne)   # data points over threads
                     else:
-                        out = K.loglike_batch(*args)
+                        out = K.loglike_batch(*args, ne)
                 finally:
                     numba.set_num_threads(old)
+            if keep_ne:
+                self._ne_cache.append((Xi.copy(), ne))
         elif self._fused:
             P, lj = self._canonical_internal(Xi)
             out = self._gen(P, lj, self._alpha(Xi), True, False)[0]
@@ -1001,7 +1012,7 @@ class MarginalTransitModel:
         return d
 
     # -- LD (and baseline) recovery ---------------------------------------------
-    def expand(self, X, ld="q", rng=None, resample=True):
+    def expand(self, X, ld="q", rng=None, resample=True, _xi=None):
         """Physical rows -> rows with the law's coefficients and the baseline appended.
 
         Draws the linear coefficients c for every row from their conditional
@@ -1014,7 +1025,7 @@ class MarginalTransitModel:
         resampled to equal weight. Returns (samples, labels, weights).
         """
         if self.fast:
-            return self._expand_fast(X, ld, rng, resample)
+            return self._expand_fast(X, ld, rng, resample, _xi)
         rng = np.random.default_rng() if rng is None else rng
         X = np.atleast_2d(np.asarray(X, dtype=float))
         P = self._canonical_physical(X)
@@ -1120,7 +1131,30 @@ class MarginalTransitModel:
             out[i] = K.gibbs_cone_gen(C[i], S[i], np.ascontiguousarray(D), rng.random(300 * Kc), 300)
         return out
 
-    def _expand_fast(self, X, ld="q", rng=None, resample=True):
+    def _ne_lookup(self, Xi):
+        """Normal equations that log_prob_internal kept (fit()) for internal rows Xi, matched by their exact bytes;
+        NaN rows where there are none."""
+        out = np.full((len(Xi), 9), np.nan)
+        if not self._ne_cache:
+            return out
+        if len(self._ne_cache) > 1:                      # one sorted block (kept for a second lookup)
+            Xc = np.concatenate([x for x, _ in self._ne_cache])
+            Nc = np.concatenate([e for _, e in self._ne_cache])
+            kc = Xc.view(np.dtype((np.void, Xc.dtype.itemsize * Xc.shape[1]))).ravel()
+            o = np.argsort(kc, kind="stable")
+            self._ne_cache[:] = [(Xc[o], Nc[o])]
+        Xc, Nc = self._ne_cache[0]
+        void = np.dtype((np.void, Xc.dtype.itemsize * Xc.shape[1]))
+        kc = Xc.view(void).ravel()
+        kq = np.ascontiguousarray(Xi, dtype=float).view(void).ravel()
+        j = np.minimum(np.searchsorted(kc, kq), len(kc) - 1)
+        hit = kc[j] == kq
+        out[hit] = Nc[j[hit]]
+        return out
+
+    def _expand_fast(self, X, ld="q", rng=None, resample=True, xi=None):
+        """expand() for the fast path. xi: the internal rows of X (fit()): their moments come from the normal
+        equations of the likelihood evaluations (_ne_lookup) where those were kept, identical to theta_moments_batch."""
         rng = np.random.default_rng() if rng is None else rng
         X = np.atleast_2d(np.asarray(X, dtype=float))
         P = self._canonical_physical(X)
@@ -1142,8 +1176,13 @@ class MarginalTransitModel:
             T, S = self._gp_threads(kern, arg, nthr)
             c = _draw_c_theta(T, S, rng)
         else:
-            T, S = K.theta_moments_batch(np.ascontiguousarray(P), self.tt, self.k, self.wts, self.yw,
-                                         self.tol, _A_HALF, _series._GTAB)
+            NE = self._ne_lookup(xi) if xi is not None else np.full((len(X), 9), np.nan)
+            T, S = K.theta_moments_ne(NE)
+            miss = np.flatnonzero(~np.all(np.isfinite(NE), axis=1))
+            self.last_ld_cache_hits = len(X) - len(miss)
+            if len(miss):
+                T[miss], S[miss] = K.theta_moments_batch(np.ascontiguousarray(P[miss]), self.tt, self.k, self.wts,
+                                                         self.yw, self.tol, _A_HALF, _series._GTAB)
             c = _draw_c_theta(T, S, rng)
         f0 = c @ K.DISK
         b0, b1 = c[:, 0] / c[:, 2], c[:, 1] / c[:, 2]
@@ -1998,6 +2037,15 @@ class MarginalTransitModel:
         "emcee": vectorised emcee until convergence (N > ntau * tau, tau stable to 1 %);
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
+        self._ne_cache = [] if (self.fast and self.gp is None and not self.has_ldp) else None
+        try:
+            return self._fit(method, n, nwalkers, max_steps, ntau, seed, ld, progress, max_evals, max_time, stratify,
+                             qmc, mc_reps, mc_tol, mc_max_factor, min_ess)
+        finally:
+            self._ne_cache = None
+
+    def _fit(self, method, n, nwalkers, max_steps, ntau, seed, ld, progress, max_evals, max_time, stratify, qmc,
+             mc_reps, mc_tol, mc_max_factor, min_ess):
         from ._sampling import hessian, reset_walkers, stuck_walkers
         from ._sampling import mc_error, mc_options
         rng = np.random.default_rng(seed)
@@ -2107,9 +2155,10 @@ class MarginalTransitModel:
         # degenerate) are dropped first.
         pos = w > 0
         Xw, w = Xw[pos], w[pos]
+        xi = res["theta"][pos] if res is not None else None
         if rep is not None:
             rep = np.asarray(rep)[pos]
-        S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
+        S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False, _xi=xi)
         room = int(mc_max_factor * n)                   # the budget of fit() binds this top-up too
         if max_evals is not None:
             room = min(room, int(max_evals) - int(self.n_eval))
@@ -2132,7 +2181,7 @@ class MarginalTransitModel:
                     pos = w > 0
                     Xw, w = Xw[pos], w[pos]
                     rep = None if rep is None or len(rep) != len(pos) else np.asarray(rep)[pos]
-                    S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False)
+                    S_, labels, wl = self.expand(Xw, ld=ld, rng=rng, resample=False, _xi=res["theta"][pos])
                     diag.update(n_eval=int(self.n_eval), khat=float(res["khat"]), ess=float(res["ess"]))
         self._last_topup = None
         diag["ld_reweight_ess"] = float(1.0 / np.sum(wl ** 2))

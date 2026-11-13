@@ -889,8 +889,9 @@ def b_conj(b, ecc, w, ttype):
 
 
 @njit(cache=True)
-def _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb):
-    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i."""
+def _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb, ne_out):
+    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i. If ne_out has
+    a row i, it receives the theta normal equations (_store_ne; NaN where they are not computed)."""
     ok = True
     for k in range(7):
         v = P[i, k]
@@ -904,22 +905,36 @@ def _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, 
         A = design(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
         return marg_loglike_ldprior(A, yw, mb, Pb) + lj[i], 0.0
     B = design_theta(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt)
-    v, lP = marg_theta_parts(B, yw, GL_X, GL_W)
+    G, r = normal_eqs(B, yw)                            # = marg_theta_parts, keeping G, r
+    if ne_out.shape[0] > i:
+        _store_ne(ne_out, i, G, r)
+    v, lP = theta_parts_normal(G, r, B, yw, 0.0, 0.0, GL_X, GL_W)
     return v + lP + lj[i], lP
 
 
 @njit(cache=True)
+def _store_ne(ne_out, i, G, r):
+    """Row i of ne_out = (G00, G01, G02, G11, G12, G22, r0, r1, r2) (normal_eqs: G symmetric)."""
+    ne_out[i, 0], ne_out[i, 1], ne_out[i, 2] = G[0, 0], G[0, 1], G[0, 2]
+    ne_out[i, 3], ne_out[i, 4], ne_out[i, 5] = G[1, 1], G[1, 2], G[2, 2]
+    ne_out[i, 6], ne_out[i, 7], ne_out[i, 8] = r[0], r[1], r[2]
+
+
+@njit(cache=True)
 def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
-                  has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0)):
+                  has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0),
+                  ne_out=np.zeros((0, 9))):
     """log-likelihood + uniform box prior (lo < canonical < hi; 0 <= b_conj < 1 + rp;
     0 <= ecc < 1) + log-Jacobian of the T14 map, for every row of X. If logP_out has one entry
-    per row, it receives log P of the physical cone (0 outside the prior; not with has_ldp)."""
+    per row, it receives log P of the physical cone (0 outside the prior; not with has_ldp). If
+    ne_out has one row per row of X (n x 9, NaN-filled), it receives the theta normal equations
+    (_store_ne; not with has_ldp), from which theta_moments_ne gives theta_moments_batch's output."""
     P, lj = to_canonical(X, idx, fixed, t14)
     n = X.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in range(n):
-        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb)
+        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -928,7 +943,8 @@ def loglike_batch(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt
 
 @njit(cache=True)
 def loglike_batch_dp(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
-                     has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0), chunk=1024):
+                     has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0), chunk=1024,
+                     ne_out=np.zeros((0, 9))):
     """loglike_batch with the data points of each row spread over numba's threads (design_par);
     the rows one after the other (for the single evaluations of the optimisers on large light
     curves). Identical results."""
@@ -955,7 +971,10 @@ def loglike_batch_dp(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half,
             lP = 0.0
         else:
             B = design_theta_par(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, chunk)
-            v, lP = marg_theta_parts(B, yw, GL_X, GL_W)
+            G, r = normal_eqs(B, yw)
+            if ne_out.shape[0] == n:
+                _store_ne(ne_out, i, G, r)
+            v, lP = theta_parts_normal(G, r, B, yw, 0.0, 0.0, GL_X, GL_W)
             out[i] = v + lP + lj[i]
         if keep:
             logP_out[i] = lP
@@ -964,14 +983,15 @@ def loglike_batch_dp(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half,
 
 @njit(cache=True, parallel=True)
 def loglike_batch_par(X, idx, fixed, t14, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt,
-                      has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0)):
+                      has_ldp=False, mb=np.zeros(2), Pb=np.eye(2), logP_out=np.zeros(0),
+                      ne_out=np.zeros((0, 9))):
     """loglike_batch with the rows spread over numba's threads (identical results)."""
     P, lj = to_canonical(X, idx, fixed, t14)
     n = X.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in prange(n):
-        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb)
+        v, lP = _loglike_row(P, lj, i, lo, hi, tt, ksup, wts, yw, tol, A_half, Gt, has_ldp, mb, Pb, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -1025,33 +1045,54 @@ def theta_moments_batch(P, tt, ksup, wts, yw, tol, A_half, Gt):
         B = design_theta(tt, ksup, wts, P[i, 0], P[i, 1], P[i, 2], P[i, 3], P[i, 4], P[i, 5],
                          P[i, 6], tol, A_half, Gt)
         G, r = normal_eqs(B, yw)
-        s = np.empty(3)
-        ok = True
-        for k in range(3):
-            if not G[k, k] > 0.0:
-                ok = False
-            else:
-                s[k] = math.sqrt(G[k, k])
-        if not ok:
-            continue
-        Gs = np.empty((3, 3))
-        for k in range(3):
-            for j in range(3):
-                Gs[k, j] = G[k, j] / (s[k] * s[j])
-        ok, ld, Gsi = inv3_chol(Gs, L)
-        if not ok or L[2, 2] * L[2, 2] < 1e-12:          # as marg_theta_parts: a weak ridge
-            for k in range(3):
-                Gs[k, k] += 1e-9
-            ok, ld, Gsi = inv3_chol(Gs, L)
-            if not ok:
-                continue
-        for k in range(3):
-            acc = 0.0
-            for j in range(3):
-                S[i, k, j] = Gsi[k, j] / (s[k] * s[j])
-                acc += S[i, k, j] * r[j]
-            T[i, k] = acc
+        _theta_moments_row(G, r, T, S, i, L)
     return T, S
+
+
+@njit(cache=True)
+def theta_moments_ne(NE):
+    """theta_moments_batch from the normal equations stored by loglike_batch (ne_out, n x 9): no pass
+    over the light curve. NaN rows (not computed) stay NaN."""
+    n = NE.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    L = np.zeros((3, 3))
+    G = np.empty((3, 3))
+    r = np.empty(3)
+    for i in range(n):
+        G[0, 0], G[0, 1], G[0, 2] = NE[i, 0], NE[i, 1], NE[i, 2]
+        G[1, 0], G[1, 1], G[1, 2] = NE[i, 1], NE[i, 3], NE[i, 4]
+        G[2, 0], G[2, 1], G[2, 2] = NE[i, 2], NE[i, 4], NE[i, 5]
+        r[0], r[1], r[2] = NE[i, 6], NE[i, 7], NE[i, 8]
+        _theta_moments_row(G, r, T, S, i, L)
+    return T, S
+
+
+@njit(cache=True)
+def _theta_moments_row(G, r, T, S, i, L):
+    """Row i of theta_moments_batch's output from the normal equations G, r (L: 3 x 3 work array)."""
+    s = np.empty(3)
+    for k in range(3):
+        if not G[k, k] > 0.0:                         # also NaN (no stored normal equations)
+            return
+        s[k] = math.sqrt(G[k, k])
+    Gs = np.empty((3, 3))
+    for k in range(3):
+        for j in range(3):
+            Gs[k, j] = G[k, j] / (s[k] * s[j])
+    ok, ld, Gsi = inv3_chol(Gs, L)
+    if not ok or L[2, 2] * L[2, 2] < 1e-12:          # as marg_theta_parts: a weak ridge
+        for k in range(3):
+            Gs[k, k] += 1e-9
+        ok, ld, Gsi = inv3_chol(Gs, L)
+        if not ok:
+            return
+    for k in range(3):
+        acc = 0.0
+        for j in range(3):
+            S[i, k, j] = Gsi[k, j] / (s[k] * s[j])
+            acc += S[i, k, j] * r[j]
+        T[i, k] = acc
 
 
 @njit(cache=True)
