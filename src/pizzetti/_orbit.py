@@ -170,6 +170,91 @@ def _rsky_eccentric(t, tc, per, a, inc, ecc, omega, transittype, d):
 
 
 @njit(cache=True)
+def _rsky_eccentric_sub(tmid, offs, tc, per, a, inc, ecc, omega, transittype, d):
+    """_rsky_eccentric for data points of k = len(offs) sub-exposures at tmid[j] + offs[s] (the same offsets in every
+    point), d[j k + s]. Kepler's equation is solved once per point, at its mid-time (Newton warm-started from the
+    previous point, as _rsky_eccentric); each sub-exposure starts from the third-order Taylor step in the mean anomaly,
+    E + g dM - e sin(E) g^3 dM^2 / 2 + (3 e^2 sin^2(E) g^5 - e cos(E) g^4) dM^3 / 6 (g = 1 / (1 - e cos E)), with sin and
+    cos of the step from short series (no range reduction), and is finished by one Newton step; a sub-exposure whose
+    step exceeds 0.3 or whose residual before that step exceeds 1e-7 is solved from scratch. The samples of a point
+    do not depend on each other (they vectorise), unlike the warm-started chain of _rsky_eccentric."""
+    m = tmid.shape[0]
+    k = offs.shape[0]
+    si = np.sin(inc)
+    ci = np.cos(inc)
+    sq1e2 = np.sqrt(1.0 - ecc * ecc)
+    f0 = pi / 2.0 - omega
+    E0 = 2.0 * np.arctan(np.sqrt((1.0 - ecc) / (1.0 + ecc)) * np.tan(f0 / 2.0))
+    tp = tc - per * (E0 - ecc * np.sin(E0)) / 2.0 / pi
+    nm = 2.0 * pi / per
+    twopi = 2.0 * pi
+    cw, sw = np.cos(omega), np.sin(omega)
+    C = ecc / (2.0 * (1.0 - ecc))
+    Mr_prev = -10.0
+    E = 0.0
+    sE = 0.0
+    cE = 1.0
+    for j in range(m):
+        M = nm * (tmid[j] - tp)
+        Mr = M - twopi * np.floor(M / twopi)
+        dM = Mr - Mr_prev
+        if abs(dM) < 0.2:
+            g = 1.0 / (1.0 - ecc * cE)
+            E = E + dM * g - 0.5 * ecc * sE * dM * dM * g * g * g
+        else:
+            E = Mr + ecc * np.sin(Mr) if ecc < 0.8 else pi
+        for _ in range(50):
+            s_ = np.sin(E)
+            c_ = np.cos(E)
+            dE = (E - ecc * s_ - Mr) / (1.0 - ecc * c_)
+            E -= dE
+            sE = s_ - c_ * dE
+            cE = c_ + s_ * dE
+            if C * dE * dE < 1e-15 or abs(dE) < 1e-15 * max(1.0, abs(E)):
+                break
+        if not abs(E - ecc * np.sin(E) - Mr) < 1e-12:        # safeguard: cold restart
+            E = eccentric_anomaly(Mr, ecc)
+            sE = np.sin(E)
+            cE = np.cos(E)
+        Mr_prev = Mr
+        g = 1.0 / (1.0 - ecc * cE)
+        c2 = -0.5 * ecc * sE * g * g * g
+        c3 = (3.0 * ecc * ecc * sE * sE * g - ecc * cE) * g * g * g * g / 6.0
+        for s in range(k):
+            dm = nm * offs[s]
+            D = dm * (g + dm * (c2 + dm * c3))
+            ss = 0.0
+            cs = 1.0
+            ok = False
+            if abs(D) < 0.3:
+                D2 = D * D
+                sD = D * (1.0 - D2 / 6.0 * (1.0 - D2 / 20.0 * (1.0 - D2 / 42.0 * (1.0 - D2 / 72.0))))
+                cD = 1.0 - D2 / 2.0 * (1.0 - D2 / 12.0 * (1.0 - D2 / 30.0 * (1.0 - D2 / 56.0)))
+                s1 = sE * cD + cE * sD
+                c1 = cE * cD - sE * sD
+                res = (E + D) - ecc * s1 - (Mr + dm)
+                if abs(res) < 1e-7:
+                    # one Newton step: the error left is ~ e / (2 (1 - e)) res^2
+                    dE = res / (1.0 - ecc * c1)
+                    ss = s1 - c1 * dE
+                    cs = c1 + s1 * dE
+                    ok = True
+            if not ok:
+                Es = eccentric_anomaly(Mr + dm, ecc)
+                ss = np.sin(Es)
+                cs = np.cos(Es)
+            rc = a * (cs - ecc)
+            rs = a * sq1e2 * ss
+            rsfw = rs * cw + rc * sw
+            rcfw = rc * cw - rs * sw
+            x = rsfw * si
+            if (transittype == 1 and x <= 0.0) or (transittype == 2 and x >= 0.0):
+                d[j * k + s] = BIGD
+            else:
+                d[j * k + s] = np.sqrt(rcfw * rcfw + (rsfw * ci) ** 2)
+
+
+@njit(cache=True)
 def true_anomaly(t, tc, per, ecc, omega):
     return _true_anomaly(t, tc, per, ecc, omega)
 

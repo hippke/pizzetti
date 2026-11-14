@@ -164,3 +164,40 @@ def test_skip_on_eccentric_orbits(ecc):
     m1 = model(ecc=ecc, k=1)
     for a, b in zip(*both(m1, rows(m1))):
         same(a, b)
+
+
+def _fast_paths_off(m, flag):
+    """The workspace of m with one of the faster paths of design_theta_ws switched off: 0 binary-search point
+    selection, 2 sub-exposure orbit from the mid-time (circular rotation for k >= 8, eccentric Taylor step)."""
+    ws = m._workspace()
+    old = ws[22][flag]
+    ws[22][flag] = 0.0
+    return ws, old
+
+
+@pytest.mark.parametrize("ecc, k", [(0.0, 1), (0.0, 15), (0.3, 9), (0.7, 9), (0.9, 9)])
+def test_fast_selection_and_subexposure_orbit(ecc, k):
+    """The binary-search selection is exact (identical ln L); the sub-exposure orbit from the mid-time (rotation on a
+    circular orbit, Taylor step + one Newton step on an eccentric one) agrees with the orbit of every sub-exposure to
+    rounding, also at high eccentricity and for rows far from the posterior."""
+    rng = np.random.default_rng(4)
+    p = pizzetti.TransitParams()
+    p.t0, p.per, p.rp, p.a, p.inc = 0.0, 3.0, 0.09, 8.0, 87.5
+    p.ecc, p.w, p.limb_dark, p.u = ecc, 70.0, "quadratic", [0.4, 0.2]
+    t = np.sort(np.concatenate([rng.uniform(-0.2, 0.2, 800) + 3.0 * e for e in range(-5, 6)]))      # 11 transits
+    y = pizzetti.TransitModel(p, t, supersample_factor=k, exp_time=0.02, offsets="midpoint").light_curve(p)
+    y = y + rng.normal(0, 3e-4, len(t))
+    free = ["t0", "rp", "a", "b"] + (["ecc", "w"] if ecc > 0 else [])
+    m = pizzetti.MarginalTransitModel(p, t, y, 3e-4, free=free, supersample_factor=k, exp_time=0.02 if k > 1 else 0.0)
+    X = rows(m, 300)
+    new = m.log_prob_internal(X)
+    assert np.isfinite(new).sum() > 100
+    ws, old = _fast_paths_off(m, 0)
+    np.testing.assert_array_equal(m.log_prob_internal(X), new)          # selection: exact
+    ws[22][0] = old
+    ws, old = _fast_paths_off(m, 2)
+    ref = m.log_prob_internal(X)
+    ws[22][2] = old
+    np.testing.assert_array_equal(np.isfinite(ref), np.isfinite(new))
+    f = np.isfinite(ref)
+    np.testing.assert_allclose(new[f], ref[f], rtol=1e-11, atol=1e-6)

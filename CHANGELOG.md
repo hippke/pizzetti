@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Faster likelihood kernel (`design_theta_ws`), same results up to rounding: with sorted mid-times the points near a
+  transit are found by two binary searches per conjunction instead of a test of every point, where that is cheaper
+  (same points, identical ln L; WASP-18 b at 20 s cadence 1.13x per evaluation); on a circular orbit with at least 8
+  sub-exposures of equal offsets their positions follow by rotation from one sine-cosine pair per data point (1.06-1.14x
+  at k = 15; ln L within 5e-8 at posterior draws); on an eccentric orbit Kepler's equation is solved once per data
+  point and its sub-exposures by a third-order Taylor step and one Newton step (`_orbit._rsky_eccentric_sub`, with a
+  full solve where the step exceeds 0.3 or the residual 1e-7; Kepler-39 b 1.65x). On the paper's benchmark the Fig. 6
+  green total 2.45 -> 2.15 min (local timing, batch 256); eccentric light curves 1.3-1.65x, the median one 1.05x.
+
 ## 0.6.4
 
 - `fit()` runs a profile-IS fit once more, with a derived seed, if the replicate Monte Carlo error of its quantiles

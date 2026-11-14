@@ -915,12 +915,34 @@ def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, w
         mtol = 1e-9 * per
         inv_per = 1.0 / per
         mc = 0
-        for i in range(n):
-            u = (tmid[i] - t0) * inv_per
-            if abs(u - math.floor(u + 0.5)) * per <= win + half[i] + mtol:
-                cand[mc] = i
-                tmc[mc] = tmid[i]
-                mc += 1
+        info = ws[22]
+        # the candidates lie within W of a conjunction: with sorted mid-times, two binary searches per conjunction
+        # find them (the same exact test inside, so the same points in the same order), where that is cheaper than
+        # testing every point
+        W = win + info[1] + mtol + 1e-9 * (per + abs(t0))
+        e0, e1 = 0.0, -1.0
+        if info[0] > 0.5 and n > 0 and win >= 0.0 and W < 0.45 * per:
+            e0 = math.floor((tmid[0] - W - t0) * inv_per)
+            e1 = math.ceil((tmid[n - 1] + W - t0) * inv_per)
+        if e1 >= e0 and (e1 - e0 + 1.0) * 2.0 * (math.log2(n) + 1.0) < n:
+            tm_ = tmid[:n]
+            for E in range(int(e0), int(e1) + 1):
+                c_ = t0 + E * per
+                i0 = np.searchsorted(tm_, c_ - W)
+                i1 = np.searchsorted(tm_, c_ + W, side="right")
+                for i in range(i0, i1):
+                    u = (tmid[i] - t0) * inv_per
+                    if abs(u - math.floor(u + 0.5)) * per <= win + half[i] + mtol:
+                        cand[mc] = i
+                        tmc[mc] = tmid[i]
+                        mc += 1
+        elif win + info[1] + mtol >= 0.0:              # else no point can pass the test below
+            for i in range(n):
+                u = (tmid[i] - t0) * inv_per
+                if abs(u - math.floor(u + 0.5)) * per <= win + half[i] + mtol:
+                    cand[mc] = i
+                    tmc[mc] = tmid[i]
+                    mc += 1
         _orbit._rsky_circular(tmc[:mc], t0, per, a, si, 0.25, 1, zmc[:mc])
         for j in range(mc):
             i = cand[j]
@@ -939,6 +961,29 @@ def design_theta_ws(tt, ksup, wts, t0, per, rp, a, b, ecc, w, tol, A_half, Gt, w
     if ksup == 1:
         for j in range(m):
             zk[j] = zm[keep[j]]
+    elif circ and ws[22][2] > 0.5 and ksup >= 8:
+        # sin(phi_mid + d_s) = sin(phi_mid) cos(d_s) + cos(phi_mid) sin(d_s): one sine-cosine pair per data point and
+        # a table of the k sub-exposure offsets per row, instead of k sines (_rsky_circular: s = cos of the phase)
+        offs, cd, sd = ws[23], ws[24], ws[25]
+        inv_per = 1.0 / per
+        for s in range(ksup):
+            v = offs[s] * inv_per
+            sd[s] = _orbit.sin_turns(v)
+            cd[s] = _orbit.sin_turns(v + 0.25)
+        for j in range(m):
+            u = (tmid[keep[j]] - t0) * inv_per + 0.25
+            s0 = _orbit.sin_turns(u)
+            c0 = _orbit.sin_turns(u + 0.25)
+            r0 = j * ksup
+            for s in range(ksup):
+                ss = (s0 * cd[s] + c0 * sd[s]) * si
+                zk[r0 + s] = _orbit.BIGD if ss <= 0.0 else a * math.sqrt(max(1.0 - ss * ss, 0.0))
+    elif not circ and ws[22][2] > 0.5:
+        # eccentric: Kepler's equation once per point, the sub-exposures by a Taylor step + one Newton step
+        tkm = tc[:m]
+        for j in range(m):
+            tkm[j] = tmid[keep[j]]
+        _orbit._rsky_eccentric_sub(tkm, ws[23], t0, per, a, inc, ecc, w, 1, zk)
     else:
         tk = tc[:mt]
         for j in range(m):
@@ -1017,11 +1062,19 @@ def workspace(tt, ksup, wts=None, yw=None):
         s0 = float(np.sum(a0 * yw) / np.sum(a0 * a0))
         dl = yw - s0 * a0
         tot = np.array([np.sum(a0 * a0), np.sum(a0 * yw), np.sum(dl * dl), np.sum(dl * a0), s0])
+    tmid = np.ascontiguousarray(0.5 * (lo + hi))
+    # point selection by binary search needs mid-times in order; the circular sub-exposure orbit by rotation needs
+    # the same offsets of the sub-exposures from the mid-time in every data point
+    srt = 1.0 if n > 1 and bool(np.all(np.diff(tmid) >= 0.0)) else 0.0
+    offs = S[0] - tmid[0] if n > 0 else np.zeros(ksup)
+    uni = 1.0 if n > 0 and bool(np.all(np.abs((S - tmid[:, None]) - offs[None, :]) <= 1e-12 * (1.0 + np.abs(tmid[:, None])))) else 0.0
+    info = np.array([srt, float(np.max(0.5 * (hi - lo))) if n > 0 else 0.0, uni])
     return (np.empty(nt), np.empty(3 * nt), np.empty((n, 3)), np.empty(nb, dtype=np.int64),
             np.empty(nt), np.empty(nt, dtype=np.int64), np.empty(nt), np.empty(nt), np.empty(nt), np.empty(nt),
-            np.empty(nt), np.ascontiguousarray(0.5 * (lo + hi)), np.ascontiguousarray(0.5 * (hi - lo)), np.empty(n),
+            np.empty(nt), tmid, np.ascontiguousarray(0.5 * (hi - lo)), np.empty(n),
             np.empty(n, dtype=np.int64), np.empty(n, dtype=np.int64), np.empty(n), np.empty(n),
-            np.ascontiguousarray(a0), np.ascontiguousarray(dl), np.empty(n), tot)
+            np.ascontiguousarray(a0), np.ascontiguousarray(dl), np.empty(n), tot,
+            info, np.ascontiguousarray(offs, dtype=float), np.empty(ksup), np.empty(ksup))
 
 
 @njit(cache=True, inline="always")
