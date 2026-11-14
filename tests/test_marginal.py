@@ -811,14 +811,16 @@ def test_fit_reruns_a_run_whose_mc_error_misses_its_target(monkeypatch):
     m = pizzetti.MarginalTransitModel(p, t, y, 200e-6)
     r0 = m.fit(method="is", seed=3)
     assert "mc_retry" not in r0.diagnostics and r0.diagnostics["mc_err"] <= M._MC_FAIL * 0.03
+    second = m.fit(method="is", seed=[3, 1])                                    # the derived seed, unpatched
+    assert "mc_retry" not in second.diagnostics
     monkeypatch.setattr(M, "_MC_FAIL", 0.5 * r0.diagnostics["mc_err"] / 0.03)     # this run now misses its target
+    monkeypatch.setattr(M, "_MC_FAIL_NOT_OK", M._MC_FAIL)                        # ... and counts as failed
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always")
         r = m.fit(method="is", seed=3)
     g = r.diagnostics
     assert g["mc_retry"]["mc_err"] == pytest.approx(r0.diagnostics["mc_err"])
     assert g["mc_retry"]["n_eval"] == r0.diagnostics["n_eval"] and g["n_eval"] > r0.diagnostics["n_eval"]
-    second = m.fit(method="is", seed=[3, 1])                                    # the derived seed
     if second.diagnostics["mc_err"] <= M._MC_FAIL * 0.03:
         assert g["is_ok"] == second.diagnostics["is_ok"]
         np.testing.assert_array_equal(r.samples, second.samples)
@@ -826,8 +828,15 @@ def test_fit_reruns_a_run_whose_mc_error_misses_its_target(monkeypatch):
         assert not g["is_ok"] and any("second run" in str(w.message) for w in wl)
         assert g["mc_err"] == min(r0.diagnostics["mc_err"], second.diagnostics["mc_err"])
     monkeypatch.setattr(M, "_MC_FAIL", 0.0)                                      # every run misses
+    monkeypatch.setattr(M, "_MC_FAIL_NOT_OK", 0.0)
     with warnings.catch_warnings(record=True) as wl:
         warnings.simplefilter("always")
         r = m.fit(method="is", seed=3)
     assert not r.diagnostics["is_ok"] and any("second run" in str(w.message) for w in wl)
     assert r.diagnostics["mc_err"] == min(r0.diagnostics["mc_err"], second.diagnostics["mc_err"])
+    r2 = m.fit(method="is", seed=[3])                                            # a list seed: reproducible retry
+    assert r2.diagnostics["mc_retry"]["n_eval"] > 0
+    np.testing.assert_array_equal(r2.samples, m.fit(method="is", seed=[3]).samples)
+    monkeypatch.setattr(M, "_MC_FAIL_NOT_OK", 1e9)                               # retried, but not far off: ok
+    r3 = m.fit(method="is", seed=3)
+    assert "mc_retry" in r3.diagnostics and r3.diagnostics["is_ok"] == r0.diagnostics["is_ok"]

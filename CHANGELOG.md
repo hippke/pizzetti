@@ -3,13 +3,22 @@
 ## Unreleased
 
 - `fit()` runs a profile-IS fit once more, with a derived seed, if the replicate Monte Carlo error of its quantiles
-  ends above 2 x `mc_tol` after all top-ups: its proposal missed part of the posterior, which the importance
-  diagnostics alone did not catch (the final ESS top-up can raise k-hat above `khat_ok` after `is_ok` was set). On the
-  paper's benchmark this concerned 1 of 50 seeds of HD 213885 b (rms error 0.067 against <= 0.032 for the other
-  seeds; quantile error 0.86 posterior sd, 0.08 after the second run) and 1 of 300 benchmark fits; all other fits are
-  unchanged, and the Fig. 6 total too. If the second run misses the target as well, the better of the two is returned
-  with `is_ok` False and a warning. `diagnostics["mc_retry"]` holds the first run's error, k-hat and evaluations
-  (`n_eval` counts both runs).
+  ends above 1.15 x `mc_tol` after all top-ups: its proposal missed part of the posterior, which the importance
+  diagnostics alone did not catch (the final ESS top-up can raise k-hat above `khat_ok` after `is_ok` was set). Of the
+  better of the two runs, an error still above 2 x `mc_tol` sets `is_ok` False, with a warning.
+  `diagnostics["mc_retry"]` holds the first run's error, k-hat and evaluations (`n_eval` counts both runs). Seed scans
+  of Kepler-21 b and HD 213885 b (470 fits, 14 with a quantile error > 0.4 posterior sd): the threshold catches 9 of
+  the 14 and 3 of the 456 good fits (2 x `mc_tol`: 2 of the 14); the other 5 end at 0.021-0.027, inseparable from
+  good fits. Kepler-21 b, 80 seeds: errors > 0.5 sd 3 -> 1, largest 0.81 -> 0.55, 2 % more evaluations. On the paper's
+  benchmark 4 of 300 fits are retried; HD 213885 b's worst seed 0.86 -> 0.13 sd.
+- A list seed (e.g. `seed=[3, 1]`) derives the retry's seed by one more entry (it fell back to an unseeded generator).
+- The cone integral of the quadratic law's physical prior (`_marginal.log_cone_integral`) uses an 8-point rule along
+  its inner axis, the cross-sections, where 12 were used; its error comes from the outer axis (benchmark posterior
+  rows of 82 light curves: |log P - log P_48| median 7.2e-6, 90 % 1.7e-5, max 6.1e-3, as with 12). Cross-sections
+  more than 3 sd from the Gaussian's centre (deep outside the cone) keep 12 points (with 8, a point at ln P = -2812 was
+  off by 0.08 nats). ln L changes by <= 1e-5 on the benchmark; seeded results change. The marginal likelihood is up to
+  1.30x faster per evaluation where the cone term dominates (LHS 1140 b, 39 points x 5 sub-exposures: 14.3 -> 11.2 us),
+  1.04x in the median of the benchmark.
 
 ## 0.6.3
 

@@ -29,6 +29,16 @@ _t, _w = np.polynomial.legendre.leggauss(12)
 _t = 0.5 * (_t + 1.0)
 GL_X = _t * _t * (3.0 - 2.0 * _t)
 GL_W = 0.5 * _w * 6.0 * _t * (1.0 - _t)
+# the inner axis of the cone integral (log_cone_integral): 8 points suffice there while the cross-section reaches within
+# _INNER_FAR sd of the Gaussian's centre; the error comes from the outer axis (benchmark posterior rows of 82 light
+# curves: |log P - log P_48| median 7.2e-6, 90 % 1.7e-5, max 6.1e-3 with 8 inner points, as with 12; the cone term
+# 1.4x faster). Cross-sections farther out (deep outside the cone, where the mass sits at an edge) keep 12: with 8
+# there, ln P = -2812 of test_generic_path_equals_fast_quadratic was off by 0.08 nats; 2e-4 with 12.
+_INNER_FAR = 3.0
+_ti, _wi = np.polynomial.legendre.leggauss(8)
+_ti = 0.5 * (_ti + 1.0)
+GLI_X = _ti * _ti * (3.0 - 2.0 * _ti)
+GLI_W = 0.5 * _wi * 6.0 * _ti * (1.0 - _ti)
 DISK = np.array([1.0 / 6.0, 1.0 / 3.0, 1.0 / 2.0])
 
 # canonical parameter order of the kernels
@@ -483,7 +493,9 @@ def _outer_centre(Z, oa, ia):
 
 @njit(cache=True)
 def log_cone_integral(L, s, Gs, th, gx, gw):
-    """log int_cone exp(-(theta - th)^T G (theta - th) / 2) dtheta (G = s Gs s, Gs = L L^T)."""
+    """log int_cone exp(-(theta - th)^T G (theta - th) / 2) dtheta (G = s Gs s, Gs = L L^T). gx, gw: the outer
+    rule; the inner one (cross-sections) is GLI_X, GLI_W."""
+    gxi, gwi = GLI_X, GLI_W
     A0, A1, A2 = _lt_mv(L, s, th[0], th[1], th[2])
     eh1, eh2 = th[1] / th[0], th[2] / th[0]
     es0, es1, es2 = s[0], s[1] * eh1, s[2] * eh2
@@ -524,8 +536,9 @@ def log_cone_integral(L, s, Gs, th, gx, gw):
     # the outer rule is centred on the integrand's mass: for a mean outside the triangle that is the
     # nearest point of the triangle, not the mean (the integrand itself is evaluated exactly)
     ts = _outer_centre(Z, oa, ia)
-    n = gx.shape[0]
-    xt, lwt, xu, lwu = np.empty(n), np.empty(n), np.empty(n), np.empty(n)
+    n, ni = gx.shape[0], gxi.shape[0]
+    xt, lwt, xu, lwu = np.empty(n), np.empty(n), np.empty(ni), np.empty(ni)
+    xu12, lwu12 = np.empty(n), np.empty(n)
     m_all, acc_all = -np.inf, 0.0
     for piece in range(2):
         ja, jb = (i0, i1) if piece == 0 else (i1, i2)
@@ -541,15 +554,22 @@ def log_cone_integral(L, s, Gs, th, gx, gw):
             lo, hi = min(ua, ub), max(ua, ub)
             if not hi > lo:
                 continue
-            _nodes(lo, hi, gx, gw, xu, lwu)
+            if lo > _INNER_FAR or hi < -_INNER_FAR:
+                nj = n
+                _nodes(lo, hi, gx, gw, xu12, lwu12)
+                xu_, lwu_ = xu12, lwu12
+            else:
+                nj = ni
+                _nodes(lo, hi, gxi, gwi, xu, lwu)
+                xu_, lwu_ = xu, lwu
             m_in, acc_in = -np.inf, 0.0
-            for j in range(n):
-                zz0 = t if oa == 0 else xu[j]
-                zz1 = xu[j] if oa == 0 else t
+            for j in range(nj):
+                zz0 = t if oa == 0 else xu_[j]
+                zz1 = xu_[j] if oa == 0 else t
                 w0, w1 = zz0 / q0, zz1 / q1
                 v1 = eh1 + u00 * w0 + u01 * w1
                 v2 = eh2 + u10 * w0 + u11 * w1
-                m_in, acc_in = _lse_add(m_in, acc_in, lwu[j] + _ray_log_g(v1, v2, L, s, eh1, eh2, A0, A1, A2))
+                m_in, acc_in = _lse_add(m_in, acc_in, lwu_[j] + _ray_log_g(v1, v2, L, s, eh1, eh2, A0, A1, A2))
             if acc_in > 0.0:
                 m_all, acc_all = _lse_add(m_all, acc_all, lwt[k] + m_in + math.log(acc_in))
     if not acc_all > 0.0:
