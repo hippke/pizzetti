@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5
 
 - `profile_is` widens its conditional proposals by `inflate` = 1.1 (was 1.2). The fits end at the ESS floor of 4000
   in nearly every case (266 of 300 benchmark fits within 10 %), so ESS per draw sets their cost: median 0.61 -> 0.67.
