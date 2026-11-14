@@ -429,6 +429,7 @@ _STRATUM_MIN_MASS = 1e-3   # a stratum below this share of the posterior needs n
 _COLLAPSED_RP = 1e-3      # with ld_prior="flat", fit warns if most of the posterior has an effective rp below this (or 2 x the bound)
 _NE_MIN_ROWS = 16         # fit(): log_prob_internal keeps the normal equations of calls with at least this many rows
 _NO_NE = np.zeros((0, 9))  # ne_out of the likelihood kernels: none kept
+_MC_FAIL = 2.0            # fit(): a profile-IS run whose replicate error ends above this x mc_tol is run again (once)
 
 
 class MarginalTransitModel:
@@ -2121,7 +2122,10 @@ class MarginalTransitModel:
 
         * ``mc_tol``: the Monte Carlo error of the posterior quantiles (2.5, 16, 50, 84, 97.5 % of every free parameter;
           rms, in posterior sd), measured from the spread of ``mc_reps`` (default 8) independent replicates of the draws;
-          in ``diagnostics["mc_err"]`` / ``"mc_err_max"``. None: no error target.
+          in ``diagnostics["mc_err"]`` / ``"mc_err_max"``. None: no error target. A run that ends above 2 x ``mc_tol``
+          (its proposal misses part of the posterior) is run once more with a derived seed (``diagnostics["mc_retry"]``:
+          the first run's error, k-hat and evaluations, which ``n_eval`` includes); if that run fails too, the better one
+          is returned with ``is_ok`` False and a warning.
         * ``min_ess``: a floor on the effective sample size of the output (Kish, after the limb-darkening step), so
           that a corner plot of the equal-weight draws has about that many distinct points (4000: twice the minimum
           effective sample size of Agarwal, Vats & Elvira 2021, arXiv:2108.13289, for four parameters at 10 % relative
@@ -2143,12 +2147,48 @@ class MarginalTransitModel:
         "emcee": vectorised emcee until convergence (N > ntau * tau, tau stable to 1 %);
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
-        self._ne_cache = [] if (self.fast and self.gp is None and not self.has_ldp) else None
-        try:
-            return self._fit(method, n, nwalkers, max_steps, ntau, seed, ld, progress, max_evals, max_time, stratify,
-                             qmc, mc_reps, mc_tol, mc_max_factor, min_ess)
-        finally:
-            self._ne_cache = None
+        def run(seed_):
+            self._ne_cache = [] if (self.fast and self.gp is None and not self.has_ldp) else None
+            try:
+                return self._fit(method, n, nwalkers, max_steps, ntau, seed_, ld, progress, max_evals, max_time,
+                                 stratify, qmc, mc_reps, mc_tol, mc_max_factor, min_ess)
+            finally:
+                self._ne_cache = None
+
+        def mc_bad(r_):
+            # the top-ups could not bring the replicate error near its target: a proposal that misses part of the
+            # posterior (on the benchmark 1 in 50 seeds of HD 213885 b, rms 0.067 against <= 0.032 for the others,
+            # with a 0.5-0.9 sd quantile error); the importance diagnostics alone pass such runs
+            g_ = r_.diagnostics
+            e_ = g_.get("mc_err")
+            return (mc_tol is not None and g_.get("method") == "profile-IS" and e_ is not None
+                    and np.isfinite(e_) and e_ > _MC_FAIL * mc_tol and not g_.get("budget_exceeded"))
+
+        r = run(seed)
+        if not mc_bad(r):
+            return r
+        g = r.diagnostics
+        first = dict(mc_err=g["mc_err"], mc_err_max=g.get("mc_err_max"), khat=g.get("khat"), n_eval=g["n_eval"])
+        if isinstance(seed, (int, np.integer)):
+            seed2 = [int(seed), 1]
+        elif isinstance(seed, np.random.Generator):
+            seed2 = seed
+        else:
+            seed2 = None
+        r2 = run(seed2)
+        g2 = r2.diagnostics
+        ok2 = not mc_bad(r2)
+        n_total = int(first["n_eval"] + g2["n_eval"])    # both runs' evaluations, whichever is returned
+        if not ok2 and not g2["mc_err"] < g["mc_err"]:
+            r2, g2 = r, g                                 # keep the better of the two
+        g2["mc_retry"] = first
+        g2["n_eval"] = n_total
+        if not ok2:
+            g2["is_ok"] = False
+            warnings.warn(f"importance sampling: the Monte Carlo error of the quantiles stayed at {g2['mc_err']:.3f} "
+                          f"posterior sd (target {mc_tol}) after a second run; check the posterior, e.g. with "
+                          "method='emcee'", stacklevel=2)
+        return r2
 
     def _fit(self, method, n, nwalkers, max_steps, ntau, seed, ld, progress, max_evals, max_time, stratify, qmc,
              mc_reps, mc_tol, mc_max_factor, min_ess):

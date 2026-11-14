@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- `fit()` runs a profile-IS fit once more, with a derived seed, if the replicate Monte Carlo error of its quantiles
+  ends above 2 x `mc_tol` after all top-ups: its proposal missed part of the posterior, which the importance
+  diagnostics alone did not catch (the final ESS top-up can raise k-hat above `khat_ok` after `is_ok` was set). On the
+  paper's benchmark this concerned 1 of 50 seeds of HD 213885 b (rms error 0.067 against <= 0.032 for the other
+  seeds; quantile error 0.86 posterior sd, 0.08 after the second run) and 1 of 300 benchmark fits; all other fits are
+  unchanged, and the Fig. 6 total too. If the second run misses the target as well, the better of the two is returned
+  with `is_ok` False and a warning. `diagnostics["mc_retry"]` holds the first run's error, k-hat and evaluations
+  (`n_eval` counts both runs).
+
 ## 0.6.3
 
 - The conditional fits of the profile grid use BFGS alone under the physical limb-darkening prior; the loose Powell

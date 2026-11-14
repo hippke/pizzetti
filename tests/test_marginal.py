@@ -800,3 +800,34 @@ def test_cone_probability_blend_inside_cone():
         B = B1 * z / z1
         lP = K.marg_theta_parts(B, B @ _IN_CONE, K.GL_X, K.GL_W)[1]
         assert abs(lP - _orthant_reference(B, _IN_CONE)) < 2e-5
+
+
+def test_fit_reruns_a_run_whose_mc_error_misses_its_target(monkeypatch):
+    """A profile-IS run whose replicate error ends above _MC_FAIL x mc_tol is run once more with a derived seed (1 in 50
+    seeds of HD 213885 b on the benchmark); a run that passes is returned unchanged."""
+    pytest.importorskip("scipy")
+    from pizzetti import marginal as M
+    t, y, p = data(sigma=200e-6)
+    m = pizzetti.MarginalTransitModel(p, t, y, 200e-6)
+    r0 = m.fit(method="is", seed=3)
+    assert "mc_retry" not in r0.diagnostics and r0.diagnostics["mc_err"] <= M._MC_FAIL * 0.03
+    monkeypatch.setattr(M, "_MC_FAIL", 0.5 * r0.diagnostics["mc_err"] / 0.03)     # this run now misses its target
+    with warnings.catch_warnings(record=True) as wl:
+        warnings.simplefilter("always")
+        r = m.fit(method="is", seed=3)
+    g = r.diagnostics
+    assert g["mc_retry"]["mc_err"] == pytest.approx(r0.diagnostics["mc_err"])
+    assert g["mc_retry"]["n_eval"] == r0.diagnostics["n_eval"] and g["n_eval"] > r0.diagnostics["n_eval"]
+    second = m.fit(method="is", seed=[3, 1])                                    # the derived seed
+    if second.diagnostics["mc_err"] <= M._MC_FAIL * 0.03:
+        assert g["is_ok"] == second.diagnostics["is_ok"]
+        np.testing.assert_array_equal(r.samples, second.samples)
+    else:                                                                        # both miss: the better one, not ok
+        assert not g["is_ok"] and any("second run" in str(w.message) for w in wl)
+        assert g["mc_err"] == min(r0.diagnostics["mc_err"], second.diagnostics["mc_err"])
+    monkeypatch.setattr(M, "_MC_FAIL", 0.0)                                      # every run misses
+    with warnings.catch_warnings(record=True) as wl:
+        warnings.simplefilter("always")
+        r = m.fit(method="is", seed=3)
+    assert not r.diagnostics["is_ok"] and any("second run" in str(w.message) for w in wl)
+    assert r.diagnostics["mc_err"] == min(r0.diagnostics["mc_err"], second.diagnostics["mc_err"])
