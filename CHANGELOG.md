@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `profile_is` widens its conditional proposals by `inflate` = 1.1 (was 1.2). The fits end at the ESS floor of 4000
+  in nearly every case (266 of 300 benchmark fits within 10 %), so ESS per draw sets their cost: median 0.61 -> 0.67.
+  Paper's benchmark, 100 light curves x 3 seeds: 1.069x fewer evaluations per light curve (median; 1.06x summed), the
+  Fig. 6 green total 2.05 -> 1.87 min, accuracy against the references unchanged (median 0.073 sd, no run failed).
+  150 seeds each of 8 fragile light curves (Kepler-21 b, HD 213885 b, WASP-107 b, K2-25 b, LHS 1140 b, K2-33 b,
+  HIP 65 A b, Kepler-91 b): runs > 0.3 sd 6 -> 5, > 0.5 sd 2 -> 2, but more runs flagged not ok (1 -> 6, 5 of them
+  WASP-107 b) and 1 % more evaluations there (retries). 1.0 saved 1.10x but raised Kepler-21 b's bad seeds; a
+  Student-t with 10 degrees of freedom gained nothing. Seeded results change.
 - Faster likelihood kernel (`design_theta_ws`), same results up to rounding: with sorted mid-times the points near a
   transit are found by two binary searches per conjunction instead of a test of every point, where that is cheaper
   (same points, identical ln L; WASP-18 b at 20 s cadence 1.13x per evaluation); on a circular orbit with at least 8
