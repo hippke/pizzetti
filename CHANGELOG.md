@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.4
 
 - `fit()` runs a profile-IS fit once more, with a derived seed, if the replicate Monte Carlo error of its quantiles
   ends above 1.15 x `mc_tol` after all top-ups: its proposal missed part of the posterior, which the importance
