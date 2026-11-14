@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `fit()` with `gp=` reuses the likelihood's normal equations in the limb-darkening step, as without a GP (0.6.4):
+  the GP likelihood kernels (`loglike_batch`, `_ws`, `_par`, `fixed_batch`, `_par`) store each row's whitened normal
+  equations (and the fixed path's shift, `_gp.NE_COLS` = 10 columns) in `ne_out`, and `_expand_fast` takes the moments
+  from them (`_gp.moments_ne`), whitening only rows that were not kept. Draws bit-identical (full and fixed GP, 3 seeds).
+  Median out-of-sample light curve (TOI-2407 b, TESS 2 min, 10k points), host2 one core: 5.68 -> 3.27 s with sampled
+  GP parameters, 1.20 -> 0.87 s with fixed ones (0.36 s without a GP); the limb-darkening step had whitened every
+  posterior draw again (2.5 s of 5.9 s).
+
 ## 0.6.5
 
 - `profile_is` widens its conditional proposals by `inflate` = 1.1 (was 1.2). The fits end at the ESS floor of 4000

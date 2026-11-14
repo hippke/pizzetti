@@ -26,6 +26,8 @@ _SQRT2 = math.sqrt(2.0)
 DT_TOL = 1e-6                # relative: time steps within this share their transition (stored times are rounded, or jitter)
 _NAMES = ("amp", "tau", "err_scale")
 _LABELS = ("ln_gp_amp", "ln_gp_tau", "ln_err_scale")
+NE_COLS = 10                 # stored normal equations of a row: G (6), r (3), the shift added to the first solved value
+_NO_NE = np.zeros((0, NE_COLS))
 
 
 class GP:
@@ -303,24 +305,28 @@ def _inside(P, i, ok_i, lo, hi):
 
 
 @njit(cache=True)
-def _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
-    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i."""
+def _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out=_NO_NE):
+    """(log-likelihood + box prior + log-Jacobian, log P of the cone) of canonical row i. If ne_out has a row i, it
+    receives the normal equations of the whitened design (_store_ne)."""
     if not _inside(P, i, ok[i], lo, hi):
         return -np.inf, 0.0
     Bw, yw, ld = _whitened(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half, Gt)
-    v, lP = K.marg_theta_parts(Bw, yw, K.GL_X, K.GL_W)
+    G, r = K.normal_eqs(Bw, yw)                         # = marg_theta_parts, keeping G, r
+    if ne_out.shape[0] > i:
+        _store_ne(ne_out, i, G, r, 0.0)
+    v, lP = K.theta_parts_normal(G, r, Bw, yw, 0.0, 0.0, K.GL_X, K.GL_W)
     return v + lP - ld + lj[i], lP
 
 
 @njit(cache=True)
-def loglike_batch(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+def loglike_batch(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, ne_out=_NO_NE):
     """Log-likelihood + box prior + log-Jacobian for canonical rows P and E = (amp, tau, err_scale) per row; rows with
     ok[i] False are outside the box of the GP parameters. As ``_marginal.loglike_batch``, with whitening."""
     n = P.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in range(n):
-        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -328,24 +334,27 @@ def loglike_batch(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol,
 
 
 @njit(cache=True)
-def _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws):
+def _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws, ne_out=_NO_NE):
     """_row in the workspace gws: identical values."""
     if not _inside(P, i, ok[i], lo, hi):
         return -np.inf, 0.0
     Bw, yw, ld = _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P[i], E[i, 0], E[i, 1], E[i, 2] * E[i, 2], tol, A_half,
                               Gt, gws)
-    v, lP = K.marg_theta_parts(Bw, yw, K.GL_X, K.GL_W)
+    G, r = K.normal_eqs(Bw, yw)
+    if ne_out.shape[0] > i:
+        _store_ne(ne_out, i, G, r, 0.0)
+    v, lP = K.theta_parts_normal(G, r, Bw, yw, 0.0, 0.0, K.GL_X, K.GL_W)
     return v + lP - ld + lj[i], lP
 
 
 @njit(cache=True)
-def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, gws):
+def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, gws, ne_out=_NO_NE):
     """loglike_batch reusing the workspace gws (workspace()) for every row: identical values."""
     n = P.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in range(n):
-        v, lP = _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws)
+        v, lP = _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -353,13 +362,13 @@ def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, t
 
 
 @njit(cache=True, parallel=True)
-def loglike_batch_par(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+def loglike_batch_par(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, ne_out=_NO_NE):
     """loglike_batch with the rows spread over numba's threads (identical results)."""
     n = P.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in prange(n):
-        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -597,24 +606,28 @@ def _fits_blocks(P, t_ref, half, half_exp):
 
 
 @njit(cache=True)
-def _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt):
+def _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt,
+               ne_out=_NO_NE):
     if not _inside(P, i, ok[i], lo, hi):
         return -np.inf, 0.0
     if not _fits_blocks(P[i], t_ref, half, half_exp):
-        return _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        return _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
     G, r, yy = _fixed_normal(P[i], fx, ksup, tol, A_half, Gt)
+    if ne_out.shape[0] > i:
+        _store_ne(ne_out, i, G, r, fx[11][4])
     v, lP = K.theta_parts_normal(G, r, np.empty((0, 3)), np.empty(0), yy, fx[11][4], K.GL_X, K.GL_W)
     return v + lP - fx[11][0] + lj[i], lP
 
 
 @njit(cache=True)
-def fixed_batch(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+def fixed_batch(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out,
+                ne_out=_NO_NE):
     """loglike_batch for fixed GP parameters; a row whose transit reaches beyond the blocks takes the full filter."""
     n = P.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in range(n):
-        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -622,13 +635,14 @@ def fixed_batch(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt,
 
 
 @njit(cache=True, parallel=True)
-def fixed_batch_par(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out):
+def fixed_batch_par(P, lj, ok, lo, hi, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out,
+                    ne_out=_NO_NE):
     """fixed_batch with the rows spread over numba's threads (identical results)."""
     n = P.shape[0]
     out = np.empty(n)
     keep = logP_out.shape[0] == n
     for i in prange(n):
-        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+        v, lP = _fixed_row(P, lj, ok, lo, hi, i, fx, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
         out[i] = v
         if keep:
             logP_out[i] = lP
@@ -664,4 +678,35 @@ def fixed_moments_batch_par(P, fx, t_ref, half, half_exp, E, idx, steps, tt, ksu
     S = np.full((n, 3, 3), np.nan)
     for i in prange(n):
         _fixed_moments_row(P, fx, T, S, i, t_ref, half, half_exp, E, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt)
+    return T, S
+
+
+@njit(cache=True)
+def _store_ne(ne_out, i, G, r, shift):
+    """Row i of ne_out = (G00, G01, G02, G11, G12, G22, r0, r1, r2, shift): the normal equations of the whitened design
+    (for the fixed path: of the data minus shift x the first column, so that f0 = shift + the first solved value)."""
+    ne_out[i, 0], ne_out[i, 1], ne_out[i, 2] = G[0, 0], G[0, 1], G[0, 2]
+    ne_out[i, 3], ne_out[i, 4], ne_out[i, 5] = G[1, 1], G[1, 2], G[2, 2]
+    ne_out[i, 6], ne_out[i, 7], ne_out[i, 8] = r[0], r[1], r[2]
+    ne_out[i, 9] = shift
+
+
+@njit(cache=True)
+def moments_ne(NE):
+    """theta_moments_batch / fixed_moments_batch from the stored normal equations (loglike kernels' ne_out): no pass over
+    the light curve, identical values. NaN rows (not stored) stay NaN."""
+    n = NE.shape[0]
+    T = np.full((n, 3), np.nan)
+    S = np.full((n, 3, 3), np.nan)
+    G = np.empty((3, 3))
+    r = np.empty(3)
+    for i in range(n):
+        if not NE[i, 0] == NE[i, 0]:
+            continue
+        G[0, 0], G[0, 1], G[0, 2] = NE[i, 0], NE[i, 1], NE[i, 2]
+        G[1, 0], G[1, 1], G[1, 2] = NE[i, 1], NE[i, 3], NE[i, 4]
+        G[2, 0], G[2, 1], G[2, 2] = NE[i, 2], NE[i, 4], NE[i, 5]
+        r[0], r[1], r[2] = NE[i, 6], NE[i, 7], NE[i, 8]
+        _moments(G, r, T, S, i)
+        T[i, 0] += NE[i, 9]
     return T, S

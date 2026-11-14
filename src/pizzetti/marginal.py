@@ -947,17 +947,22 @@ class MarginalTransitModel:
             E, ok = self._gp_rows(Xi)
             lPo = logP if parts else np.zeros(0)
             nthr = self._nthreads() if len(Xi) >= PAR_MIN_ROWS else 1
+            # inside fit(): each row's normal equations for the limb-darkening step, as the fast path (batches only)
+            keep_ne = self._ne_cache is not None and len(Xi) >= _NE_MIN_ROWS
+            ne = np.full((len(Xi), _gp.NE_COLS), np.nan) if keep_ne else _gp._NO_NE
             arg = (self.gp_idx, self.gp_steps, self.tt, self.k, self.wts, self.y, self.gp_var0, self.tol, _A_HALF, _series._GTAB, lPo)
             if self.gp_fx is not None:
                 kern = _gp.fixed_batch_par if nthr > 1 else _gp.fixed_batch
-                arg = (P, lj, ok, self.lo, self.hi, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+                arg = (P, lj, ok, self.lo, self.hi, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg + (ne,)
             elif nthr == 1:                     # one workspace for every evaluation (see _workspace)
                 kern = _gp.loglike_batch_ws
-                arg = (P, lj, E, ok, self.lo, self.hi) + arg + (self._gp_workspace(),)
+                arg = (P, lj, E, ok, self.lo, self.hi) + arg + (self._gp_workspace(), ne)
             else:
                 kern = _gp.loglike_batch_par
-                arg = (P, lj, E, ok, self.lo, self.hi) + arg
+                arg = (P, lj, E, ok, self.lo, self.hi) + arg + (ne,)
             out = self._gp_threads(kern, arg, nthr)
+            if keep_ne:
+                self._ne_cache.append((Xi.copy(), ne))
         elif self.fast:
             args = (self._geo(Xi), self.idx, self.fixed, self.t14, self.lo, self.hi, self.tt, self.k,
                     self.wts, self.yw, self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb,
@@ -1166,7 +1171,7 @@ class MarginalTransitModel:
     def _ne_lookup(self, Xi):
         """Normal equations that log_prob_internal kept (fit()) for internal rows Xi, matched by their exact bytes;
         NaN rows where there are none."""
-        out = np.full((len(Xi), 9), np.nan)
+        out = np.full((len(Xi), _gp.NE_COLS if self.gp is not None else 9), np.nan)
         if not self._ne_cache:
             return out
         if len(self._ne_cache) > 1:                      # one sorted block (kept for a second lookup)
@@ -1195,20 +1200,27 @@ class MarginalTransitModel:
                                      self.tol, _A_HALF, _series._GTAB, self.has_ldp, self.mb, self.Pb)
             c = _draw_c(C, S, rng)
         elif self.gp is not None:
-            E, _ = self._gp_rows(X)
-            Pc = np.ascontiguousarray(P)
-            nthr = self._nthreads() if len(X) >= PAR_MIN_ROWS else 1
-            arg = (self.gp_idx, self.gp_steps, self.tt, self.k, self.wts, self.y, self.gp_var0, self.tol, _A_HALF, _series._GTAB)
-            if self.gp_fx is not None:
-                kern = _gp.fixed_moments_batch_par if nthr > 1 else _gp.fixed_moments_batch
-                arg = (Pc, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
-            elif nthr == 1:
-                kern = _gp.theta_moments_batch_ws
-                arg = (Pc, E) + arg + (self._gp_workspace(),)
-            else:
-                kern = _gp.theta_moments_batch_par
-                arg = (Pc, E) + arg
-            T, S = self._gp_threads(kern, arg, nthr)
+            # the rows' normal equations from the likelihood evaluations (_ne_lookup), where fit() kept them; the others
+            # are whitened again
+            NE = self._ne_lookup(xi) if xi is not None else np.full((len(X), _gp.NE_COLS), np.nan)
+            T, S = _gp.moments_ne(NE)
+            miss = np.flatnonzero(~np.all(np.isfinite(NE), axis=1))
+            self.last_ld_cache_hits = len(X) - len(miss)
+            if len(miss):
+                E, _ = self._gp_rows(X[miss])
+                Pc = np.ascontiguousarray(P[miss])
+                nthr = self._nthreads() if len(miss) >= PAR_MIN_ROWS else 1
+                arg = (self.gp_idx, self.gp_steps, self.tt, self.k, self.wts, self.y, self.gp_var0, self.tol, _A_HALF, _series._GTAB)
+                if self.gp_fx is not None:
+                    kern = _gp.fixed_moments_batch_par if nthr > 1 else _gp.fixed_moments_batch
+                    arg = (Pc, self.gp_fx, self.fixed[0], self.gp_half, self.gp_half_exp, E) + arg
+                elif nthr == 1:
+                    kern = _gp.theta_moments_batch_ws
+                    arg = (Pc, E) + arg + (self._gp_workspace(),)
+                else:
+                    kern = _gp.theta_moments_batch_par
+                    arg = (Pc, E) + arg
+                T[miss], S[miss] = self._gp_threads(kern, arg, nthr)
             c = _draw_c_theta(T, S, rng)
         else:
             NE = self._ne_lookup(xi) if xi is not None else np.full((len(X), 9), np.nan)
@@ -2149,7 +2161,7 @@ class MarginalTransitModel:
         "auto": "is" if b is free, else "emcee". Returns a ``FitResult``.
         """
         def run(seed_):
-            self._ne_cache = [] if (self.fast and self.gp is None and not self.has_ldp) else None
+            self._ne_cache = [] if (self.fast and not self.has_ldp) else None
             try:
                 return self._fit(method, n, nwalkers, max_steps, ntau, seed_, ld, progress, max_evals, max_time,
                                  stratify, qmc, mc_reps, mc_tol, mc_max_factor, min_ess)
