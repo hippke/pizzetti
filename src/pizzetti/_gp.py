@@ -26,6 +26,8 @@ _SQRT2 = math.sqrt(2.0)
 DT_TOL = 1e-6                # relative: time steps within this share their transition (stored times are rounded, or jitter)
 _NAMES = ("amp", "tau", "err_scale")
 _LABELS = ("ln_gp_amp", "ln_gp_tau", "ln_err_scale")
+LANES = 16                   # rows per chunk of the lane kernels (loglike_batch_ws / _par): their gain recursions interleave
+_LANE_BYTES = 8_000_000      # ... with the stored gains of a chunk within this
 NE_COLS = 10                 # stored normal equations of a row: G (6), r (3), the shift added to the first solved value
 _NO_NE = np.zeros((0, NE_COLS))
 
@@ -269,17 +271,26 @@ def _whitened(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, 
     return Bw, yw, ld
 
 
+def lanes(n):
+    """Rows per chunk of the lane kernels for n data points: up to LANES, with the stored gains (lanes x n x 3) within
+    ~8 MB. The values of a row do not depend on it."""
+    return int(max(1, min(LANES, _LANE_BYTES // (24 * max(n, 1)))))
+
+
 def workspace(tt, ksup, n, nsteps):
     """Arrays for the workspace kernels (loglike_batch_ws, theta_moments_batch_ws): the design workspace of
     _marginal.workspace, the n x 4 columns to whiten, the whitened design and flux, the scaled variances and the
-    transition table. Reused by every evaluation, so that a large light curve does not fault fresh pages in each time."""
-    return (K.workspace(tt, ksup), np.empty((n, 4)), np.empty((n, 3)), np.empty(n), np.empty(n), np.empty((nsteps, 7)))
+    transition table; for the lane kernel the transition tables (nsteps x 7 x lanes) and gains (lanes x n x 3) of a
+    chunk of rows. Reused by every evaluation, so that a large light curve does not fault fresh pages in each time."""
+    R = lanes(n)
+    return (K.workspace(tt, ksup), np.empty((n, 4)), np.empty((n, 3)), np.empty(n), np.empty(n), np.empty((nsteps, 7)),
+            np.empty((nsteps, 7, R)), np.empty((R, n, 3)))
 
 
 @njit(cache=True)
 def _whitened_ws(idx, steps, tt, ksup, wts, y, var0, P, amp, tau, s2, tol, A_half, Gt, gws):
     """_whitened in the workspace gws (workspace()): identical values."""
-    dws, Y, Bw, yw, var, Tt = gws
+    dws, Y, Bw, yw, var, Tt = gws[0], gws[1], gws[2], gws[3], gws[4], gws[5]
     n = y.shape[0]
     B, _ = K.design_theta_ws(tt, ksup, wts, P[0], P[1], P[2], P[3], P[4], P[5], P[6], tol, A_half, Gt, dws, True)
     for i in range(n):
@@ -348,30 +359,232 @@ def _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_
 
 
 @njit(cache=True)
-def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, gws, ne_out=_NO_NE):
-    """loglike_batch reusing the workspace gws (workspace()) for every row: identical values."""
-    n = P.shape[0]
-    out = np.empty(n)
-    keep = logP_out.shape[0] == n
+def _lane_gains(idx, Ts, var0, es2, s2, g3, R):
+    """Kalman gains of lanes 0..R-1 (one row each), interleaved: the covariance recursion of one row is a serial chain,
+    R of them overlap. g3[q, i] = (k0, k1, 1 / sqrt(S)) at point i; returns sum ln sqrt(S) per lane, summed as 0.5 ln of
+    products of 8 consecutive S. Each lane's arithmetic is the same whatever R (results do not depend on the chunk);
+    equal to _whiten_T up to rounding (one reciprocal per point instead of divisions, products instead of ln per point)."""
+    n = idx.shape[0]
+    p00 = np.empty(R)
+    p01 = np.zeros(R)
+    p11 = np.empty(R)
+    prod = np.ones(R)
+    ld = np.zeros(R)
+    for q in range(R):
+        p00[q] = s2[q]
+        p11[q] = s2[q]
     for i in range(n):
-        v, lP = _row_ws(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, gws, ne_out)
-        out[i] = v
+        if i > 0:
+            u = idx[i]
+            for q in range(R):
+                f00, f01, f10, f11 = Ts[u, 0, q], Ts[u, 1, q], Ts[u, 2, q], Ts[u, 3, q]
+                a00 = f00 * p00[q] + f01 * p01[q]
+                a01 = f00 * p01[q] + f01 * p11[q]
+                a10 = f10 * p00[q] + f11 * p01[q]
+                a11 = f10 * p01[q] + f11 * p11[q]
+                p00[q] = a00 * f00 + a01 * f01 + Ts[u, 4, q]
+                p01[q] = a00 * f10 + a01 * f11 + Ts[u, 5, q]
+                p11[q] = a10 * f10 + a11 * f11 + Ts[u, 6, q]
+        v0 = var0[i]
+        for q in range(R):
+            S = p00[q] + v0 * es2[q]
+            iS = 1.0 / S
+            k0 = p00[q] * iS
+            k1 = p01[q] * iS
+            g3[q, i, 0] = k0
+            g3[q, i, 1] = k1
+            g3[q, i, 2] = math.sqrt(iS)
+            prod[q] *= S
+            p11[q] -= k1 * p01[q]
+            p01[q] -= k1 * p00[q]
+            p00[q] -= k0 * p00[q]
+        if (i & 7) == 7:
+            for q in range(R):
+                ld[q] += 0.5 * math.log(prod[q])
+                prod[q] = 1.0
+    for q in range(R):
+        ld[q] += 0.5 * math.log(prod[q])
+    return ld
+
+
+@njit(cache=True)
+def _lane_gains1(idx, Ts, var0, es2, s2, g3):
+    """_lane_gains for a single lane (lane 0) in scalars: the same operations in the same order, identical values."""
+    n = idx.shape[0]
+    p00, p01, p11 = s2[0], 0.0, s2[0]
+    e2 = es2[0]
+    prod = 1.0
+    ld = 0.0
+    for i in range(n):
+        if i > 0:
+            u = idx[i]
+            f00, f01, f10, f11 = Ts[u, 0, 0], Ts[u, 1, 0], Ts[u, 2, 0], Ts[u, 3, 0]
+            a00 = f00 * p00 + f01 * p01
+            a01 = f00 * p01 + f01 * p11
+            a10 = f10 * p00 + f11 * p01
+            a11 = f10 * p01 + f11 * p11
+            p00 = a00 * f00 + a01 * f01 + Ts[u, 4, 0]
+            p01 = a00 * f10 + a01 * f11 + Ts[u, 5, 0]
+            p11 = a10 * f10 + a11 * f11 + Ts[u, 6, 0]
+        S = p00 + var0[i] * e2
+        iS = 1.0 / S
+        k0 = p00 * iS
+        k1 = p01 * iS
+        g3[0, i, 0] = k0
+        g3[0, i, 1] = k1
+        g3[0, i, 2] = math.sqrt(iS)
+        prod *= S
+        p11 -= k1 * p01
+        p01 -= k1 * p00
+        p00 -= k0 * p00
+        if (i & 7) == 7:
+            ld += 0.5 * math.log(prod)
+            prod = 1.0
+    ld += 0.5 * math.log(prod)
+    out = np.empty(1)
+    out[0] = ld
+    return out
+
+
+@njit(cache=True)
+def _lane_filter(idx, Ts, q, g, y, B, yw, Bw):
+    """Whitened flux yw and design Bw of lane q with its stored gains g (n x 3), the filter state of the four columns
+    in scalars; the normal equations (G, r) summed in the same pass, in normal_eqs' order."""
+    n = y.shape[0]
+    ma0 = mb0 = mc0 = md0 = 0.0
+    ma1 = mb1 = mc1 = md1 = 0.0
+    g00 = g10 = g11 = g20 = g21 = g22 = 0.0
+    r0 = r1 = r2 = 0.0
+    for i in range(n):
+        if i > 0:
+            u = idx[i]
+            f00, f01, f10, f11 = Ts[u, 0, q], Ts[u, 1, q], Ts[u, 2, q], Ts[u, 3, q]
+            ma0, ma1 = f00 * ma0 + f01 * ma1, f10 * ma0 + f11 * ma1
+            mb0, mb1 = f00 * mb0 + f01 * mb1, f10 * mb0 + f11 * mb1
+            mc0, mc1 = f00 * mc0 + f01 * mc1, f10 * mc0 + f11 * mc1
+            md0, md1 = f00 * md0 + f01 * md1, f10 * md0 + f11 * md1
+        k0, k1, irs = g[i, 0], g[i, 1], g[i, 2]
+        ia = y[i] - ma0
+        ib = B[i, 0] - mb0
+        ic = B[i, 1] - mc0
+        id_ = B[i, 2] - md0
+        yt, a0, a1, a2 = ia * irs, ib * irs, ic * irs, id_ * irs
+        ma0 += k0 * ia
+        ma1 += k1 * ia
+        mb0 += k0 * ib
+        mb1 += k1 * ib
+        mc0 += k0 * ic
+        mc1 += k1 * ic
+        md0 += k0 * id_
+        md1 += k1 * id_
+        yw[i] = yt
+        Bw[i, 0], Bw[i, 1], Bw[i, 2] = a0, a1, a2
+        g00 += a0 * a0
+        g10 += a1 * a0
+        g11 += a1 * a1
+        g20 += a2 * a0
+        g21 += a2 * a1
+        g22 += a2 * a2
+        r0 += a0 * yt
+        r1 += a1 * yt
+        r2 += a2 * yt
+    G = np.empty((3, 3))
+    G[0, 0], G[1, 1], G[2, 2] = g00, g11, g22
+    G[0, 1] = G[1, 0] = g10
+    G[0, 2] = G[2, 0] = g20
+    G[1, 2] = G[2, 1] = g21
+    rv = np.empty(3)
+    rv[0], rv[1], rv[2] = r0, r1, r2
+    return G, rv
+
+
+@njit(cache=True)
+def _lane_chunk(P, lj, E, rows, R, steps, idx, tt, ksup, wts, y, var0, tol, A_half, Gt, Ts, g3, yw, Bw, dws, out, logP_out,
+                ne_out):
+    """Rows rows[:R] (inside their box): transition tables, interleaved gains, then per row the design (in dws if given,
+    else allocated), the filter and the marginal likelihood."""
+    s2 = np.empty(R)
+    es2 = np.empty(R)
+    for q in range(R):
+        i = rows[q]
+        amp, tau, es = E[i, 0], E[i, 1], E[i, 2]
+        s2[q] = amp * amp
+        es2[q] = es * es
+        lam = 1.0 / (tau * 1.4142135623730951)
+        for u in range(steps.shape[0]):
+            Ts[u, 0, q], Ts[u, 1, q], Ts[u, 2, q], Ts[u, 3, q], Ts[u, 4, q], Ts[u, 5, q], Ts[u, 6, q] = \
+                _step(lam * steps[u], s2[q])
+    ld = _lane_gains1(idx, Ts, var0, es2, s2, g3) if R == 1 else _lane_gains(idx, Ts, var0, es2, s2, g3, R)
+    keep = logP_out.shape[0] == out.shape[0]
+    for q in range(R):
+        i = rows[q]
+        p = P[i]
+        if dws is not None:
+            B, _ = K.design_theta_ws(tt, ksup, wts, p[0], p[1], p[2], p[3], p[4], p[5], p[6], tol, A_half, Gt, dws, True)
+        else:
+            B = K.design_theta(tt, ksup, wts, p[0], p[1], p[2], p[3], p[4], p[5], p[6], tol, A_half, Gt)
+        G, rv = _lane_filter(idx, Ts, q, g3[q], y, B, yw, Bw)
+        if ne_out.shape[0] > i:
+            _store_ne(ne_out, i, G, rv, 0.0)
+        v, lP = K.theta_parts_normal(G, rv, Bw, yw, 0.0, 0.0, K.GL_X, K.GL_W)
+        out[i] = v + lP - ld[q] + lj[i]
         if keep:
             logP_out[i] = lP
+
+
+@njit(cache=True)
+def loglike_batch_ws(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, gws, ne_out=_NO_NE):
+    """loglike_batch in chunks of up to lanes(n) rows whose Kalman gain recursions are interleaved (_lane_chunk), in
+    the workspace gws. Equal to the row-by-row filter up to rounding; a row's value does not depend on the chunk."""
+    n = P.shape[0]
+    out = np.full(n, -np.inf)
+    keep = logP_out.shape[0] == n
+    if keep:
+        for i in range(n):
+            logP_out[i] = 0.0
+    Ts, g3 = gws[6], gws[7]
+    R = g3.shape[0]
+    rows = np.empty(R, dtype=np.int64)
+    c = 0
+    while c < n:
+        nr = 0
+        while c < n and nr < R:
+            if _inside(P, c, ok[c], lo, hi):
+                rows[nr] = c
+                nr += 1
+            c += 1
+        if nr:
+            _lane_chunk(P, lj, E, rows, nr, steps, idx, tt, ksup, wts, y, var0, tol, A_half, Gt, Ts, g3, gws[3], gws[2],
+                        gws[0], out, logP_out, ne_out)
     return out
 
 
 @njit(cache=True, parallel=True)
 def loglike_batch_par(P, lj, E, ok, lo, hi, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, logP_out, ne_out=_NO_NE):
-    """loglike_batch with the rows spread over numba's threads (identical results)."""
+    """loglike_batch_ws with the chunks of rows spread over numba's threads (identical values)."""
     n = P.shape[0]
-    out = np.empty(n)
-    keep = logP_out.shape[0] == n
-    for i in prange(n):
-        v, lP = _row(P, lj, E, ok, lo, hi, i, idx, steps, tt, ksup, wts, y, var0, tol, A_half, Gt, ne_out)
-        out[i] = v
-        if keep:
-            logP_out[i] = lP
+    npt = y.shape[0]
+    out = np.full(n, -np.inf)
+    if logP_out.shape[0] == n:
+        for i in range(n):
+            logP_out[i] = 0.0
+    R = int(max(1, min(LANES, _LANE_BYTES // (24 * max(npt, 1)))))
+    good = np.empty(n, dtype=np.int64)
+    ng = 0
+    for i in range(n):
+        if _inside(P, i, ok[i], lo, hi):
+            good[ng] = i
+            ng += 1
+    nch = (ng + R - 1) // R
+    ns = steps.shape[0]
+    for ch in prange(nch):
+        a = ch * R
+        nr = min(R, ng - a)
+        rows = good[a:a + nr].copy()
+        Ts = np.empty((ns, 7, nr))
+        g3 = np.empty((nr, npt, 3))
+        _lane_chunk(P, lj, E, rows, nr, steps, idx, tt, ksup, wts, y, var0, tol, A_half, Gt, Ts, g3, np.empty(npt),
+                    np.empty((npt, 3)), None, out, logP_out, ne_out)
     return out
 
 

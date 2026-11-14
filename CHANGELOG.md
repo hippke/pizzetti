@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Faster likelihood with `gp=` and sampled GP parameters (`_gp.loglike_batch_ws`, `loglike_batch_par`): the rows of a
+  batch go in chunks of up to `_gp.LANES` = 16 (fewer for long light curves: the chunk's gains within ~8 MB) whose Kalman
+  gain recursions run interleaved (`_lane_gains`; one row's covariance recursion is a serial chain, 16 of them overlap),
+  then each row is whitened with its stored gains, the filter state in registers and the normal equations summed in the
+  same pass (`_lane_filter`). One reciprocal and one square root per point instead of six divisions, and ln of products
+  of 8 innovation variances instead of a logarithm per point: equal to the row-by-row filter up to rounding (|d ln L|
+  <= 4e-9 on posterior rows of five light curves); a row's value does not depend on its chunk (alone = in a batch,
+  bit for bit). TOI-2407 b (TESS 2 min, 10k points), host2 one core: 229 -> 159 us per evaluation (1.44x), the fit
+  3.27 -> 2.52 s (median of 3 seeds); 1.07-1.10x where the transit model dominates (long cadence with 15
+  sub-exposures, KOI-12 b's long transit). Seeded results change: on 20 out-of-sample light curves the posteriors move
+  less than with another seed (median largest quantile shift 0.03 vs 0.08 sd); one fragile fit (K2-95 b) took another
+  path and was flagged not ok. The fixed-GP path and the moment kernels are unchanged.
 - `fit()` with `gp=` reuses the likelihood's normal equations in the limb-darkening step, as without a GP (0.6.4):
   the GP likelihood kernels (`loglike_batch`, `_ws`, `_par`, `fixed_batch`, `_par`) store each row's whitened normal
   equations (and the fixed path's shift, `_gp.NE_COLS` = 10 columns) in `ne_out`, and `_expand_fast` takes the moments
