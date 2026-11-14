@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.6
 
 - Faster likelihood with `gp=` and sampled GP parameters (`_gp.loglike_batch_ws`, `loglike_batch_par`): the rows of a
   batch go in chunks of up to `_gp.LANES` = 16 (fewer for long light curves: the chunk's gains within ~8 MB) whose Kalman
